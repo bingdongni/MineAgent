@@ -88,7 +88,16 @@ public final class FakePlayerFactory {
         // A fixed east offset can be a wall, lava, or open air at a cliff;
         // registering there creates a companion that suffocates or falls
         // before its first navigation tick.
-        if (!SafeTeleport.near(player, level, spawnPos.offset(1, 0, 0),
+        BlockPos spawnOrigin = spawnPos.offset(1, 0, 0);
+        // ServerPlayConnectionEvents.JOIN can run before the owner's chunk
+        // ticket has reached ChunkMap's immediately-available cache. The
+        // safety search deliberately uses getChunkNow() so it never loads a
+        // large ring of terrain, but that made every candidate look unloaded
+        // during automatic restore. Prepare only the search origin chunk
+        // synchronously; it is beside an online player and therefore the one
+        // chunk whose availability creation is allowed to require.
+        level.getChunkAt(spawnOrigin);
+        if (!SafeTeleport.near(player, level, spawnOrigin,
                 player.getYRot(), player.getXRot())) {
             throw new IllegalStateException("no safe loaded spawn position nearby");
         }
