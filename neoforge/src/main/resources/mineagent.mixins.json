@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.mineagent.neoforge.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "server": [
+    "ServerPlayerMixin"
+  ],
+  "client": [
+    "MinecraftMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

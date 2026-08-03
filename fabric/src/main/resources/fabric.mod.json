@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "mineagent",
+  "version": "${version}",
+  "name": "MineAgent",
+  "description": "AI-powered Minecraft companions that mine, build, fight, and explore alongside you.",
+  "authors": [
+    "bingdongni"
+  ],
+  "contact": {
+    "homepage": "https://github.com/bingdongni/MineAgent",
+    "sources": "https://github.com/bingdongni/MineAgent",
+    "issues": "https://github.com/bingdongni/MineAgent/issues"
+  },
+  "license": "LGPL-3.0-only",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.mineagent.fabric.MineAgentFabric"
+    ],
+    "client": [
+      "com.mineagent.fabric.MineAgentFabricClient"
+    ]
+  },
+  "mixins": [
+    "mineagent.mixins.json"
+  ],
+  "accessWidener": "mineagent.accesswidener",
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "=1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "suggests": {}
+}

@@ -1,0 +1,24 @@
+plugins {
+    id 'java-library'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+// This module is compiled as part of the fabric/neoforge loader module.
+// It does NOT compile independently — MC classes are provided by the loader.
+// The source files are included in the loader's compilation classpath.
+dependencies {
+    implementation project(':api')
+    compileOnly 'com.google.code.gson:gson:2.11.0'
+}
+
+// Skip compilation — this module is compiled by the loader module
+compileJava.enabled = false
+processResources.enabled = false
+classes.enabled = false
+jar.enabled = false

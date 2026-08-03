@@ -1,0 +1,74 @@
+plugins {
+    id 'java'
+    id 'fabric-loom' version '1.7-SNAPSHOT'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+base {
+    // Loader-specific names make the two release assets unambiguous when both
+    // are attached to the same GitHub release.
+    archivesName = 'mineagent-fabric'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+}
+
+// Add api, engine and tools source directories to the main source set
+// This way Loom compiles them with proper MC mappings, and the final jar
+// contains all required classes (api module is needed at runtime).
+sourceSets {
+    main {
+        java {
+            srcDir project(':api').file('src/main/java')
+            srcDir project(':engine').file('src/main/java')
+            srcDir project(':tools').file('src/main/java')
+        }
+        resources {
+            srcDir project(':tools').file('src/main/resources')
+        }
+    }
+}
+
+dependencies {
+    // Minecraft + Fabric
+    minecraft "com.mojang:minecraft:${project.property('minecraft_version')}"
+    // Use Mojang official mappings (matches our codebase naming)
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.property('fabric_loader_version')}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.property('fabric_version')}"
+
+    // API module
+    implementation project(':api')
+
+    // Gson
+    compileOnly 'com.google.code.gson:gson:2.11.0'
+}
+
+loom {
+    accessWidenerPath = file("src/main/resources/mineagent.accesswidener")
+
+    runs {
+        client {
+            client()
+            setConfigName("Fabric Client")
+        }
+        server {
+            server()
+            setConfigName("Fabric Server")
+        }
+    }
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}

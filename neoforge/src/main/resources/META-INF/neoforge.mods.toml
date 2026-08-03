@@ -1,0 +1,34 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "LGPL-3.0-only"
+issueTrackerURL = "https://github.com/bingdongni/MineAgent/issues"
+
+[[mods]]
+modId = "mineagent"
+version = "${version}"
+displayName = "MineAgent"
+displayURL = "https://github.com/bingdongni/MineAgent"
+description = '''
+AI-powered Minecraft companions that mine, build, fight, and explore alongside you.
+'''
+authors = "bingdongni"
+
+[[accessTransformers]]
+file = "META-INF/accesstransformer.cfg"
+
+[[mixins]]
+config = "mineagent.mixins.json"
+
+[[dependencies.mineagent]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,21.2)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.mineagent]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.21.2)"
+ordering = "NONE"
+side = "BOTH"

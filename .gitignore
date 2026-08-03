@@ -1,0 +1,45 @@
+# Gradle output and caches
+.gradle/
+**/build/
+out/
+
+# IDE-local state. The generated VS Code launch file contains machine-specific
+# absolute paths and is intentionally not part of the repository.
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Minecraft development runtime data
+**/run/
+**/runs/
+config/
+saves/
+world/
+logs/
+crash-reports/
+resourcepacks/
+shaderpacks/
+screenshots/
+options.txt
+servers.dat
+usercache.json
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local diagnostics and JVM crash output
+build_errors.txt
+*.log
+hs_err_pid*
+replay_pid*
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini

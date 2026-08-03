@@ -1,0 +1,65 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '2.0.28-beta'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+base {
+    // NeoForge is released beside Fabric as an explicitly experimental asset.
+    archivesName = 'mineagent-neoforge'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+}
+
+// Compile every shared module into the distributable mod. A normal Gradle
+// project dependency is only present on the development classpath; it is not
+// embedded in the mod JAR and previously left all API classes missing at
+// runtime.
+sourceSets {
+    main {
+        java {
+            srcDir project(':api').file('src/main/java')
+            srcDir project(':engine').file('src/main/java')
+            srcDir project(':tools').file('src/main/java')
+        }
+        resources {
+            srcDir project(':tools').file('src/main/resources')
+        }
+    }
+}
+
+dependencies {
+    implementation project(':api')
+}
+
+neoForge {
+    version = project.property('neoforge_version')
+
+    runs {
+        client {
+            client()
+        }
+        server {
+            server()
+        }
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    from(project(':tools').sourceSets.main.resources)
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    filesMatching('META-INF/neoforge.mods.toml') {
+        // NeoForge ModDev does not expand arbitrary Gradle placeholders by
+        // default; without this, the installed mod reports "${version}".
+        expand version: project.version
+    }
+}

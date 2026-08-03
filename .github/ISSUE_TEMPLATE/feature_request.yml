@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a concrete, testable MineAgent improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent behavior
+        - Pathfinding and actions
+        - LLM provider
+        - Fabric client UI
+        - NeoForge compatibility
+        - Tools and tasks
+        - Memory
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user-visible limitation, not only the desired implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain expected inputs, outputs, failure behavior, and how it could be tested.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Include relevant existing behavior or workarounds.

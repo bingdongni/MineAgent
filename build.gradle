@@ -1,0 +1,99 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = providers.gradleProperty('group').get()
+version = providers.gradleProperty('mod_version').get()
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+    // Minecraft dependencies
+    maven { url = 'https://maven.neoforged.net/releases' }
+    maven { url = 'https://maven.fabricmc.net/' }
+    maven { url = 'https://repo.spongepowered.org/repository/maven-public' }
+}
+
+// Shared Minecraft version
+def minecraft_version = '1.21.1'
+
+subprojects {
+    apply plugin: 'java-library'
+    apply plugin: 'maven-publish'
+
+    group = rootProject.group
+    version = rootProject.version
+
+    java {
+        toolchain.languageVersion = JavaLanguageVersion.of(21)
+    }
+
+    repositories {
+        mavenCentral()
+        maven { url = 'https://maven.neoforged.net/releases' }
+        maven { url = 'https://maven.fabricmc.net/' }
+        maven { url = 'https://repo.spongepowered.org/repository/maven-public' }
+    }
+
+    dependencies {
+        // Gson for JSON handling (bundled with Minecraft)
+        // Note: NeoForge provides its own gson, so we exclude the explicit dependency
+        // for the neoforge subproject to avoid version conflicts
+        if (project.name != 'neoforge') {
+            compileOnly 'com.google.code.gson:gson:2.11.0'
+        }
+
+        // JUnit for testing
+        testImplementation platform('org.junit:junit-bom:5.11.4')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.compilerArgs.add('-parameters')
+    }
+
+    // Binary distributions must carry the exact license text. Keeping it in
+    // META-INF also prevents it from colliding with dependency license files.
+    tasks.withType(Jar).configureEach {
+        from(rootProject.file('LICENSE')) {
+            into 'META-INF'
+            rename { 'LICENSE_MineAgent' }
+        }
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+}
+
+// API module — pure Java, no Minecraft dependency
+project(':api') {
+    dependencies {
+        compileOnly 'com.google.code.gson:gson:2.11.0'
+    }
+}
+
+// Engine module — depends on API + Minecraft
+project(':engine') {
+    dependencies {
+        implementation project(':api')
+        // Minecraft server (provided at runtime)
+        compileOnly "net.neoforged:neoforge:${project.property('neoforge_version')}"
+    }
+}
+
+// Tools module — depends on API + Engine
+project(':tools') {
+    dependencies {
+        implementation project(':api')
+        implementation project(':engine')
+        // Minecraft server (provided at runtime)
+        compileOnly "net.neoforged:neoforge:${project.property('neoforge_version')}"
+    }
+}

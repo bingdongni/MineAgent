@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible MineAgent defect
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys, tokens, server addresses, private chat, and personal information before attaching files. Security vulnerabilities must be reported privately through GitHub Security Advisories.
+
+  - type: dropdown
+    id: loader
+    attributes:
+      label: Mod loader
+      options:
+        - Fabric (supported)
+        - NeoForge (experimental)
+    validations:
+      required: true
+
+  - type: input
+    id: mineagent-version
+    attributes:
+      label: MineAgent version
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Minecraft, loader, and Java versions
+      placeholder: Minecraft 1.21.1, Fabric Loader 0.15.11, Java 21.0.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: mods
+    attributes:
+      label: Other installed mods
+      description: List the smallest mod set that still reproduces the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start a test world...
+        2. Run...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or crash report
+      description: Drag files here after checking them for API keys and private data. Do not paste an entire world save.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I reproduced this in a backed-up test world.
+          required: true
+        - label: I removed API keys, tokens, and private data from all attachments.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

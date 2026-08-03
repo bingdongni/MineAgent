@@ -1,0 +1,13 @@
+accessWidener v1 named
+# ServerPlayer fields needed for fake player
+accessible field net/minecraft/server/level/ServerPlayer gameMode Lnet/minecraft/server/level/ServerPlayerGameMode;
+mutable field net/minecraft/server/level/ServerPlayer gameMode Lnet/minecraft/server/level/ServerPlayerGameMode;
+accessible field net/minecraft/world/entity/LivingEntity xxa F
+accessible field net/minecraft/world/entity/LivingEntity zza F
+accessible field net/minecraft/world/entity/LivingEntity jumping Z
+# Note: Player's tabListName field is accessed via reflection in
+# MineAgentEngine.setTabListDisplay (trying multiple candidate field names
+# across mojmap/yarn mappings). Reflection with setAccessible(true) works
+# at runtime without needing an access widener entry.
+# Note: Connection.channel is set via reflection in FakeConnection,
+# so no access widener entry is needed for it.
