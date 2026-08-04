@@ -3,9 +3,12 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.combat.RangedAttackTool;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -21,7 +24,8 @@ import net.minecraft.world.phys.Vec3;
  * for bows, crossbows, tridents and immediately thrown projectiles.
  */
 public class RangedAttackTask
-        extends CompanionTask<RangedAttackTool.RangedAttackTaskRecord> {
+        extends CompanionTask<RangedAttackTool.RangedAttackTaskRecord>
+        implements IntentAwareTask {
 
     private enum Phase { NAVIGATE, AIM, CHARGE, SHOOT, COOLDOWN, DONE }
     private enum WeaponKind { BOW, CROSSBOW, TRIDENT, THROWABLE, INVALID }
@@ -82,7 +86,7 @@ public class RangedAttackTask
         if (sp.isUsingItem()) sp.stopUsingItem();
 
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override
             public void onGoalReached() {
@@ -99,6 +103,13 @@ public class RangedAttackTask
             }
         });
         navigateToRange();
+    }
+
+    @Override
+    protected void onResume() {
+        int verifiedShots = shotsFired;
+        onStart();
+        shotsFired = verifiedShots;
     }
 
     @Override
@@ -348,6 +359,38 @@ public class RangedAttackTask
     @Override
     protected void onInterrupt() {
         cleanup();
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        var pos = target == null ? null : target.blockPosition();
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        return TaskSnapshot.progress(stage,
+                "Ranged combat with entity " + record.entityId,
+                shotsFired, MAX_SHOTS,
+                pos == null ? null : pos.getX(), pos == null ? null : pos.getY(),
+                pos == null ? null : pos.getZ(),
+                phase == Phase.DONE ? failReason : null,
+                target == null ? null : "target_alive=" + target.isAlive(),
+                ((long) shotsFired << 4) ^ (phase == null ? 0L : phase.ordinal()));
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        var policy = new IntentContract.TerrainPolicy(false, false, false, false,
+                0, 0, 4, IntentContract.CleanupMode.CONTEXTUAL);
+        return new IntentContract("Defeat entity " + record.entityId + " at range",
+                "The target is no longer alive", null, null, null, policy,
+                java.util.List.of(
+                new IntentContract.Constraint("clear_shot",
+                        IntentContract.ConstraintKind.HARD,
+                        "Never release a projectile without current line of sight",
+                        "combat"),
+                new IntentContract.Constraint("combat_terrain",
+                        IntentContract.ConstraintKind.HARD,
+                        "Do not alter terrain to obtain a firing position",
+                        "navigation")));
     }
 
     @Override

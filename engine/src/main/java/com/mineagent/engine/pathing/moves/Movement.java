@@ -6,6 +6,8 @@ import com.mineagent.engine.task.TaskContext;
 import com.mineagent.engine.task.BlockDigger;
 import com.mineagent.engine.behavior.HumanLikeNoise;
 import com.mineagent.engine.pathing.util.BlockHelper;
+import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.planning.TemporaryBlockLedger;
 import net.minecraft.core.BlockPos;
 
 /**
@@ -33,6 +35,8 @@ public abstract class Movement {
     private BlockPos activeBreakTarget;
     private int activeBreakTimeoutTicks = 200;
     private int progressVersion;
+    private IntentContract.CleanupMode supportCleanupMode =
+            IntentContract.CleanupMode.CONTEXTUAL;
 
     protected Movement(int srcX, int srcY, int srcZ, int dstX, int dstY, int dstZ) {
         this.srcX = srcX;
@@ -127,8 +131,26 @@ public abstract class Movement {
         BlockPos support = new BlockPos(x, y - 1, z);
         if (BlockHelper.canStandOn(sp.level().getBlockState(support))) return true;
         boolean placed = com.mineagent.engine.act.Placement.placeAnySupportBlock(sp, support);
-        if (placed) markProgress();
+        if (placed) {
+            // Only a verified post-placement world state enters the ledger.
+            // That ownership evidence prevents cleanup from mining arbitrary
+            // player-built blocks that merely happen to lie on a route.
+            TaskContext.temporaryBlocks(player).recordPlaced(support,
+                    sp.level().getBlockState(support),
+                    TemporaryBlockLedger.Purpose.BRIDGE, supportCleanupMode);
+            markProgress();
+        }
         return placed;
+    }
+
+    /** Configure how supports created by this task should be treated later. */
+    public final void configureSupportCleanup(IntentContract.CleanupMode mode) {
+        supportCleanupMode = mode == null
+                ? IntentContract.CleanupMode.CONTEXTUAL : mode;
+    }
+
+    protected final IntentContract.CleanupMode supportCleanupMode() {
+        return supportCleanupMode;
     }
 
     /** Monotonic marker used by PathExecutor to renew timeouts on real progress. */

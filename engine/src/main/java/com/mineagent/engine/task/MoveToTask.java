@@ -3,8 +3,11 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.movement.MoveToTool;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
@@ -25,7 +28,8 @@ import net.minecraft.world.phys.Vec3;
  * healthy long journeys don't time out. The lease stops renewing after
  * a grace period without progress, catching genuinely stuck tasks.
  */
-public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
+public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord>
+        implements IntentAwareTask {
 
     private PlayerNav nav;
     private volatile boolean goalReached;
@@ -45,7 +49,10 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
     @Override
     public void onStart() {
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        goalReached = false;
+        navFailed = false;
+        failReason = null;
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
 
         nav.setListener(new PlayerNav.NavListener() {
             @Override
@@ -137,6 +144,55 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
             nav.cancel();
         }
         TaskContext.inputDriver(player).clear();
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        ServerPlayer sp = TaskContext.serverPlayer(player);
+        int completed = 0;
+        int total = -1;
+        String stage = nav == null ? "initializing"
+                : nav.state().name().toLowerCase(java.util.Locale.ROOT);
+        if (nav != null && nav.core().executor() != null) {
+            completed = nav.core().executor().currentMovementIndex();
+            total = nav.core().executor().path().length();
+        }
+        Integer targetY = "xz".equals(record.goalMode) ? null : record.y;
+        Integer targetZ = "y".equals(record.goalMode) ? null : record.z;
+        Integer targetX = "y".equals(record.goalMode) ? null : record.x;
+        long version = ((long) Math.max(0, completed) << 32)
+                ^ (goalReached ? 2L : 0L) ^ (navFailed ? 1L : 0L);
+        return TaskSnapshot.progress(stage,
+                goalReached ? "Navigation goal reached"
+                        : navFailed ? "Navigation failed" : "Navigating to requested goal",
+                completed, total, targetX, targetY, targetZ,
+                navFailed ? failReason : null,
+                "player=" + sp.blockPosition(), version);
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        ServerPlayer sp = TaskContext.serverPlayer(player);
+        int currentY = sp.blockPosition().getY();
+        int targetY = record.y == null ? currentY : record.y;
+        int horizontalDistance = record.z == null ? 0
+                : Math.abs(record.x - sp.blockPosition().getX())
+                + Math.abs(record.z - sp.blockPosition().getZ());
+        int placementBudget = Math.max(4, Math.min(32, horizontalDistance / 8 + 4));
+        IntentContract.TerrainPolicy policy = new IntentContract.TerrainPolicy(
+                true, true, true, true, placementBudget, 16,
+                Math.max(4, targetY - currentY + 4),
+                IntentContract.CleanupMode.CONTEXTUAL);
+        return new IntentContract("Reach the requested navigation goal",
+                "The executor verifies the exact selected goal predicate",
+                "y".equals(record.goalMode) ? null : record.x,
+                "xz".equals(record.goalMode) ? null : record.y,
+                "y".equals(record.goalMode) ? null : record.z,
+                policy, java.util.List.of(
+                new IntentContract.Constraint("goal_exactness",
+                        IntentContract.ConstraintKind.HARD,
+                        "Do not report success unless the requested goal predicate is true",
+                        "navigation")));
     }
 
     @Override

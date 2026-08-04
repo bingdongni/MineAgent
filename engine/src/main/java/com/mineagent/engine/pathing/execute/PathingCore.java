@@ -8,6 +8,8 @@ import com.mineagent.engine.pathing.moves.CalculationContext;
 import com.mineagent.engine.pathing.moves.ChunkLoadedTest;
 import com.mineagent.engine.task.TaskContext;
 import com.mineagent.api.config.MineAgentConfig;
+import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.pathing.util.BlockHelper;
 
 /**
  * Core state machine for the pathing system. Manages the lifecycle:
@@ -58,6 +60,7 @@ public class PathingCore {
     private final PathCaches caches;
     private final AStarPathFinder finder;
     private final MineAgentConfig.PathfindingConfig pathConfig;
+    private final IntentContract.TerrainPolicy terrainPolicy;
 
     private State state = State.IDLE;
     private Goal currentGoal;
@@ -78,17 +81,28 @@ public class PathingCore {
 
     private int repathAttempts;
     private boolean bridgeDisabledForCurrentGoal;
+    private boolean digDisabledForCurrentGoal;
+    private String lastFailureDetail;
 
     public PathingCore(AgentPlayer player, PathCaches caches) {
-        this(player, caches, MineAgentConfig.PathfindingConfig.DEFAULTS);
+        this(player, caches, MineAgentConfig.PathfindingConfig.DEFAULTS,
+                IntentContract.TerrainPolicy.CONSERVATIVE);
     }
 
     public PathingCore(AgentPlayer player, PathCaches caches,
                        MineAgentConfig.PathfindingConfig pathConfig) {
+        this(player, caches, pathConfig, IntentContract.TerrainPolicy.CONSERVATIVE);
+    }
+
+    public PathingCore(AgentPlayer player, PathCaches caches,
+                       MineAgentConfig.PathfindingConfig pathConfig,
+                       IntentContract.TerrainPolicy terrainPolicy) {
         this.player = player;
         this.caches = caches;
         this.pathConfig = pathConfig != null
                 ? pathConfig : MineAgentConfig.PathfindingConfig.DEFAULTS;
+        this.terrainPolicy = terrainPolicy == null
+                ? IntentContract.TerrainPolicy.CONSERVATIVE : terrainPolicy;
         // Configuration must reach the actual search implementation; keeping
         // it only in PlayerNav made max nodes and parkour toggles cosmetic.
         this.finder = new AStarPathFinder(this.pathConfig.maxSearchNodes(),
@@ -110,6 +124,8 @@ public class PathingCore {
         this.lastResult = null;
         this.searchInitialized = false;
         this.bridgeDisabledForCurrentGoal = false;
+        this.digDisabledForCurrentGoal = false;
+        this.lastFailureDetail = null;
     }
 
     /**
@@ -127,6 +143,8 @@ public class PathingCore {
         executor = null;
         searchInitialized = false;
         bridgeDisabledForCurrentGoal = false;
+        digDisabledForCurrentGoal = false;
+        lastFailureDetail = null;
     }
 
     /**
@@ -153,10 +171,19 @@ public class PathingCore {
             ChunkLoadedTest chunkTest = caches.loadedChunks()::isChunkLoaded;
             CalculationContext ctx = new CalculationContext(
                     caches.level(), caches.worldView(), chunkTest,
-                    pathConfig.allowDigThrough(),
-                    pathConfig.allowBridge() && !bridgeDisabledForCurrentGoal
+                    pathConfig.allowDigThrough()
+                            && terrainPolicy.allowBreakingObstacles()
+                            && !digDisabledForCurrentGoal,
+                    pathConfig.allowBridge() && terrainPolicy.allowBridge()
+                            && !bridgeDisabledForCurrentGoal
                             && com.mineagent.engine.act.Placement.hasSupportBlock(
-                                    TaskContext.serverPlayer(player)));
+                                    TaskContext.serverPlayer(player)),
+                    pathConfig.allowBridge() && terrainPolicy.allowPillar()
+                            && !bridgeDisabledForCurrentGoal
+                            && com.mineagent.engine.act.Placement.hasSupportBlock(
+                                    TaskContext.serverPlayer(player)),
+                    pathConfig.allowParkour() && terrainPolicy.allowParkour(),
+                    pos.getY(), terrainPolicy.maxUpwardDeviation());
 
             boolean needsContinue = finder.initializeSearch(
                     pos.getX(), pos.getY(), pos.getZ(),
@@ -206,16 +233,38 @@ public class PathingCore {
 
         if (lastResult != null && lastResult.foundPath()) {
             PathBase path = lastResult.path();
+            int requiredSupports = requiredSupportBlocks(path);
+            int availableSupports = Math.min(terrainPolicy.maxPlacedBlocks(),
+                    com.mineagent.engine.act.Placement.supportBlockCount(
+                            TaskContext.serverPlayer(player)));
             if (!bridgeDisabledForCurrentGoal
-                    && requiredSupportBlocks(path) > com.mineagent.engine.act.Placement
-                    .supportBlockCount(TaskContext.serverPlayer(player))) {
+                    && requiredSupports > availableSupports) {
                 // The A* node key does not include remaining inventory. Reject
-                // a bridge that cannot be completed before stepping over void.
+                // a bridge that cannot be completed before stepping over void
+                // or that exceeds the task's terrain-change budget.
                 bridgeDisabledForCurrentGoal = true;
+                lastFailureDetail = requiredSupports > terrainPolicy.maxPlacedBlocks()
+                        ? "PATH_EXCEEDS_PLACEMENT_BUDGET" : "INSUFFICIENT_SUPPORT_BLOCKS";
                 lastResult = null;
                 state = State.SEARCH;
                 searchInitialized = false;
                 return;
+            }
+            int requiredBreaks = requiredObstacleBreaks(path);
+            if (!digDisabledForCurrentGoal
+                    && requiredBreaks > terrainPolicy.maxBrokenObstacles()) {
+                digDisabledForCurrentGoal = true;
+                lastFailureDetail = "PATH_EXCEEDS_BREAK_BUDGET";
+                lastResult = null;
+                state = State.SEARCH;
+                searchInitialized = false;
+                return;
+            }
+            // Path movements are created independently of task semantics.
+            // Attach the cleanup contract before any movement can place a
+            // support, keeping BuildTask output distinct from navigation aid.
+            for (var movement : path.movements()) {
+                movement.configureSupportCleanup(terrainPolicy.cleanupMode());
             }
             executor = new PathExecutor(player, path);
             state = State.EXECUTE;
@@ -290,6 +339,31 @@ public class PathingCore {
         return missing.size();
     }
 
+    private int requiredObstacleBreaks(PathBase path) {
+        java.util.Set<net.minecraft.core.BlockPos> obstacles = new java.util.HashSet<>();
+        var level = TaskContext.serverPlayer(player).level();
+        for (var movement : path.movements()) {
+            addBreakObstacle(level, obstacles, new net.minecraft.core.BlockPos(
+                    movement.dstX(), movement.dstY(), movement.dstZ()));
+            addBreakObstacle(level, obstacles, new net.minecraft.core.BlockPos(
+                    movement.dstX(), movement.dstY() + 1, movement.dstZ()));
+            if (movement.dstY() > movement.srcY()) {
+                addBreakObstacle(level, obstacles, new net.minecraft.core.BlockPos(
+                        movement.srcX(), movement.srcY() + 2, movement.srcZ()));
+            }
+        }
+        return obstacles.size();
+    }
+
+    private static void addBreakObstacle(net.minecraft.world.level.Level level,
+                                         java.util.Set<net.minecraft.core.BlockPos> result,
+                                         net.minecraft.core.BlockPos pos) {
+        var state = level.getBlockState(pos);
+        if (!BlockHelper.isPassable(state) && !BlockHelper.canOpenByHand(state)) {
+            result.add(pos.immutable());
+        }
+    }
+
     /** Get the current state. */
     public State state() { return state; }
 
@@ -304,6 +378,9 @@ public class PathingCore {
 
     /** Get the last path calculation result. */
     public PathCalcResult lastResult() { return lastResult; }
+
+    /** More specific policy/resource failure when available. */
+    public String lastFailureDetail() { return lastFailureDetail; }
 
     /** Get the caches. */
     public PathCaches caches() { return caches; }

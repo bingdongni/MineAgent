@@ -8,6 +8,8 @@ public enum TaskState {
     PENDING,
     /** Task is currently executing. */
     RUNNING,
+    /** Task temporarily yielded its body to a survival chain. */
+    PAUSED,
     /** Task completed successfully. */
     SUCCESS,
     /** Task failed. */

@@ -3,13 +3,17 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.InteractEntityTool;
 import net.minecraft.world.entity.Entity;
 
 /** Navigates to an entity and performs an accepted vanilla interaction. */
-public class InteractEntityTask extends CompanionTask<InteractEntityTool.InteractEntityTaskRecord> {
+public class InteractEntityTask extends CompanionTask<InteractEntityTool.InteractEntityTaskRecord>
+        implements IntentAwareTask {
     private enum Phase { NAVIGATE, INTERACT, DONE }
     private static final double INTERACT_RANGE = 3.0;
     private static final int MAX_INTERACT_TICKS = 40;
@@ -38,7 +42,8 @@ public class InteractEntityTask extends CompanionTask<InteractEntityTool.Interac
             phase = Phase.DONE;
             return;
         }
-        nav = new PlayerNav(player, TaskContext.navCaches(player));
+        nav = new PlayerNav(player, TaskContext.navCaches(player),
+                intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override public void onGoalReached() {
                 if (phase == Phase.NAVIGATE) phase = Phase.INTERACT;
@@ -172,6 +177,29 @@ public class InteractEntityTask extends CompanionTask<InteractEntityTool.Interac
     }
 
     @Override protected void onInterrupt() { cancelNav(); }
+    @Override public TaskSnapshot snapshot() {
+        var pos = target == null ? null : target.blockPosition();
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        int required = Math.max(1, Math.min(record.holdTicks, MAX_INTERACT_TICKS));
+        return TaskSnapshot.progress(stage,
+                "Interact with entity " + record.entityId,
+                Math.min(interactTicks, required), required,
+                pos == null ? null : pos.getX(), pos == null ? null : pos.getY(),
+                pos == null ? null : pos.getZ(),
+                phase == Phase.DONE ? failReason : null,
+                target == null ? null : "entity_alive=" + target.isAlive(),
+                ((long) interactTicks << 3) ^ (phase == null ? 0L : phase.ordinal()));
+    }
+    @Override public IntentContract intentContract() {
+        return new IntentContract("Interact with entity " + record.entityId,
+                "Vanilla accepts the requested entity interaction",
+                null, null, null, IntentContract.TerrainPolicy.CONSERVATIVE,
+                java.util.List.of(new IntentContract.Constraint("protect_terrain",
+                        IntentContract.ConstraintKind.HARD,
+                        "Do not alter terrain to reach an interaction target",
+                        "navigation")));
+    }
     @Override protected String successMessage() {
         return "Interacted with entity " + record.entityId + " (button=" + record.button + ")";
     }

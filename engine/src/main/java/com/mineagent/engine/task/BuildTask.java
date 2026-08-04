@@ -3,11 +3,14 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.act.Placement;
 import com.mineagent.tools.block.BuildTool;
 import com.mineagent.engine.util.McCompat;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 
@@ -19,7 +22,8 @@ import net.minecraft.world.InteractionHand;
  * For "clear" mode: navigates adjacent to each position and breaks
  * the block at that position.
  */
-public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
+public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
+        implements IntentAwareTask {
 
     private enum Phase { NAVIGATE, ACT, DONE }
 
@@ -31,6 +35,7 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
     private BlockPos activeBreakTarget;
     private String failReason;
     private String lastPlaceFailure;
+    private boolean[] verifiedPositions;
 
     /** Placement should resolve promptly; breaking uses a hardness-aware limit. */
     private static final int MAX_PLACE_TICKS = 60;
@@ -43,16 +48,37 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
     @Override
     protected void onStart() {
         phase = Phase.NAVIGATE;
-        currentIndex = 0;
-        completedCount = 0;
+        verifiedPositions = new boolean[record.positions.length];
+        refreshVerifiedPositions();
         actTicks = 0;
         actTimeoutTicks = MAX_PLACE_TICKS;
         activeBreakTarget = null;
         failReason = null;
         lastPlaceFailure = null;
 
+        setupNavigation();
+
+        navigateToCurrent();
+    }
+
+    @Override
+    protected void onResume() {
+        // Re-evaluate every requested cell from the authoritative world. A
+        // survival interruption may occur immediately after vanilla places or
+        // breaks a block but before the next task tick observes it.
+        refreshVerifiedPositions();
+        actTicks = 0;
+        actTimeoutTicks = MAX_PLACE_TICKS;
+        activeBreakTarget = null;
+        failReason = null;
+        lastPlaceFailure = null;
+        setupNavigation();
+        navigateToCurrent();
+    }
+
+    private void setupNavigation() {
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override
             public void onGoalReached() {
@@ -71,9 +97,6 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
                 phase = Phase.DONE;
             }
         });
-
-        // Start navigating to first position
-        navigateToCurrent();
     }
 
     @Override
@@ -232,8 +255,14 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
     }
 
     private void advancePosition() {
-        completedCount++;
+        if (currentIndex < verifiedPositions.length && !verifiedPositions[currentIndex]) {
+            verifiedPositions[currentIndex] = true;
+            completedCount++;
+        }
         currentIndex++;
+        while (currentIndex < verifiedPositions.length && verifiedPositions[currentIndex]) {
+            currentIndex++;
+        }
         actTicks = 0;
         actTimeoutTicks = MAX_PLACE_TICKS;
         lastPlaceFailure = null;
@@ -260,6 +289,26 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
         phase = Phase.NAVIGATE;
     }
 
+    private void refreshVerifiedPositions() {
+        if (verifiedPositions == null
+                || verifiedPositions.length != record.positions.length) {
+            verifiedPositions = new boolean[record.positions.length];
+        }
+        var level = TaskContext.serverPlayer(player).serverLevel();
+        completedCount = 0;
+        currentIndex = record.positions.length;
+        for (int index = 0; index < record.positions.length; index++) {
+            int[] raw = record.positions[index];
+            BlockPos pos = new BlockPos(raw[0], raw[1], raw[2]);
+            var state = level.getBlockState(pos);
+            boolean verified = "place".equals(record.mode)
+                    ? McCompat.isBlock(state, record.blockType) : state.isAir();
+            verifiedPositions[index] = verified;
+            if (verified) completedCount++;
+            else if (currentIndex == record.positions.length) currentIndex = index;
+        }
+    }
+
     private void cancelNav() {
         if (nav != null) nav.cancel();
         if (activeBreakTarget != null) {
@@ -272,6 +321,49 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord> {
     @Override
     protected void onInterrupt() {
         cancelNav();
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        int[] target = currentIndex >= 0 && currentIndex < record.positions.length
+                ? record.positions[currentIndex] : null;
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        long version = ((long) completedCount << 32)
+                ^ ((long) Math.max(0, currentIndex) << 4)
+                ^ (phase == null ? 0L : phase.ordinal());
+        return TaskSnapshot.progress(stage,
+                record.mode + " " + record.blockType,
+                completedCount, record.positions.length,
+                target == null ? null : target[0],
+                target == null ? null : target[1],
+                target == null ? null : target[2],
+                phase == Phase.DONE ? failReason : null,
+                activeBreakTarget != null ? "vanilla_break_target=" + activeBreakTarget
+                        : lastPlaceFailure,
+                version);
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        int currentY = TaskContext.serverPlayer(player).blockPosition().getY();
+        int highestY = currentY;
+        for (int[] position : record.positions) highestY = Math.max(highestY, position[1]);
+        IntentContract.TerrainPolicy policy = new IntentContract.TerrainPolicy(
+                false, true, true, false, 32, 0,
+                Math.max(4, highestY - currentY + 4),
+                IntentContract.CleanupMode.CONTEXTUAL);
+        return new IntentContract(record.mode + " requested build cells",
+                "Every requested cell is verified against the desired world state",
+                null, null, null, policy, java.util.List.of(
+                new IntentContract.Constraint("build_output",
+                        IntentContract.ConstraintKind.HARD,
+                        "Requested build cells are permanent output; only navigation supports are temporary",
+                        "building"),
+                new IntentContract.Constraint("protect_surroundings",
+                        IntentContract.ConstraintKind.HARD,
+                        "Navigation must not clear unrelated terrain to reach a build cell",
+                        "navigation")));
     }
 
     @Override

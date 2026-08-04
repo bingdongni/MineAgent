@@ -1,5 +1,6 @@
 package com.mineagent.engine.pathing.moves;
 
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.engine.pathing.cache.LoadedOnlyView;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -19,19 +20,37 @@ public class CalculationContext {
     private final Level level;
     private final boolean allowDigThrough;
     private final boolean allowBridge;
+    private final boolean allowPillar;
+    private final boolean allowParkour;
+    private final int startY;
+    private final int maxUpwardDeviation;
 
     public CalculationContext(Level level, LoadedOnlyView worldView, ChunkLoadedTest chunkLoadedTest) {
-        this(level, worldView, chunkLoadedTest, false, false);
+        this(level, worldView, chunkLoadedTest, false, false, false, false,
+                0, Integer.MAX_VALUE);
     }
 
     public CalculationContext(Level level, LoadedOnlyView worldView,
                               ChunkLoadedTest chunkLoadedTest,
                               boolean allowDigThrough, boolean allowBridge) {
+        this(level, worldView, chunkLoadedTest, allowDigThrough, allowBridge,
+                false, false, 0, Integer.MAX_VALUE);
+    }
+
+    public CalculationContext(Level level, LoadedOnlyView worldView,
+                              ChunkLoadedTest chunkLoadedTest,
+                              boolean allowDigThrough, boolean allowBridge,
+                              boolean allowPillar, boolean allowParkour,
+                              int startY, int maxUpwardDeviation) {
         this.level = level;
         this.worldView = worldView;
         this.chunkLoadedTest = chunkLoadedTest;
         this.allowDigThrough = allowDigThrough;
         this.allowBridge = allowBridge;
+        this.allowPillar = allowPillar;
+        this.allowParkour = allowParkour;
+        this.startY = startY;
+        this.maxUpwardDeviation = Math.max(0, maxUpwardDeviation);
     }
 
     /**
@@ -66,5 +85,22 @@ public class CalculationContext {
 
     public boolean allowBridge() {
         return allowBridge;
+    }
+
+    public boolean allowPillar() {
+        return allowPillar;
+    }
+
+    public boolean allowParkour() {
+        return allowParkour;
+    }
+
+    /**
+     * A task may permit ordinary terrain changes while still forbidding a
+     * route that climbs far above its semantic target (for example, chopping
+     * a ground-level tree). This is a hard search bound, not a utility weight.
+     */
+    public boolean isWithinVerticalPolicy(int y) {
+        return y <= (long) startY + maxUpwardDeviation;
     }
 }

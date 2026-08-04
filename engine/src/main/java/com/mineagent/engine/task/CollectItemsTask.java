@@ -3,9 +3,12 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.util.McCompat;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.inventory.CollectItemsTool;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -20,7 +23,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /** Navigates to dropped items and verifies pickup through inventory deltas. */
-public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItemsTaskRecord> {
+public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItemsTaskRecord>
+        implements IntentAwareTask {
 
     private enum Phase { SCAN, NAVIGATE, PICKUP, DONE }
 
@@ -51,8 +55,25 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         failReason = null;
         unreachableItems.clear();
 
+        setupNavigation();
+        scanForItems();
+    }
+
+    @Override
+    protected void onResume() {
+        // collectedCount is based on observed inventory deltas and survives a
+        // body interruption. Entity references and paths do not.
+        currentItem = null;
+        targetItemType = null;
+        waitTicks = 0;
+        failReason = null;
+        setupNavigation();
+        scanForItems();
+    }
+
+    private void setupNavigation() {
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override
             public void onGoalReached() {
@@ -67,7 +88,6 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
                 phase = Phase.SCAN;
             }
         });
-        scanForItems();
     }
 
     @Override
@@ -241,7 +261,45 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
     }
 
     @Override
-    protected void onInterrupt() { cancelNav(); }
+    protected void onInterrupt() {
+        // Capture a pickup completed by vanilla between scheduler ticks before
+        // throwing away the current item baseline during pause/finish.
+        updateCollectedFromInventory();
+        cancelNav();
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        BlockPos target = currentItem == null ? null : currentItem.blockPosition();
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        long entityBits = currentItem == null ? 0L
+                : currentItem.getUUID().getLeastSignificantBits();
+        long version = ((long) collectedCount << 32)
+                ^ (phase == null ? 0L : phase.ordinal()) ^ entityBits;
+        return TaskSnapshot.progress(stage,
+                "Collecting " + (record.itemId == null ? "nearby items" : record.itemId),
+                collectedCount, record.maxCount,
+                target == null ? null : target.getX(),
+                target == null ? null : target.getY(),
+                target == null ? null : target.getZ(),
+                phase == Phase.DONE ? failReason : null,
+                currentItem == null ? null : "item_entity=" + currentItem.getUUID(),
+                version);
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        return new IntentContract("Collect nearby dropped items",
+                "Inventory gain is observed and never exceeds the requested maximum",
+                null, null, null,
+                new IntentContract.TerrainPolicy(false, false, false, false,
+                        0, 0, 3, IntentContract.CleanupMode.CONTEXTUAL),
+                java.util.List.of(new IntentContract.Constraint("protect_terrain",
+                        IntentContract.ConstraintKind.HARD,
+                        "Do not alter terrain merely to collect a dropped item",
+                        "navigation")));
+    }
 
     @Override
     protected String successMessage() {

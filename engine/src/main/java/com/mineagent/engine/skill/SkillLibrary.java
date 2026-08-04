@@ -156,6 +156,40 @@ public class SkillLibrary {
         return skill != null ? skill.actionSequence() : null;
     }
 
+    /** Resolve a learned skill through the same name used by load_skill. */
+    public Optional<Skill> get(String skillName) {
+        return Optional.ofNullable(skills.get(skillName));
+    }
+
+    /** Stable snapshot used by memory persistence. */
+    public List<Skill> exportAll() {
+        return skills.values().stream()
+                .sorted(Comparator.comparing(Skill::name))
+                .toList();
+    }
+
+    /** Replace the library with validated persisted entries and rebuild its index. */
+    public void importAll(Collection<Skill> restored) {
+        skills.clear();
+        keywordIndex.clear();
+        if (restored == null) return;
+        for (Skill skill : restored) {
+            if (skill == null || skill.name() == null || skill.name().isBlank()
+                    || skill.actionSequence() == null || skill.actionSequence().isBlank()) {
+                continue;
+            }
+            Skill normalized = new Skill(skill.name().trim(),
+                    skill.description() == null ? "" : skill.description(),
+                    skill.triggerCondition() == null ? "" : skill.triggerCondition(),
+                    skill.actionSequence(),
+                    Math.max(0.0, Math.min(1.0, skill.successRate())),
+                    Math.max(1, skill.invocations()), Math.max(0L, skill.createdTick()));
+            skills.put(normalized.name(), normalized);
+            indexKeywords(normalized.name(), normalized.description() + " "
+                    + normalized.triggerCondition());
+        }
+    }
+
     /**
      * 生成供 LLM 使用的技能列表摘要。
      */

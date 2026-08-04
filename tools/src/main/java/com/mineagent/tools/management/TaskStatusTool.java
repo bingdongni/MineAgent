@@ -6,6 +6,7 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 
 import java.util.Comparator;
 import java.util.Map;
@@ -68,15 +69,41 @@ public class TaskStatusTool implements Tool {
             }
         }
         result.addProperty("elapsed_ticks", info.elapsedTicks);
+        if (info.snapshot != null) {
+            JsonObject progress = new JsonObject();
+            progress.addProperty("stage", info.snapshot.stage());
+            progress.addProperty("summary", info.snapshot.summary());
+            progress.addProperty("completed_units", info.snapshot.completedUnits());
+            progress.addProperty("total_units", info.snapshot.totalUnits());
+            if (info.snapshot.targetX() != null) progress.addProperty("target_x", info.snapshot.targetX());
+            if (info.snapshot.targetY() != null) progress.addProperty("target_y", info.snapshot.targetY());
+            if (info.snapshot.targetZ() != null) progress.addProperty("target_z", info.snapshot.targetZ());
+            if (info.snapshot.blockedReason() != null) {
+                progress.addProperty("blocked_reason", info.snapshot.blockedReason());
+            }
+            if (info.snapshot.evidence() != null) {
+                progress.addProperty("evidence", info.snapshot.evidence());
+            }
+            progress.addProperty("progress_version", info.snapshot.progressVersion());
+            result.add("progress", progress);
+        }
         reply.accept(result.toString());
     }
 
     public static void updateTaskInfo(UUID companionId, String taskId, String toolName,
                                       TaskState state, String message,
                                       String resultData, long elapsedTicks) {
+        updateTaskInfo(companionId, taskId, toolName, state, message,
+                resultData, elapsedTicks, null);
+    }
+
+    public static void updateTaskInfo(UUID companionId, String taskId, String toolName,
+                                      TaskState state, String message,
+                                      String resultData, long elapsedTicks,
+                                      TaskSnapshot snapshot) {
         if (companionId == null || taskId == null || taskId.isBlank() || state == null) return;
         TASK_INFO.put(key(companionId, taskId),
-                new TaskInfo(toolName, state, message, resultData, elapsedTicks));
+                new TaskInfo(toolName, state, message, resultData, elapsedTicks, snapshot));
         if (TASK_INFO.size() > MAX_TRACKED_TASKS) pruneTerminalTasks();
     }
 
@@ -112,15 +139,17 @@ public class TaskStatusTool implements Tool {
         public final String message;
         public final String resultData;
         public final long elapsedTicks;
+        public final TaskSnapshot snapshot;
         public final long updatedAtMillis;
 
         private TaskInfo(String toolName, TaskState state, String message,
-                         String resultData, long elapsedTicks) {
+                         String resultData, long elapsedTicks, TaskSnapshot snapshot) {
             this.toolName = toolName == null ? "unknown" : toolName;
             this.state = state;
             this.message = message;
             this.resultData = resultData;
             this.elapsedTicks = Math.max(0L, elapsedTicks);
+            this.snapshot = snapshot;
             this.updatedAtMillis = System.currentTimeMillis();
         }
 

@@ -6,6 +6,7 @@ import com.mineagent.engine.pathing.astar.PathCalcResult;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.goals.*;
 import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.planning.IntentContract;
 
 /**
  * High-level navigation manager. Provides a simple API for navigating
@@ -25,6 +26,7 @@ public class PlayerNav {
     private PathingCore core;
     private final AgentPlayer player;
     private net.minecraft.server.level.ServerLevel coreLevel;
+    private final IntentContract.TerrainPolicy terrainPolicy;
 
     /** Listener for path events. */
     public interface NavListener {
@@ -40,10 +42,18 @@ public class PlayerNav {
     private long lastDebugPushTick = Long.MIN_VALUE;
 
     public PlayerNav(AgentPlayer player, PathCaches caches) {
+        this(player, caches, IntentContract.TerrainPolicy.CONSERVATIVE);
+    }
+
+    public PlayerNav(AgentPlayer player, PathCaches caches,
+                     IntentContract.TerrainPolicy terrainPolicy) {
         this.player = player;
+        this.terrainPolicy = terrainPolicy == null
+                ? IntentContract.TerrainPolicy.CONSERVATIVE : terrainPolicy;
         this.coreLevel = caches.level();
         this.core = new PathingCore(player, caches,
-                com.mineagent.engine.MineAgentEngine.getConfig().pathfinding());
+                com.mineagent.engine.MineAgentEngine.getConfig().pathfinding(),
+                this.terrainPolicy);
     }
 
     /**
@@ -141,7 +151,9 @@ public class PlayerNav {
                         listener.onGoalReached();
                     } else {
                         PathCalcResult result = core.lastResult();
-                        String reason = result != null && !result.foundPath()
+                        String reason = core.lastFailureDetail() != null
+                                ? core.lastFailureDetail()
+                                : result != null && !result.foundPath()
                                 ? result.failureReason().name()
                                 : "EXECUTION_FAILED";
                         listener.onNavigationFailed(reason);
@@ -196,7 +208,8 @@ public class PlayerNav {
         if (core != null) core.cancel();
         coreLevel = currentLevel;
         core = new PathingCore(player, TaskContext.navCaches(player),
-                com.mineagent.engine.MineAgentEngine.getConfig().pathfinding());
+                com.mineagent.engine.MineAgentEngine.getConfig().pathfinding(),
+                terrainPolicy);
         if (notifyActiveFailure && wasActive && listener != null) {
             // Coordinates do not imply the same target in another dimension.
             // Report a deterministic failure instead of silently reusing them.

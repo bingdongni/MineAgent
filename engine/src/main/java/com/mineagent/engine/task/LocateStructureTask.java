@@ -3,6 +3,7 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.tools.LocateStructureTool;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderSet;
@@ -82,6 +83,19 @@ public final class LocateStructureTask
     @Override
     protected void onInterrupt() {
         // The bounded vanilla lookup completes inside one server-thread call.
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        return TaskSnapshot.progress(searched ? "complete" : "searching",
+                "Locate structure " + record.structureType,
+                searched ? 1 : 0, 1,
+                foundPos == null ? null : foundPos.getX(),
+                foundPos == null ? null : foundPos.getY(),
+                foundPos == null ? null : foundPos.getZ(),
+                searched && foundPos == null ? failReason : null,
+                foundPos == null ? null : "structure_location=" + foundPos,
+                searched ? 1L : 0L);
     }
 
     @Override

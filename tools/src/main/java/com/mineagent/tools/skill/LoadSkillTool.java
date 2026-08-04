@@ -48,7 +48,40 @@ public class LoadSkillTool implements Tool {
         }
 
         var skill = SkillRegistry.get(skillName);
-        if (skill.isEmpty()) {
+        if (skill.isPresent()) {
+            reply.accept(skill.get().content());
+            return;
+        }
+
+        // Learned skills are companion-specific and live in AgentLoop rather
+        // than the global documentation registry. Exposing both through this
+        // one tool removes a retrieval split that previously made learned
+        // experience impossible to load by name.
+        var loop = com.mineagent.engine.task.TaskContext.agentLoop(player);
+        var learned = loop == null ? java.util.Optional
+                .<com.mineagent.engine.skill.SkillLibrary.Skill>empty()
+                : loop.skillLibrary().get(skillName);
+        if (learned.isPresent()) {
+            var value = learned.get();
+            JsonObject result = new JsonObject();
+            result.addProperty("source", "learned_experience");
+            result.addProperty("skill_name", value.name());
+            result.addProperty("description", value.description());
+            result.addProperty("trigger_condition", value.triggerCondition());
+            result.addProperty("success_rate", value.successRate());
+            result.addProperty("invocations", value.invocations());
+            try {
+                result.add("action_sequence",
+                        com.google.gson.JsonParser.parseString(value.actionSequence()));
+            } catch (RuntimeException malformedSequence) {
+                result.addProperty("action_sequence", value.actionSequence());
+                result.addProperty("warning", "Stored sequence is not valid JSON; inspect before reuse");
+            }
+            reply.accept(result.toString());
+            return;
+        }
+
+        {
             // List available skills
             StringBuilder available = new StringBuilder();
             available.append("{\"error\":").append(new com.google.gson.Gson().toJson("Skill not found: " + skillName));
@@ -59,11 +92,16 @@ public class LoadSkillTool implements Tool {
                 available.append(new com.google.gson.Gson().toJson(s.name()));
                 first = false;
             }
+            if (loop != null) {
+                for (var learnedSkill : loop.skillLibrary().allSkills()) {
+                    if (!first) available.append(",");
+                    available.append(new com.google.gson.Gson().toJson(learnedSkill.name()));
+                    first = false;
+                }
+            }
             available.append("]}");
             reply.accept(available.toString());
             return;
         }
-
-        reply.accept(skill.get().content());
     }
 }

@@ -3,8 +3,11 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.block.AutoMineTool;
 import net.minecraft.core.BlockPos;
 
@@ -13,7 +16,8 @@ import java.util.List;
 import java.util.Set;
 
 /** Finds reachable matching blocks and mines them through vanilla progress. */
-public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecord> {
+public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecord>
+        implements IntentAwareTask {
 
     private enum Phase { SCAN, NAVIGATE, DIG, DONE }
 
@@ -44,8 +48,26 @@ public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecor
         failReason = null;
         unreachableBlocks.clear();
 
+        setupNavigation();
+        beginScan();
+    }
+
+    @Override
+    protected void onResume() {
+        // Preserve executor-verified minedCount and the unreachable set, but
+        // discard the interrupted scan/path/break operation. The new scan is
+        // grounded in the current world and cannot resume stale coordinates.
+        digTicks = 0;
+        digTimeoutTicks = Integer.MAX_VALUE;
+        activeBreakTarget = null;
+        failReason = null;
+        setupNavigation();
+        beginScan();
+    }
+
+    private void setupNavigation() {
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override
             public void onGoalReached() {
@@ -61,7 +83,6 @@ public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecor
                 beginScan();
             }
         });
-        beginScan();
     }
 
     private void beginScan() {
@@ -194,7 +215,15 @@ public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecor
     private void cancelNav() {
         if (nav != null) nav.cancel();
         if (activeBreakTarget != null) {
-            BlockDigger.abortBreaking(TaskContext.serverPlayer(player), activeBreakTarget);
+            var sp = TaskContext.serverPlayer(player);
+            // A block can finish between task ticks because vanilla advances
+            // ServerPlayerGameMode independently. Preserve that verified
+            // completion before clearing the progressive break owner.
+            if (sp.level().getBlockState(activeBreakTarget).isAir()) {
+                minedCount++;
+            } else {
+                BlockDigger.abortBreaking(sp, activeBreakTarget);
+            }
             activeBreakTarget = null;
         }
         TaskContext.inputDriver(player).clear();
@@ -202,6 +231,53 @@ public class MineBlockTask extends CompanionTask<AutoMineTool.MineBlockTaskRecor
 
     @Override
     public void onInterrupt() { cancelNav(); }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        BlockPos target = targetBlocks != null
+                && currentBlockIndex >= 0 && currentBlockIndex < targetBlocks.size()
+                ? targetBlocks.get(currentBlockIndex) : null;
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        long version = ((long) minedCount << 32)
+                ^ ((long) Math.max(0, currentBlockIndex) << 4)
+                ^ (phase == null ? 0L : phase.ordinal());
+        return TaskSnapshot.progress(stage,
+                phase == Phase.DONE ? "Mining finished" : "Mining " + record.blockType,
+                minedCount, record.count,
+                target == null ? null : target.getX(),
+                target == null ? null : target.getY(),
+                target == null ? null : target.getZ(),
+                phase == Phase.DONE ? failReason : null,
+                activeBreakTarget == null ? null
+                        : "vanilla_break_target=" + activeBreakTarget,
+                version);
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        String id = record.blockType == null ? "" : record.blockType.toLowerCase(
+                java.util.Locale.ROOT);
+        boolean treeMaterial = id.contains("_log") || id.contains("_wood")
+                || id.endsWith(":log") || id.endsWith(":wood");
+        IntentContract.TerrainPolicy policy = new IntentContract.TerrainPolicy(
+                true, !treeMaterial, !treeMaterial, false,
+                treeMaterial ? 0 : 8, 12, treeMaterial ? 3 : 12,
+                IntentContract.CleanupMode.CONTEXTUAL);
+        return new IntentContract("Mine " + record.count + " blocks of " + record.blockType,
+                "The requested blocks disappear through vanilla breaking and are counted once",
+                null, null, null, policy, java.util.List.of(
+                new IntentContract.Constraint("target_material",
+                        IntentContract.ConstraintKind.HARD,
+                        "Only requested blocks count as task output; other breaks are navigation obstacles",
+                        "mining"),
+                new IntentContract.Constraint("tree_topology",
+                        treeMaterial ? IntentContract.ConstraintKind.HARD
+                                : IntentContract.ConstraintKind.PREFERENCE,
+                        treeMaterial ? "Do not pillar or bridge merely to chop this tree"
+                                : "Minimize non-target terrain changes",
+                        "navigation")));
+    }
 
     @Override
     protected String successMessage() {

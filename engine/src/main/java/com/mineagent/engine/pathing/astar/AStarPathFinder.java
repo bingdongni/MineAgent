@@ -297,15 +297,19 @@ public class AStarPathFinder {
         expandDiagonal(current, 1, 1, goal, favoring, ctx);    // SE
         expandDiagonal(current, -1, 1, goal, favoring, ctx);   // SW
 
-        // Pillar up
-        expandPillar(current, goal, favoring, ctx);
+        // Pillaring consumes blocks and changes terrain. It is deliberately
+        // independent from horizontal bridging so a task can allow one
+        // without silently acquiring the other capability.
+        if (ctx.allowPillar()) {
+            expandPillar(current, goal, favoring, ctx);
+        }
 
         // Ladders, vines and scaffolding are true vertical edges and consume
         // no support block; treating them as pillars wastes inventory.
         expandClimb(current, 1, goal, favoring, ctx);
         expandClimb(current, -1, goal, favoring, ctx);
 
-        if (allowParkour) {
+        if (allowParkour && ctx.allowParkour()) {
             expandParkour(current, 0, -2, goal, favoring, ctx);
             expandParkour(current, 0, 2, goal, favoring, ctx);
             expandParkour(current, 2, 0, goal, favoring, ctx);
@@ -493,6 +497,7 @@ public class AStarPathFinder {
                                double moveCost, Goal goal, Favoring favoring) {
         if (moveCost >= Double.POSITIVE_INFINITY) return;
         if (moveCost <= 0) return;
+        if (currentCtx != null && !currentCtx.isWithinVerticalPolicy(y)) return;
 
         long key = posKey(x, y, z);
         PathNode existing = visitedNodes.get(key);

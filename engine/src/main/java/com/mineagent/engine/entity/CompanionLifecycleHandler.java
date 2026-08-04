@@ -112,6 +112,10 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         dead = true;
         paused = true;
 
+        // Idle cleanup is not represented by the normal body task slot. Stop
+        // its progressive break state explicitly when the body dies.
+        com.mineagent.engine.task.TaskContext.temporaryBlocks(companion).interrupt();
+
         // Suspend, rather than merely cancelling one response. Body events are
         // retained but cannot generate tools that would unexpectedly execute
         // after the body is revived.
@@ -209,6 +213,11 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
 
         // Clean up registered chains
         registeredChains.clear();
+
+        // Path views and temporary-block ownership are keyed by the concrete
+        // CompanionEntity. Releasing them here prevents one retained world
+        // reference per despawn and aborts any cleanup break before unregister.
+        com.mineagent.engine.task.TaskContext.removeCaches(companion);
 
         dead = true;
         paused = true;

@@ -22,6 +22,14 @@ public abstract class CompanionTask<R extends TaskRecord> {
     /** Called once when the task starts. Override in subclasses. */
     protected abstract void onStart();
 
+    /**
+     * Recreate volatile low-level control after a survival interruption.
+     * Stateful tasks override this to preserve verified progress while
+     * discarding stale paths and interactions. The default is suitable for
+     * idempotent tasks whose start method derives everything from world state.
+     */
+    protected void onResume() { onStart(); }
+
     /** Called every server tick while the task is running. Override in subclasses. */
     protected abstract TaskState onTick();
 
@@ -31,11 +39,23 @@ public abstract class CompanionTask<R extends TaskRecord> {
     /** Start the task. Called by the scheduler. */
     public final void start() { onStart(); }
 
+    /** Resume after a scheduler pause. Called by the scheduler. */
+    public final void resume() { onResume(); }
+
     /** Tick the task. Called by the scheduler each server tick. */
     public final TaskState tick() { return onTick(); }
 
     /** Interrupt the task. Called by the scheduler when preempted. */
     public final void interrupt() { onInterrupt(); }
+
+    /**
+     * Return executor-grounded progress for status, planning and recovery.
+     * Tasks with meaningful phases or counts override this method; the generic
+     * fallback still prevents an absent snapshot from breaking scheduling.
+     */
+    public TaskSnapshot snapshot() {
+        return TaskSnapshot.running("running", getClass().getSimpleName() + " is running");
+    }
 
     /** Called on successful completion. Override to provide result data. */
     protected String successMessage() { return "done"; }

@@ -59,7 +59,14 @@ public class MovementPillar extends Movement {
                 supportPlaced = com.mineagent.engine.act.Placement
                         .placeAnySupportBlock(sp,
                                 supportPos);
-                if (supportPlaced) markProgress();
+                if (supportPlaced) {
+                    com.mineagent.engine.task.TaskContext.temporaryBlocks(player)
+                            .recordPlaced(supportPos,
+                                    sp.level().getBlockState(supportPos),
+                                    com.mineagent.engine.planning.TemporaryBlockLedger.Purpose.PILLAR,
+                                    supportCleanupMode());
+                    markProgress();
+                }
             }
         }
         return tickInput;

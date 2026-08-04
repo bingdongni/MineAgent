@@ -3,6 +3,7 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.survival.FoodPolicy;
 import com.mineagent.engine.util.McCompat;
@@ -142,6 +143,21 @@ public final class EatItemTask extends CompanionTask<EatItemTool.EatItemTaskReco
 
     @Override
     protected void onInterrupt() { stopUse(); }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        String stage;
+        if (failReason != null) stage = "failed";
+        else if (!startedUse) stage = "selecting_food";
+        else if (serverPlayer != null && serverPlayer.isUsingItem()) stage = "eating";
+        else stage = "verifying";
+        return TaskSnapshot.progress(stage,
+                foodId == null ? "Selecting food" : "Eating " + foodId,
+                Math.min(elapsedUseTicks, Math.max(1, maxUseTicks)),
+                Math.max(1, maxUseTicks), null, null, null,
+                failReason, foodId == null ? null : "food=" + foodId,
+                elapsedUseTicks / 5L);
+    }
 
     @Override
     protected String successMessage() { return "Ate one " + foodId; }

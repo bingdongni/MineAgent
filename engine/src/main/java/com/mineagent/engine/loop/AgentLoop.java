@@ -14,12 +14,14 @@ import com.mineagent.engine.persona.EmotionState;
 import com.mineagent.engine.memory.PlaceEventMemory;
 import com.mineagent.engine.memory.ReflectionSystem;
 import com.mineagent.engine.memory.ImportanceEvaluator;
+import com.mineagent.engine.memory.ExperienceStore;
 import com.mineagent.engine.skill.SkillLibrary;
 import com.mineagent.engine.cache.DecisionCache;
 import com.mineagent.engine.theory.TheoryOfMind;
 import com.mineagent.engine.knowledge.MinecraftKnowledgeGraph;
-import com.mineagent.engine.planning.HierarchicalPlanner;
-import com.mineagent.engine.world.InternalWorldModel;
+import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.planning.PlanGraph;
+import com.mineagent.engine.world.BeliefState;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -173,10 +175,11 @@ public class AgentLoop {
     private final DecisionCache decisionCache;
     private final TheoryOfMind theoryOfMind;
     private final MinecraftKnowledgeGraph knowledgeGraph;
-    private final HierarchicalPlanner planner;
+    private final PlanGraph planner;
     private final ReflectionSystem reflection;
-    private final InternalWorldModel worldModel;
     private final ImportanceEvaluator importance;
+    private final BeliefState beliefState;
+    private final ExperienceStore experienceStore;
     /** Spatial memory — records points of interest discovered while
      *  exploring (ores, structures, hazards, chests). Backs the
      *  "记忆点" section of the system prompt so the LLM can recall
@@ -211,11 +214,15 @@ public class AgentLoop {
         this.decisionCache = new DecisionCache();
         this.theoryOfMind = new TheoryOfMind();
         this.knowledgeGraph = new MinecraftKnowledgeGraph();
-        this.planner = new HierarchicalPlanner();
+        this.planner = new PlanGraph();
         this.reflection = new ReflectionSystem();
-        this.worldModel = new InternalWorldModel();
         this.importance = new ImportanceEvaluator();
+        this.beliefState = new BeliefState();
+        this.experienceStore = new ExperienceStore();
         this.cognitiveMap = new com.mineagent.engine.memory.CognitiveMap();
+        // The persistent loader appends validated dialogue after this system
+        // entry. Keeping index zero reserved preserves provider message order.
+        history.add(ChatMessage.system(buildSystemPrompt()));
 
         // Memory persistence: per-companion directory, restore previous memories.
         // Solves the "restart = amnesia" problem — the companion remembers
@@ -234,13 +241,14 @@ public class AgentLoop {
             java.nio.file.Path memDir = worldDir.resolve("mineagent_memory")
                     .resolve(stableKey);
             p = new com.mineagent.engine.memory.MemoryPersistence(
-                    memDir, cognitiveMap, placeMemory, importance, reflection);
+                    memDir, cognitiveMap, placeMemory, importance, reflection,
+                    planner, beliefState, experienceStore, skillLib, history);
             p.loadAll();
         }
         this.persistence = p;
 
-        // Initialize system prompt
-        history.add(ChatMessage.system(buildSystemPrompt()));
+        // Memory-loaded plans, beliefs and skills affect the dynamic tail.
+        history.set(0, ChatMessage.system(buildSystemPrompt()));
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -354,6 +362,50 @@ public class AgentLoop {
         if (!inProgress) {
             wake("body_log");
         }
+    }
+
+    /** Commit a newly admitted body task to the shared planning state. */
+    public void onTaskAccepted(String taskId, String taskName,
+                               IntentContract intent, TaskSnapshot snapshot,
+                               long gameTick) {
+        planner.bindTask(taskId, taskName, intent, gameTick);
+        beliefState.observeFact("body", "current_task",
+                intent == null ? taskName : intent.goal(), 1.0,
+                "scheduler", gameTick);
+        if (snapshot != null) planner.recordProgress(taskId, snapshot, gameTick);
+    }
+
+    /** Publish live executor progress without waking the LLM every tick. */
+    public void onTaskProgress(String taskId, TaskSnapshot snapshot,
+                               String message, long gameTick) {
+        planner.recordProgress(taskId, snapshot, gameTick);
+        if (snapshot != null && snapshot.hasTarget()) {
+            beliefState.observeFact("body", "task_target",
+                    String.valueOf(snapshot.targetX()) + ","
+                            + snapshot.targetY() + "," + snapshot.targetZ(),
+                    1.0, "task:" + taskId, gameTick);
+        }
+    }
+
+    /**
+     * Apply a verifier-backed terminal transition and retain the structured
+     * experience. This is the only path by which an asynchronous task can
+     * verify a plan node.
+     */
+    public void onTaskFinished(String taskId, String taskName,
+                               IntentContract intent, TaskState state,
+                               TaskSnapshot snapshot, String message,
+                               long gameTick) {
+        planner.recordOutcome(taskId, state, snapshot, message, gameTick);
+        String goal = intent == null ? taskName : intent.goal();
+        ExperienceStore.Experience experience = experienceStore.record(
+                taskId, taskName, goal, state, snapshot, message, gameTick);
+        beliefState.observeRuleOutcome(goal, taskName,
+                intent == null ? "executor success" : intent.successCriterion(),
+                state == TaskState.SUCCESS,
+                experience.failureKind() + ": " + experience.evidence(), gameTick);
+        beliefState.observeFact("body", "current_task", "idle", 1.0,
+                "scheduler", gameTick);
     }
 
     /**
@@ -494,10 +546,12 @@ public class AgentLoop {
     public com.mineagent.engine.memory.CognitiveMap cognitiveMap() { return cognitiveMap; }
     public SkillLibrary skillLibrary() { return skillLib; }
     public TheoryOfMind theoryOfMind() { return theoryOfMind; }
-    public HierarchicalPlanner planner() { return planner; }
+    public PlanGraph planner() { return planner; }
+    public PlanGraph planGraph() { return planner; }
+    public BeliefState beliefState() { return beliefState; }
+    public ExperienceStore experienceStore() { return experienceStore; }
     public ReflectionSystem reflection() { return reflection; }
     public PersonaProfile persona() { return persona; }
-    public InternalWorldModel worldModel() { return worldModel; }
     public MinecraftKnowledgeGraph knowledgeGraph() { return knowledgeGraph; }
     public DecisionCache decisionCache() { return decisionCache; }
 
@@ -855,8 +909,8 @@ public class AgentLoop {
                 // 通过失败学习重要性
                 importance.learnFromFailure(tc.name(), content);
                 // Record failure in reflection system (micro layer)
-                String taskDesc = planner.hasActivePlan() && planner.currentMilestone() != null
-                        ? planner.currentMilestone().description() : "task";
+                String taskDesc = planner.hasActivePlan() && planner.currentNode() != null
+                        ? planner.currentNode().description() : "task";
                 String failReason = analysis.errorMessage();
                 reflection.recordFailure(taskDesc, tc.name(), failReason);
                 // Record full failed-task memory (JARVIS-1 style) so the
@@ -906,7 +960,7 @@ public class AgentLoop {
             if (!successfulTools.isEmpty()) {
                 // 使用任务描述+工具序列生成稳定的技能ID
                 String taskDesc = planner.hasActivePlan()
-                        ? planner.currentMilestone().description()
+                        ? planner.currentNode().description()
                         : "general_task";
                 // 技能ID：任务类型 + 主要工具 + 工具序列签名。
                 // 序列签名确保不同动作序列生成不同技能ID，
@@ -1720,6 +1774,9 @@ public class AgentLoop {
     private static int getToolResultLimit(String toolName) {
         if (toolName == null) return 800;
         String lower = toolName.toLowerCase();
+        // look_around now emits ordered, bounded JSON. Keep the complete
+        // object instead of repairing a cut in the entity or terrain arrays.
+        if (lower.contains("look_around")) return 9000;
         // 感知类：需要完整环境信息，给 1200 字符
         if (lower.contains("look") || lower.contains("scan")
                 || lower.contains("search") || lower.contains("find")) {
@@ -2085,6 +2142,16 @@ public class AgentLoop {
         sb.append("solve it yourself. Only ask the owner when YOU genuinely ");
         sb.append("can't decide.\n\n");
 
+        sb.append("### Situated Reasoning Protocol\n");
+        sb.append("Do not apply one fixed score or one fixed set of weights to every situation. ");
+        sb.append("First identify hard constraints from survival, the owner's request, and current world facts. ");
+        sb.append("Then generate more than one feasible action when the choice matters, compare their concrete ");
+        sb.append("consequences in this situation, and prefer reversible information-gathering when uncertainty is high. ");
+        sb.append("Resource scarcity, urgency, future reuse, cleanup, and risk matter only when the current evidence makes them relevant. ");
+        sb.append("After acting, verify the world or inventory result before marking a plan step complete. ");
+        sb.append("For temporary supports, decide among recover now, defer, or deliberately leave them based on live safety, ");
+        sb.append("escape-route value, reachability, scarcity, task delay, and owner intent; never always recover or always leave.\n\n");
+
         // ── Decision priority ──
         sb.append("## Priority When Multiple Things Compete\n");
         sb.append("1. **Immediate survival** — About to die? Handle that first.\n");
@@ -2268,10 +2335,14 @@ public class AgentLoop {
             sb.append("已掌握技能: ").append(skillLib.size()).append("个\n");
         }
         // Plan: current milestone only, not full plan
-        if (planner.hasActivePlan() && planner.currentMilestone() != null) {
-            sb.append("当前里程碑: ").append(planner.currentMilestone().description())
-                    .append(" (").append(planner.progressPercent()).append("%)\n");
+        if (planner.hasActivePlan() && planner.currentNode() != null) {
+            sb.append(planner.summarizeForPrompt());
         }
+        String beliefSummary = beliefState.summarizeForPrompt();
+        if (!beliefSummary.isBlank()) sb.append(beliefSummary);
+        String experienceSummary = experienceStore.summarizeForPrompt(
+                planner.currentNode() == null ? "" : planner.currentNode().description());
+        if (!experienceSummary.isBlank()) sb.append(experienceSummary);
         // Reflection: only top 1 lesson
         String lessons = reflection.summarizeForPrompt();
         if (!lessons.isBlank()) {
@@ -2289,9 +2360,9 @@ public class AgentLoop {
         // so the LLM recalls "last time I tried this, X went wrong" and
         // adapts its plan. Only inject when there's an active task to match
         // against — otherwise the prompt bloats with irrelevant history.
-        if (planner.hasActivePlan() && planner.currentMilestone() != null) {
+        if (planner.hasActivePlan() && planner.currentNode() != null) {
             String failures = reflection.formatFailuresForPrompt(
-                    planner.currentMilestone().description());
+                    planner.currentNode().description());
             if (!failures.isBlank()) {
                 // Compress: only the lesson lines, not the full format
                 // (the full format has headers and task descriptions that
@@ -2316,9 +2387,6 @@ public class AgentLoop {
         if (!spatialMemory.isBlank()) {
             sb.append(spatialMemory);
         }
-        // World model: ultra-compact reminder (1 line)
-        sb.append("预判: 跳>3格受伤, 水下15秒溺水, 苦力怕3格内危险, Y<11有熔岩\n");
-
         // ImportanceEvaluator: 动态学习到的重要性（非硬编码）
         String learned = importance.summarizeForPrompt();
         if (!learned.isBlank()) {
@@ -2394,6 +2462,12 @@ public class AgentLoop {
             // awaitTermination interrupted — force shutdown and restore flag
             executor.shutdownNow();
             Thread.currentThread().interrupt();
+        } finally {
+            // A turn that was already past its stale-response gate may append
+            // its final owner-facing text while shutdown is waiting. Persist
+            // once more after termination so that last complete dialogue and
+            // its resulting memories are not lost across a normal restart.
+            if (persistence != null) persistence.saveAll();
         }
     }
 }

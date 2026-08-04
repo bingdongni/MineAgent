@@ -3,13 +3,17 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.InteractAtTool;
 import net.minecraft.core.BlockPos;
 
 /** Navigates to and verifies a block use or progressive block attack. */
-public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskRecord> {
+public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskRecord>
+        implements IntentAwareTask {
     private enum Phase { NAVIGATE, INTERACT, DONE }
 
     private static final int MAX_HOLD_TICKS = 40;
@@ -31,7 +35,8 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
         breakTimeoutTicks = Integer.MAX_VALUE;
         failReason = null;
         breakStarted = false;
-        nav = new PlayerNav(player, TaskContext.navCaches(player));
+        nav = new PlayerNav(player, TaskContext.navCaches(player),
+                intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override public void onGoalReached() {
                 if (phase == Phase.NAVIGATE) phase = Phase.INTERACT;
@@ -146,6 +151,31 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
     }
 
     @Override protected void onInterrupt() { cancelNav(); }
+    @Override public TaskSnapshot snapshot() {
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        int required = "attack".equals(record.button)
+                ? Math.max(1, breakTimeoutTicks)
+                : Math.max(1, Math.min(record.holdTicks, MAX_HOLD_TICKS));
+        return TaskSnapshot.progress(stage,
+                "Interact with block using " + record.button,
+                Math.min(interactTicks, required), required,
+                record.x, record.y, record.z,
+                phase == Phase.DONE ? failReason : null,
+                breakStarted ? "vanilla_break_in_progress" : null,
+                ((long) interactTicks << 3) ^ (phase == null ? 0L : phase.ordinal()));
+    }
+    @Override public IntentContract intentContract() {
+        return new IntentContract("Interact with the requested block",
+                "Vanilla accepts the requested interaction"
+                        + ("attack".equals(record.button) ? " and the target becomes air" : ""),
+                record.x, record.y, record.z,
+                IntentContract.TerrainPolicy.CONSERVATIVE,
+                java.util.List.of(new IntentContract.Constraint("target_only",
+                        IntentContract.ConstraintKind.HARD,
+                        "Navigation may not modify unrelated terrain",
+                        "interaction")));
+    }
     @Override protected String successMessage() {
         return "Interacted at (" + record.x + ", " + record.y + ", " + record.z
                 + ") with button=" + record.button;

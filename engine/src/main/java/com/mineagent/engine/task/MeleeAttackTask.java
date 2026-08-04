@@ -3,9 +3,12 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.act.Interaction;
+import com.mineagent.engine.planning.IntentAwareTask;
+import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.tools.combat.MeleeAttackTool;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
@@ -16,7 +19,8 @@ import java.util.Locale;
  * within melee range (3 blocks), and strikes repeatedly until the
  * target dies or the task is cancelled.
  */
-public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTaskRecord> {
+public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTaskRecord>
+        implements IntentAwareTask {
 
     private enum Phase { NAVIGATE, ATTACK, DONE }
 
@@ -32,6 +36,7 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
     private int repathTicks;
     private net.minecraft.core.BlockPos lastNavTarget;
     private String failReason;
+    private int strikesLanded;
 
     public MeleeAttackTask(AgentPlayer player, MeleeAttackTool.MeleeAttackTaskRecord record) {
         super(player, record);
@@ -43,6 +48,8 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
         aimTicks = 0;
         repathTicks = 0;
         lastNavTarget = null;
+        failReason = null;
+        strikesLanded = 0;
 
         // Resolve target entity
         ServerLevel level = TaskContext.serverPlayer(player).serverLevel();
@@ -58,7 +65,7 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
         }
 
         PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, caches, intentContract().terrainPolicy());
         nav.setListener(new PlayerNav.NavListener() {
             @Override
             public void onGoalReached() {
@@ -74,6 +81,13 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
         });
 
         navigateToTarget();
+    }
+
+    @Override
+    protected void onResume() {
+        int verifiedStrikes = strikesLanded;
+        onStart();
+        strikesLanded = verifiedStrikes;
     }
 
     @Override
@@ -161,6 +175,7 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
                 navigateToTarget();
                 return;
             }
+            strikesLanded++;
             aimTicks = 0;
         }
     }
@@ -203,6 +218,33 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
     @Override
     protected void onInterrupt() {
         cancelNav();
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        var pos = target == null ? null : target.blockPosition();
+        String stage = phase == null ? "initializing"
+                : phase.name().toLowerCase(java.util.Locale.ROOT);
+        return TaskSnapshot.progress(stage,
+                "Melee combat with entity " + record.entityId,
+                strikesLanded, -1,
+                pos == null ? null : pos.getX(), pos == null ? null : pos.getY(),
+                pos == null ? null : pos.getZ(),
+                phase == Phase.DONE ? failReason : null,
+                target == null ? null : "target_alive=" + target.isAlive(),
+                ((long) strikesLanded << 3) ^ (phase == null ? 0L : phase.ordinal()));
+    }
+
+    @Override
+    public IntentContract intentContract() {
+        var policy = new IntentContract.TerrainPolicy(false, false, false, true,
+                0, 0, 4, IntentContract.CleanupMode.CONTEXTUAL);
+        return new IntentContract("Defeat entity " + record.entityId,
+                "The target is no longer alive", null, null, null, policy,
+                java.util.List.of(new IntentContract.Constraint("combat_terrain",
+                        IntentContract.ConstraintKind.HARD,
+                        "Do not alter terrain while pursuing a combat target",
+                        "navigation")));
     }
 
     @Override

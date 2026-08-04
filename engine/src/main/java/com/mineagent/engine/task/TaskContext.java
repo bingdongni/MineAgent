@@ -23,6 +23,8 @@ public final class TaskContext {
     private TaskContext() {}
 
     private static final Map<AgentPlayer, PathCaches> NAV_CACHES = new ConcurrentHashMap<>();
+    private static final Map<AgentPlayer, com.mineagent.engine.planning.TemporaryBlockLedger>
+            TEMPORARY_BLOCKS = new ConcurrentHashMap<>();
 
     /** Get the underlying ServerPlayer for a companion. */
     public static net.minecraft.server.level.ServerPlayer serverPlayer(AgentPlayer player) {
@@ -139,8 +141,18 @@ public final class TaskContext {
                         ? new PathCaches(currentLevel) : existing);
     }
 
+    /** Per-companion ownership ledger for navigation-created terrain. */
+    public static com.mineagent.engine.planning.TemporaryBlockLedger temporaryBlocks(
+            AgentPlayer player) {
+        return TEMPORARY_BLOCKS.computeIfAbsent(player, ignored ->
+                new com.mineagent.engine.planning.TemporaryBlockLedger(
+                        serverPlayer(player)));
+    }
+
     /** Remove caches for a companion (on disconnect). */
     public static void removeCaches(AgentPlayer player) {
         NAV_CACHES.remove(player);
+        var ledger = TEMPORARY_BLOCKS.remove(player);
+        if (ledger != null) ledger.close();
     }
 }

@@ -104,6 +104,18 @@ public final class Schema {
             return this;
         }
 
+        /** Add an optional array with an explicit item schema. */
+        public Builder optionalArray(String name, String description,
+                                     Map<String, Object> itemSchema, int minItems) {
+            Map<String, Object> prop = new LinkedHashMap<>();
+            prop.put("type", List.of("array", "null"));
+            prop.put("description", description);
+            prop.put("items", Map.copyOf(itemSchema));
+            if (minItems > 0) prop.put("minItems", minItems);
+            properties.put(name, Collections.unmodifiableMap(prop));
+            return this;
+        }
+
         /** Build the final schema map. */
         public Map<String, Object> build() {
             Map<String, Object> root = new LinkedHashMap<>();

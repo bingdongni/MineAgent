@@ -6,6 +6,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mineagent.engine.planning.PlanGraph;
+import com.mineagent.engine.world.BeliefState;
+import com.mineagent.engine.skill.SkillLibrary;
+import com.mineagent.api.llm.ChatMessage;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -46,7 +50,14 @@ public class MemoryPersistence {
     private static final String PLACE_EVENT_FILE = "place_events.json";
     private static final String IMPORTANCE_FILE = "importance_weights.json";
     private static final String REFLECTION_FILE = "reflections.json";
-    private static final int FORMAT_VERSION = 2;
+    private static final String PLAN_FILE = "plan_state.json";
+    private static final String BELIEF_FILE = "belief_state.json";
+    private static final String EXPERIENCE_FILE = "experiences.json";
+    private static final String SKILL_FILE = "learned_skills.json";
+    private static final String CONVERSATION_FILE = "conversation.json";
+    private static final int FORMAT_VERSION = 4;
+    private static final int MAX_DIALOGUE_PAIRS = 12;
+    private static final int MAX_DIALOGUE_CHARS = 4_000;
 
     /** 自动保存间隔（毫秒） */
     private static final long AUTO_SAVE_INTERVAL = 60_000;
@@ -56,6 +67,11 @@ public class MemoryPersistence {
     private final PlaceEventMemory placeEventMemory;
     private final ImportanceEvaluator importanceEvaluator;
     private final ReflectionSystem reflectionSystem;
+    private final PlanGraph planGraph;
+    private final BeliefState beliefState;
+    private final ExperienceStore experienceStore;
+    private final SkillLibrary skillLibrary;
+    private final List<ChatMessage> conversationHistory;
 
     /** 上次保存时间 */
     private volatile long lastSaveTime = 0;
@@ -67,12 +83,22 @@ public class MemoryPersistence {
                              CognitiveMap cognitiveMap,
                              PlaceEventMemory placeEventMemory,
                              ImportanceEvaluator importanceEvaluator,
-                             ReflectionSystem reflectionSystem) {
+                             ReflectionSystem reflectionSystem,
+                             PlanGraph planGraph,
+                             BeliefState beliefState,
+                             ExperienceStore experienceStore,
+                             SkillLibrary skillLibrary,
+                             List<ChatMessage> conversationHistory) {
         this.memoryDir = memoryDir;
         this.cognitiveMap = cognitiveMap;
         this.placeEventMemory = placeEventMemory;
         this.importanceEvaluator = importanceEvaluator;
         this.reflectionSystem = reflectionSystem;
+        this.planGraph = planGraph;
+        this.beliefState = beliefState;
+        this.experienceStore = experienceStore;
+        this.skillLibrary = skillLibrary;
+        this.conversationHistory = conversationHistory;
     }
 
     /**
@@ -97,6 +123,21 @@ public class MemoryPersistence {
         try { saveReflections(); } catch (Exception e) {
             System.err.println("[MineAgent] Save reflections failed: " + e.getMessage());
         }
+        try { savePlan(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save plan failed: " + e.getMessage());
+        }
+        try { saveBeliefs(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save beliefs failed: " + e.getMessage());
+        }
+        try { saveExperiences(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save experiences failed: " + e.getMessage());
+        }
+        try { saveSkills(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save learned skills failed: " + e.getMessage());
+        }
+        try { saveConversation(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save conversation failed: " + e.getMessage());
+        }
         lastSaveTime = System.currentTimeMillis();
     }
 
@@ -119,6 +160,11 @@ public class MemoryPersistence {
         loadWithQuarantine(PLACE_EVENT_FILE, "place events", this::loadPlaceEventMemory);
         loadWithQuarantine(IMPORTANCE_FILE, "importance weights", this::loadImportanceWeights);
         loadWithQuarantine(REFLECTION_FILE, "reflections", this::loadReflections);
+        loadWithQuarantine(PLAN_FILE, "plan state", this::loadPlan);
+        loadWithQuarantine(BELIEF_FILE, "belief state", this::loadBeliefs);
+        loadWithQuarantine(EXPERIENCE_FILE, "experiences", this::loadExperiences);
+        loadWithQuarantine(SKILL_FILE, "learned skills", this::loadSkills);
+        loadWithQuarantine(CONVERSATION_FILE, "conversation", this::loadConversation);
         // Do not immediately overwrite a quarantined or partially recovered
         // file on the first agent turn. The normal one-minute autosave will
         // persist the validated in-memory subset while the original remains.
@@ -341,6 +387,180 @@ public class MemoryPersistence {
         reflectionSystem.importAll(reflections, patterns);
     }
 
+    // --- Unified cognitive state ---
+
+    private void savePlan() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(planGraph.exportState()));
+        writeAtomic(memoryDir.resolve(PLAN_FILE), GSON.toJson(data));
+    }
+
+    private void loadPlan() throws IOException {
+        Path file = memoryDir.resolve(PLAN_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("plan state is missing");
+        }
+        try {
+            PlanGraph.State state = GSON.fromJson(data.get("state"), PlanGraph.State.class);
+            planGraph.importState(state);
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid plan state", malformed);
+        }
+    }
+
+    private void saveBeliefs() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(beliefState.exportState()));
+        writeAtomic(memoryDir.resolve(BELIEF_FILE), GSON.toJson(data));
+    }
+
+    private void loadBeliefs() throws IOException {
+        Path file = memoryDir.resolve(BELIEF_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("belief state is missing");
+        }
+        try {
+            BeliefState.State state = GSON.fromJson(data.get("state"), BeliefState.State.class);
+            beliefState.importState(state);
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid belief state", malformed);
+        }
+    }
+
+    private void saveExperiences() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("experiences", GSON.toJsonTree(experienceStore.exportAll()));
+        writeAtomic(memoryDir.resolve(EXPERIENCE_FILE), GSON.toJson(data));
+    }
+
+    private void loadExperiences() throws IOException {
+        Path file = memoryDir.resolve(EXPERIENCE_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        List<ExperienceStore.Experience> experiences = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement element : arrayField(data, "experiences")) {
+            try {
+                ExperienceStore.Experience experience = GSON.fromJson(
+                        element, ExperienceStore.Experience.class);
+                if (experience == null || experience.taskId() == null
+                        || experience.action() == null || experience.outcome() == null) {
+                    skipped++;
+                } else {
+                    experiences.add(experience);
+                }
+            } catch (RuntimeException malformed) {
+                skipped++;
+            }
+        }
+        logSkipped(EXPERIENCE_FILE, skipped);
+        experienceStore.importAll(experiences);
+    }
+
+    private void saveSkills() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("skills", GSON.toJsonTree(skillLibrary.exportAll()));
+        writeAtomic(memoryDir.resolve(SKILL_FILE), GSON.toJson(data));
+    }
+
+    private void loadSkills() throws IOException {
+        Path file = memoryDir.resolve(SKILL_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        List<SkillLibrary.Skill> skills = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement element : arrayField(data, "skills")) {
+            try {
+                SkillLibrary.Skill skill = GSON.fromJson(element, SkillLibrary.Skill.class);
+                if (skill == null || skill.name() == null
+                        || skill.actionSequence() == null) skipped++;
+                else skills.add(skill);
+            } catch (RuntimeException malformed) {
+                skipped++;
+            }
+        }
+        logSkipped(SKILL_FILE, skipped);
+        skillLibrary.importAll(skills);
+    }
+
+    private record DialoguePair(String user, String assistant) {}
+
+    private void saveConversation() throws IOException {
+        List<DialoguePair> pairs = new ArrayList<>();
+        String pendingUser = null;
+        synchronized (conversationHistory) {
+            for (ChatMessage message : conversationHistory) {
+                if (message == null || message.content() == null
+                        || message.content().isBlank()) continue;
+                if ("user".equals(message.role())) {
+                    String content = message.content().trim();
+                    // Body/task events are already represented in structured
+                    // memories. Persist only owner-facing conversation.
+                    if (!content.startsWith("[BODY]")
+                            && !content.startsWith("[TASK_")) {
+                        pendingUser = bounded(content);
+                    }
+                } else if ("assistant".equals(message.role()) && pendingUser != null) {
+                    pairs.add(new DialoguePair(pendingUser, bounded(message.content())));
+                    pendingUser = null;
+                }
+            }
+        }
+        if (pairs.size() > MAX_DIALOGUE_PAIRS) {
+            pairs = new ArrayList<>(pairs.subList(
+                    pairs.size() - MAX_DIALOGUE_PAIRS, pairs.size()));
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("pairs", GSON.toJsonTree(pairs));
+        writeAtomic(memoryDir.resolve(CONVERSATION_FILE), GSON.toJson(data));
+    }
+
+    private void loadConversation() throws IOException {
+        Path file = memoryDir.resolve(CONVERSATION_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        List<ChatMessage> restored = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement element : arrayField(data, "pairs")) {
+            try {
+                DialoguePair pair = GSON.fromJson(element, DialoguePair.class);
+                if (pair == null || pair.user() == null || pair.user().isBlank()
+                        || pair.assistant() == null || pair.assistant().isBlank()) {
+                    skipped++;
+                    continue;
+                }
+                restored.add(ChatMessage.user(bounded(pair.user())));
+                restored.add(ChatMessage.assistant(bounded(pair.assistant())));
+            } catch (RuntimeException malformed) {
+                skipped++;
+            }
+        }
+        logSkipped(CONVERSATION_FILE, skipped);
+        synchronized (conversationHistory) {
+            conversationHistory.addAll(restored);
+        }
+    }
+
+    private static String bounded(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return normalized.length() <= MAX_DIALOGUE_CHARS ? normalized
+                : normalized.substring(0, MAX_DIALOGUE_CHARS);
+    }
+
     private static JsonObject readRoot(Path file) throws IOException {
         JsonElement parsed;
         try {
@@ -417,6 +637,11 @@ public class MemoryPersistence {
             Files.deleteIfExists(memoryDir.resolve(PLACE_EVENT_FILE));
             Files.deleteIfExists(memoryDir.resolve(IMPORTANCE_FILE));
             Files.deleteIfExists(memoryDir.resolve(REFLECTION_FILE));
+            Files.deleteIfExists(memoryDir.resolve(PLAN_FILE));
+            Files.deleteIfExists(memoryDir.resolve(BELIEF_FILE));
+            Files.deleteIfExists(memoryDir.resolve(EXPERIENCE_FILE));
+            Files.deleteIfExists(memoryDir.resolve(SKILL_FILE));
+            Files.deleteIfExists(memoryDir.resolve(CONVERSATION_FILE));
         } catch (IOException e) {
             System.err.println("[MineAgent] Failed to clear memories: " + e.getMessage());
         }

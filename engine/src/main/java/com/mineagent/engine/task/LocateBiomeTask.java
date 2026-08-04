@@ -3,6 +3,7 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.tools.LocateBiomeTool;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -77,6 +78,19 @@ public final class LocateBiomeTask
     @Override
     protected void onInterrupt() {
         // The biome-source lookup completes inside one bounded call.
+    }
+
+    @Override
+    public TaskSnapshot snapshot() {
+        return TaskSnapshot.progress(searched ? "complete" : "searching",
+                "Locate biome " + record.biomeType,
+                searched ? 1 : 0, 1,
+                foundPos == null ? null : foundPos.getX(),
+                foundPos == null ? null : foundPos.getY(),
+                foundPos == null ? null : foundPos.getZ(),
+                searched && foundPos == null ? failReason : null,
+                foundPos == null ? null : "biome_location=" + foundPos,
+                searched ? 1L : 0L);
     }
 
     @Override
