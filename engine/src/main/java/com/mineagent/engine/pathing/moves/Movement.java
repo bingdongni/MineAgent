@@ -74,6 +74,8 @@ public abstract class Movement {
      */
     public void onFailure(AgentPlayer player) {
         if (activeBreakTarget != null) {
+            // A cancelled edge must release ServerPlayerGameMode's progressive
+            // break target or the next action can continue damaging stale terrain.
             BlockDigger.abortBreaking(TaskContext.serverPlayer(player), activeBreakTarget);
             activeBreakTarget = null;
             activeBreakTimeoutTicks = 200;
@@ -81,9 +83,9 @@ public abstract class Movement {
     }
 
     /**
-     * Clear the listed occupancy cells before applying movement input.
-     * Planning previously charged a break cost without any execution action,
-     * producing paths that stood still until timeout at the first obstacle.
+     * Clear every occupancy cell before movement input is applied.
+     * Planning a finite break cost without executing the vanilla break state
+     * machine made paths stop forever at their first real obstruction.
      */
     protected boolean ensureClearance(AgentPlayer player, BlockPos... cells) {
         var sp = TaskContext.serverPlayer(player);
@@ -92,19 +94,13 @@ public abstract class Movement {
                 return false;
             }
             activeBreakTarget = null;
-            // Finishing one obstruction is real progress even if a second
-            // head/feet cell still needs mining. Let PathExecutor renew this
-            // movement's timeout instead of timing the whole sequence as one.
             markProgress();
         }
+
         for (BlockPos cell : cells) {
             var state = sp.level().getBlockState(cell);
             if (BlockHelper.isPassable(state)) continue;
             if (BlockHelper.canOpenByHand(state)) {
-                // Open normal passages through the same vanilla interaction
-                // entry point a client uses. If terrain changes or the click
-                // is obstructed, wait for PathExecutor's bounded failure and
-                // replan; never turn an open-door edge into silent vandalism.
                 sp.setShiftKeyDown(false);
                 com.mineagent.engine.act.Interaction.interactBlock(sp, cell,
                         net.minecraft.world.InteractionHand.MAIN_HAND);
@@ -114,6 +110,7 @@ public abstract class Movement {
                 }
                 return false;
             }
+
             activeBreakTimeoutTicks = BlockDigger.expectedBreakTicks(sp, cell);
             if (BlockDigger.startBreaking(sp, cell)) activeBreakTarget = cell;
             return false;
@@ -121,11 +118,10 @@ public abstract class Movement {
         return true;
     }
 
-    /** Ensure a real support block exists below a planned destination. */
+    /** Ensure the destination has real support before walking into it. */
     protected boolean ensureSupport(AgentPlayer player, int x, int y, int z) {
         var sp = TaskContext.serverPlayer(player);
-        if (BlockHelper.isClimbable(sp.level().getBlockState(
-                new BlockPos(x, y, z)))) {
+        if (BlockHelper.isClimbable(sp.level().getBlockState(new BlockPos(x, y, z)))) {
             return true;
         }
         BlockPos support = new BlockPos(x, y - 1, z);
@@ -135,13 +131,12 @@ public abstract class Movement {
         return placed;
     }
 
-    /** Monotonic execution progress marker used only for timeout renewal. */
+    /** Monotonic marker used by PathExecutor to renew timeouts on real progress. */
     public final int progressVersion() { return progressVersion; }
 
-    /** Local timeout, extended when this movement is clearing a hard block. */
+    /** Hard blocks receive a bounded timeout derived from vanilla break speed. */
     public final int executionTimeoutTicks() {
-        return activeBreakTarget == null ? 200
-                : Math.max(200, activeBreakTimeoutTicks);
+        return activeBreakTarget == null ? 200 : Math.max(200, activeBreakTimeoutTicks);
     }
 
     protected final void markProgress() { progressVersion++; }
@@ -219,22 +214,22 @@ public abstract class Movement {
 
         double forward = dx * sin + dz * cos;
         double strafe = dx * cos - dz * sin;
-
         double len = Math.sqrt(forward * forward + strafe * strafe);
-        if (len > 0.01) {
-            forward /= len;
-            strafe /= len;
-        }
+        if (len > 0.01) forward /= len;
 
         // Scale forward by how aligned we are with the target direction.
         // When still turning sharply (|yawDiff| > 90°), slow down —
         // a real player wouldn't sprint off in the wrong direction.
         // Add tiny speed jitter (±5%) for human-like imperfection.
         float alignment = Math.max(0, 1.0f - Math.abs(yawDiff) / 90.0f);
-        float fwdInput = (float) Math.max(-1, Math.min(1, forward * alignment));
+        float fwdInput = (float) Math.max(0, Math.min(1, forward * alignment));
         fwdInput = HumanLikeNoise.jitterSpeed(fwdInput);
         input.forward(fwdInput);
-        input.strafe((float) Math.max(-1, Math.min(1, strafe)));
+        // Path edges are centered one block at a time. Full strafe while the
+        // body is still turning moves sideways off narrow bridges and makes
+        // the claimed "face then press forward" behavior untrue. Rotation
+        // plus forward input is both human-readable and collision-stable.
+        input.strafe(0.0f);
 
         // Sprint when going roughly straight and far from target
         if (alignment > 0.8f && dist > 3.0) {

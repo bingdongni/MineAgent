@@ -77,8 +77,6 @@ public final class MineAgentNetwork {
                   ClientUiActionPayload payload);
     }
 
-    private static volatile UiActionSender uiActionSender = null;
-
     public interface TaskResultSender {
         void send(net.minecraft.server.level.ServerPlayer player, TaskResultPayload payload);
     }
@@ -87,6 +85,7 @@ public final class MineAgentNetwork {
         void send(net.minecraft.server.level.ServerPlayer player, PathDebugPayload payload);
     }
 
+    private static volatile UiActionSender uiActionSender = null;
     private static volatile TaskResultSender taskResultSender;
     private static volatile PathDebugSender pathDebugSender;
 
@@ -116,11 +115,8 @@ public final class MineAgentNetwork {
             if (action.isBlank() || action.length() > MAX_ACTION_LENGTH) {
                 throw new IllegalArgumentException("invalid UI action length");
             }
-            // LLM output is unbounded, while the Fabric codec accepts at most
-            // 4096 UTF-16 characters. Truncate before record construction so
-            // a long reply is delivered partially instead of being dropped.
-            sender.send(player, new ClientUiActionPayload(
-                    companionId, action, truncateUtf16(data, MAX_UI_DATA_LENGTH)));
+            sender.send(player, new ClientUiActionPayload(companionId, action,
+                    truncateUtf16(data, MAX_UI_DATA_LENGTH)));
         } catch (Exception e) {
             System.err.println("[MineAgent] Failed to push UI action '" + action
                     + "': " + e.getMessage());
@@ -130,18 +126,16 @@ public final class MineAgentNetwork {
     public static void sendTaskResultTo(net.minecraft.server.level.ServerPlayer player,
                                         TaskResultPayload payload) {
         TaskResultSender sender = taskResultSender;
-        if (sender == null || player == null || payload == null) return;
+        if (sender == null || player == null || payload == null
+                || payload.companionId() == null) return;
         try {
-            // The Fabric wire record rejects blank IDs and oversized strings.
-            // Normalize once here so third-party tool results cannot fail the
-            // entire send path when converted by a platform bridge.
             String id = payload.toolCallId() == null || payload.toolCallId().isBlank()
                     ? "unknown" : truncateUtf16(payload.toolCallId(), MAX_ID_LENGTH);
             String message = truncateUtf16(payload.message(), MAX_TASK_MESSAGE_LENGTH);
             sender.send(player, new TaskResultPayload(
                     payload.companionId(), id, payload.success(), message));
-        } catch (Exception e) {
-            System.err.println("[MineAgent] Failed to push task result: " + e.getMessage());
+        } catch (Exception error) {
+            System.err.println("[MineAgent] Failed to push task result: " + error.getMessage());
         }
     }
 
@@ -151,14 +145,14 @@ public final class MineAgentNetwork {
         if (sender == null || player == null || payload == null) return;
         try {
             sender.send(player, payload);
-        } catch (Exception e) {
-            System.err.println("[MineAgent] Failed to push path debug data: " + e.getMessage());
+        } catch (Exception error) {
+            System.err.println("[MineAgent] Failed to push path debug data: " + error.getMessage());
         }
     }
 
-    /** Match FriendlyByteBuf's UTF-16 length limit without cutting a surrogate pair. */
     private static String truncateUtf16(String value, int maxLength) {
-        if (value == null || value.length() <= maxLength) return value;
+        if (value == null) return "";
+        if (value.length() <= maxLength) return value;
         int end = maxLength;
         if (end > 0 && Character.isHighSurrogate(value.charAt(end - 1))) end--;
         return value.substring(0, end);
@@ -227,9 +221,7 @@ public final class MineAgentNetwork {
         UUID companionId = buf.readUUID();
         int nodeCount = buf.readVarInt();
         if (nodeCount < 0 || nodeCount > MAX_PATH_NODES) {
-            // Validate before allocation; a malformed payload must not request
-            // an attacker-controlled ArrayList capacity.
-            throw new IllegalArgumentException("Invalid path node count: " + nodeCount);
+            throw new IllegalArgumentException("invalid path node count");
         }
         List<double[]> pathNodes = new ArrayList<>(nodeCount);
         for (int i = 0; i < nodeCount; i++) {

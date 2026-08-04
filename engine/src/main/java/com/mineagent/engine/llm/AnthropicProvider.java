@@ -75,7 +75,8 @@ public class AnthropicProvider implements LLMProvider {
                                  List<Map<String, Object>> tools,
                                  double temperature, int maxTokens,
                                  String reasoningEffort) {
-        ProviderSupport.validateRequest("Anthropic", apiKey, model, messages, maxTokens);
+        ProviderSupport.validateRequest(
+                "Anthropic", apiKey, model, messages, temperature, maxTokens);
         String resolvedBaseUrl = ProviderSupport.validatedBaseUrl(
                 baseUrl, defaultBaseUrl(), "Anthropic");
         try {
@@ -111,32 +112,31 @@ public class AnthropicProvider implements LLMProvider {
                     continue;
                 }
 
-                JsonObject msgObj = new JsonObject();
+                String role;
+                JsonArray contentBlocks = new JsonArray();
 
-                // Tool results — Anthropic format: user message with tool_result block.
-                // MUST come after the assistant message that contained the matching tool_use.
+                // Tool results are user content blocks. Multiple results from
+                // one assistant turn must be in ONE user message; appending via
+                // appendMessage() below coalesces all adjacent blocks.
                 if ("tool".equals(msg.role()) && msg.toolCallId() != null) {
-                    msgObj.addProperty("role", "user");
-                    JsonArray contentArr = new JsonArray();
+                    role = "user";
                     JsonObject resultBlock = new JsonObject();
                     resultBlock.addProperty("type", "tool_result");
                     resultBlock.addProperty("tool_use_id", msg.toolCallId());
                     resultBlock.addProperty("content", msg.content() != null ? msg.content() : "");
-                    contentArr.add(resultBlock);
-                    msgObj.add("content", contentArr);
+                    contentBlocks.add(resultBlock);
                 }
                 // Assistant messages with tool calls — content is an array of
                 // text blocks + tool_use blocks. Anthropic requires content
                 // field to be present on every message.
                 else if ("assistant".equals(msg.role())
                         && msg.toolCalls() != null && !msg.toolCalls().isEmpty()) {
-                    msgObj.addProperty("role", "assistant");
-                    JsonArray contentArr = new JsonArray();
+                    role = "assistant";
                     if (msg.content() != null && !msg.content().isEmpty()) {
                         JsonObject textBlock = new JsonObject();
                         textBlock.addProperty("type", "text");
                         textBlock.addProperty("text", msg.content());
-                        contentArr.add(textBlock);
+                        contentBlocks.add(textBlock);
                     }
                     for (var tc : msg.toolCalls()) {
                         JsonObject toolBlock = new JsonObject();
@@ -145,18 +145,24 @@ public class AnthropicProvider implements LLMProvider {
                         toolBlock.addProperty("name", tc.name());
                         toolBlock.add("input",
                                 ProviderSupport.toolArgumentsObject(tc.arguments()));
-                        contentArr.add(toolBlock);
+                        contentBlocks.add(toolBlock);
                     }
-                    msgObj.add("content", contentArr);
                 }
                 // Regular text messages (user or assistant without tool_calls).
                 // Anthropic requires content field — use "" when null to avoid
                 // "messages.X: content is required" errors.
                 else {
-                    msgObj.addProperty("role", translateRole(msg.role()));
-                    msgObj.addProperty("content", msg.content() != null ? msg.content() : "");
+                    role = translateRole(msg.role());
+                    if (msg.content() != null && !msg.content().isEmpty()) {
+                        JsonObject textBlock = new JsonObject();
+                        textBlock.addProperty("type", "text");
+                        textBlock.addProperty("text", msg.content());
+                        contentBlocks.add(textBlock);
+                    }
                 }
-                msgsArr.add(msgObj);
+                if (!contentBlocks.isEmpty()) {
+                    appendMessage(msgsArr, role, contentBlocks);
+                }
             }
 
             if (systemPrompt.length() > 0) {
@@ -253,7 +259,7 @@ public class AnthropicProvider implements LLMProvider {
                     JsonObject outputConfig = new JsonObject();
                     outputConfig.addProperty("effort", mapped);
                     body.add("output_config", outputConfig);
-                } else {
+                } else if (maxTokens > 1024) {
                     // Older Claude 3.x / 3.5 / 3.7 / Sonnet 4 / Haiku 4.5 — budget_tokens only
                     // Enable thinking with budget_tokens.
                     // IMPORTANT: Anthropic requires budget_tokens < max_tokens.
@@ -270,6 +276,13 @@ public class AnthropicProvider implements LLMProvider {
                     thinking.addProperty("type", "enabled");
                     thinking.addProperty("budget_tokens", budget);
                     body.add("thinking", thinking);
+                } else {
+                    // Extended thinking has a documented minimum budget of
+                    // 1024 and also requires budget_tokens < max_tokens. With
+                    // max_tokens <= 1024 no valid budget exists, so omitting
+                    // thinking is the only request that Anthropic will accept.
+                    System.err.println("[MineAgent] Anthropic thinking disabled because "
+                            + "maxTokens=" + maxTokens + " is too small");
                 }
             }
 
@@ -289,7 +302,8 @@ public class AnthropicProvider implements LLMProvider {
 
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw LLMProviderException.http("Anthropic",
-                        response.statusCode(), response.body());
+                        response.statusCode(), response.body(),
+                        response.headers().firstValue("Retry-After").orElse(null));
             }
 
             try {
@@ -314,6 +328,24 @@ public class AnthropicProvider implements LLMProvider {
             case "tool" -> "user"; // tool results go in user messages
             default -> role;
         };
+    }
+
+    private static void appendMessage(JsonArray messages, String role,
+                                      JsonArray contentBlocks) {
+        if (!messages.isEmpty()) {
+            JsonObject previous = messages.get(messages.size() - 1).getAsJsonObject();
+            if (role.equals(previous.get("role").getAsString())) {
+                JsonArray previousBlocks = previous.getAsJsonArray("content");
+                for (JsonElement block : contentBlocks) {
+                    previousBlocks.add(block);
+                }
+                return;
+            }
+        }
+        JsonObject message = new JsonObject();
+        message.addProperty("role", role);
+        message.add("content", contentBlocks);
+        messages.add(message);
     }
 
     private LLMResponse parseAnthropicResponse(String json) {

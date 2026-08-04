@@ -9,77 +9,49 @@ import com.mineagent.engine.entity.CompanionEntity;
 import java.util.Map;
 import java.util.function.Consumer;
 
-/**
- * Get world information — time of day, weather, dimension, seed,
- * and other global state.
- *
- * <p>This is a <b>sync</b> tool — replies immediately.
- */
+/** Returns dimension-local world conditions as structured JSON. */
 public class GetWorldInfoTool implements Tool {
-
-    @Override
-    public String name() { return "get_world_info"; }
-
-    @Override
-    public String description() {
-        return """
-            Get current world information: time of day, weather, dimension,
-            game difficulty, and game rules relevant to gameplay.
-            """;
+    @Override public String name() { return "get_world_info"; }
+    @Override public String description() {
+        return "Get current dimension, time, weather, difficulty, relevant game rules, and spawn position.";
     }
-
-    @Override
-    public Map<String, Object> parameterSchema() {
-        return Schema.none();
-    }
+    @Override public Map<String, Object> parameterSchema() { return Schema.none(); }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
-                              Consumer<String> reply) {
-        var sp = ((CompanionEntity) player).serverPlayer();
-        var level = sp.level();
-        var server = level.getServer();
-        var worldData = server.getWorldData();
-
-        // Time of day (0-24000)
-        long dayTime = level.getDayTime() % 24000;
-        String timeOfDay;
-        if (dayTime < 6000) timeOfDay = "day";
-        else if (dayTime < 12000) timeOfDay = "afternoon";
-        else if (dayTime < 13800) timeOfDay = "dusk";
-        else if (dayTime < 22200) timeOfDay = "night";
-        else timeOfDay = "dawn";
-
-        // Weather
-        boolean isRaining = level.isRaining();
-        boolean isThundering = level.isThundering();
+                             Consumer<String> reply) {
+        var level = ((CompanionEntity) player).serverPlayer().serverLevel();
+        var worldData = level.getServer().getWorldData();
+        long dayTime = Math.floorMod(level.getDayTime(), 24_000L);
+        String phase = dayTime < 6_000 ? "day"
+                : dayTime < 12_000 ? "afternoon"
+                : dayTime < 13_800 ? "dusk"
+                : dayTime < 22_200 ? "night" : "dawn";
 
         JsonObject result = new JsonObject();
         result.addProperty("dimension", level.dimension().location().toString());
         result.addProperty("day_time", dayTime);
-        result.addProperty("time_of_day", timeOfDay);
+        result.addProperty("time_of_day", phase);
         result.addProperty("total_time", level.getGameTime());
-        result.addProperty("is_raining", isRaining);
-        result.addProperty("is_thundering", isThundering);
-        if (isRaining) {
-            // Numeric JSON properties are locale-independent; String.format
-            // could emit a comma decimal separator on some host locales.
-            result.addProperty("rain_level", level.getRainLevel(1.0f));
-        }
+        result.addProperty("is_raining", level.isRaining());
+        result.addProperty("is_thundering", level.isThundering());
+        if (level.isRaining()) result.addProperty("rain_level", level.getRainLevel(1.0f));
         result.addProperty("difficulty", level.getDifficulty().getKey());
         result.addProperty("is_hardcore", worldData.isHardcore());
+
         JsonObject rules = new JsonObject();
-        rules.addProperty("do_daylight_cycle", level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DAYLIGHT));
-        rules.addProperty("mob_griefing", level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_MOBGRIEFING));
+        rules.addProperty("do_daylight_cycle", level.getGameRules().getBoolean(
+                net.minecraft.world.level.GameRules.RULE_DAYLIGHT));
+        rules.addProperty("mob_griefing", level.getGameRules().getBoolean(
+                net.minecraft.world.level.GameRules.RULE_MOBGRIEFING));
         result.add("game_rules", rules);
 
-        // Spawn position
-        var spawnPos = level.getSharedSpawnPos();
-        JsonObject spawn = new JsonObject();
-        spawn.addProperty("x", spawnPos.getX());
-        spawn.addProperty("y", spawnPos.getY());
-        spawn.addProperty("z", spawnPos.getZ());
-        result.add("spawn_position", spawn);
+        var spawn = level.getSharedSpawnPos();
+        JsonObject spawnPosition = new JsonObject();
+        spawnPosition.addProperty("x", spawn.getX());
+        spawnPosition.addProperty("y", spawn.getY());
+        spawnPosition.addProperty("z", spawn.getZ());
+        result.add("spawn_position", spawnPosition);
         reply.accept(result.toString());
     }
 }

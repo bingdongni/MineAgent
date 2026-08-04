@@ -38,25 +38,36 @@ public class RangedAttackTool implements Tool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .integer("entity_id", "The entity ID of the target to shoot at", 0, Integer.MAX_VALUE)
-                .optionalInteger("charge_ticks", "Bow charge time in ticks (1-60, default 20). Longer = more damage.", 1, 60)
+                .optionalInteger("charge_ticks", "Bow/trident charge time in ticks (3-60, default 20). Longer bow charge increases damage.", 3, 60)
                 .build();
     }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
+        if (!ToolArgs.has(args, "entity_id")) {
+            reply.accept("{\"error\":\"Missing required parameter 'entity_id'.\"}");
+            return;
+        }
         Integer entityId = ToolArgs.getIntOrNull(args, "entity_id");
-        if (entityId == null || entityId <= 0) {
-            reply.accept("{\"error\":\"entity_id must be a positive integer.\"}");
+        if (entityId == null || entityId < 0) {
+            reply.accept(ToolArgs.errorJson("'entity_id' must be a non-negative integer."));
             return;
         }
-        Integer parsedCharge = ToolArgs.has(args, "charge_ticks")
+        Integer chargeTicks = ToolArgs.has(args, "charge_ticks")
                 ? ToolArgs.getIntOrNull(args, "charge_ticks") : 20;
-        if (parsedCharge == null || parsedCharge < 1 || parsedCharge > 60) {
-            reply.accept("{\"error\":\"charge_ticks must be an integer between 1 and 60.\"}");
+        // A bow released before three ticks has zero vanilla shooting power,
+        // so accepting 1-2 advertised a shot that could never be produced.
+        if (chargeTicks == null || chargeTicks < 3 || chargeTicks > 60) {
+            reply.accept(ToolArgs.errorJson("'charge_ticks' must be an integer from 3 to 60."));
             return;
         }
-        int chargeTicks = parsedCharge;
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var target = sp.serverLevel().getEntity(entityId);
+        if (target == null || !target.isAlive() || target == sp || !target.isAttackable()) {
+            reply.accept(ToolArgs.errorJson("Entity " + entityId + " was not found or cannot be attacked."));
+            return;
+        }
 
         var record = new RangedAttackTaskRecord(toolCallId, entityId, chargeTicks);
         TaskDispatch.dispatchAsync(player, record, reply);

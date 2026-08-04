@@ -112,13 +112,9 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         dead = true;
         paused = true;
 
-        // Clear pre-death inbox events before queuing the death narrative.
-        // Otherwise resume can act on an old navigation request generated for
-        // a body/world state which no longer exists.
-        loop.cancel();
-
-        // A true pause invalidates the current response and also prevents
-        // body-log wakeups from starting new turns while the body is dead.
+        // Suspend, rather than merely cancelling one response. Body events are
+        // retained but cannot generate tools that would unexpectedly execute
+        // after the body is revived.
         loop.pause();
 
         // Send a body log to inform the LLM that it died
@@ -161,6 +157,10 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         //     modified max HP (e.g. absorption/attribute modifiers).
         sp.setHealth(sp.getMaxHealth());
         sp.getFoodData().setFoodLevel(20);
+        sp.setRemainingFireTicks(0);
+        sp.setAirSupply(sp.getMaxAirSupply());
+        sp.fallDistance = 0.0f;
+        sp.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
 
         // Clear the input driver (reset movement state)
         if (companion instanceof CompanionEntity ce) {
@@ -179,9 +179,8 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         if (mode == MineAgentEngine.CompanionMode.FOLLOW) {
             var owner = ((CompanionEntity) companion).serverPlayerOwner();
             if (owner != null && owner.getHealth() > 0f) {
-                // Reviving on the owner's exact coordinates overlaps hitboxes
-                // and can push the new body into solid terrain.
-                SafeTeleport.beside(sp, owner);
+                SafeTeleport.near(sp, owner.serverLevel(), owner.blockPosition(),
+                        owner.getYRot(), owner.getXRot());
             }
         }
 
@@ -211,14 +210,6 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         // Clean up registered chains
         registeredChains.clear();
 
-        // These registries hold strong references/per-companion UUID state and
-        // otherwise grow on every owner reconnect or companion recreation.
-        com.mineagent.engine.task.TaskContext.removeCaches(companion);
-        com.mineagent.engine.survival.SurvivalBuiltin.remove(companion);
-        for (var reflex : com.mineagent.api.task.reflex.ReflexRegistry.all()) {
-            reflex.forget(companion);
-        }
-
         dead = true;
         paused = true;
 
@@ -243,18 +234,22 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         return paused;
     }
 
-    /** User-requested pause: stop AI actions while keeping body physics alive. */
-    public void pause() {
+    /** Pause body scheduling and LLM work without marking the companion dead. */
+    public void pauseByOwner() {
         if (dead) return;
         paused = true;
-        if (companion instanceof CompanionEntity ce) ce.inputDriver().clear();
         loop.pause();
+        if (companion instanceof CompanionEntity entity) {
+            entity.inputDriver().clear();
+        }
     }
 
-    public void resume() {
-        if (dead) return;
+    /** Resume an owner-paused companion. Dead companions require respawn instead. */
+    public boolean resumeByOwner() {
+        if (dead) return false;
         paused = false;
         loop.resume("owner_resume");
+        return true;
     }
 
     /**

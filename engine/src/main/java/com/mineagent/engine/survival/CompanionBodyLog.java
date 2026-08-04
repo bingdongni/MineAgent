@@ -38,12 +38,8 @@ public final class CompanionBodyLog implements BodyLog {
      */
     public void flush() {
         Consumer<String> forwarder = this.inboxForwarder;
-        // Keep queued observations until a consumer exists. Draining first
-        // silently lost spawn-time survival events when AgentLoop wiring had
-        // not completed yet.
-        if (forwarder == null) return;
         List<String> batch = drainQueue();
-        if (!batch.isEmpty()) {
+        if (forwarder != null && !batch.isEmpty()) {
             for (String msg : batch) {
                 try {
                     forwarder.accept(msg);
@@ -59,11 +55,8 @@ public final class CompanionBodyLog implements BodyLog {
      * Called once per server tick by MineAgentEngine.onServerTick().
      */
     public void flush(AgentLoop loop) {
-        // A null loop is not a successful delivery target. Preserve the
-        // queue so the next server tick can forward it after initialization.
-        if (loop == null) return;
         List<String> batch = drainQueue();
-        if (!batch.isEmpty()) {
+        if (!batch.isEmpty() && loop != null) {
             for (String msg : batch) {
                 try {
                     loop.onBodyLog(msg);

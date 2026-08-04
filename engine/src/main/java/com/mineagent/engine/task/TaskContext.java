@@ -52,46 +52,38 @@ public final class TaskContext {
         return ((CompanionEntity) player).inputDriver();
     }
 
-    /**
-     * Select an inventory item, swapping it into the current hotbar slot when
-     * necessary. Every real mutation is synchronized through both inventory
-     * menus so fake-player viewers do not retain a stale held-item snapshot.
-     */
+    /** Select an item using a real swap when it is outside the hotbar. */
     public static boolean selectInventoryItem(AgentPlayer player, String itemId) {
         if (itemId == null || itemId.isBlank()) return false;
         var sp = serverPlayer(player);
         var inventory = sp.getInventory();
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < Math.min(9, inventory.getContainerSize()); i++) {
             var stack = inventory.getItem(i);
             if (!stack.isEmpty() && McCompat.isItem(stack, itemId)) {
                 player.holdInHand(i);
                 return true;
             }
         }
-        // Main inventory ends at slot 35. Scanning through containerSize also
-        // includes armor slots 36-39; swapping a requested item out of armor
-        // can put an arbitrary held item into an invalid equipment slot.
         for (int i = 9; i < Math.min(36, inventory.getContainerSize()); i++) {
             var stack = inventory.getItem(i);
             if (!stack.isEmpty() && McCompat.isItem(stack, itemId)) {
                 int selected = inventory.selected;
-                var selectedStack = inventory.getItem(selected);
+                var displaced = inventory.getItem(selected);
                 inventory.setItem(selected, stack);
-                inventory.setItem(i, selectedStack);
+                inventory.setItem(i, displaced);
                 syncInventory(sp);
                 player.holdInHand(selected);
                 return true;
             }
         }
-        // Offhand accepts an arbitrary displaced main-hand item and is safe to
-        // swap, unlike armor slots.
+        // Offhand can safely receive the displaced hotbar stack; armor slots cannot.
         if (inventory.getContainerSize() > 40) {
             var stack = inventory.getItem(40);
             if (!stack.isEmpty() && McCompat.isItem(stack, itemId)) {
                 int selected = inventory.selected;
-                var selectedStack = inventory.getItem(selected);
+                var displaced = inventory.getItem(selected);
                 inventory.setItem(selected, stack);
-                inventory.setItem(40, selectedStack);
+                inventory.setItem(40, displaced);
                 syncInventory(sp);
                 player.holdInHand(selected);
                 return true;
@@ -100,19 +92,51 @@ public final class TaskContext {
         return false;
     }
 
-    /** Mark and broadcast a fake player's inventory after a server-side edit. */
+    /** Select an exact inventory item in the hand that will actually be used. */
+    public static boolean selectInventoryItemForHand(
+            AgentPlayer player, String itemId,
+            net.minecraft.world.InteractionHand hand) {
+        if (hand == net.minecraft.world.InteractionHand.MAIN_HAND) {
+            return selectInventoryItem(player, itemId);
+        }
+        if (itemId == null || itemId.isBlank()) return false;
+        var sp = serverPlayer(player);
+        var inventory = sp.getInventory();
+        if (inventory.getContainerSize() <= 40) return false;
+        var offhand = inventory.getItem(40);
+        if (!offhand.isEmpty() && McCompat.isItem(offhand, itemId)) return true;
+        for (int slot = 0; slot < Math.min(36, inventory.getContainerSize()); slot++) {
+            var stack = inventory.getItem(slot);
+            if (stack.isEmpty() || !McCompat.isItem(stack, itemId)) continue;
+            // Swap real references. This preserves the displaced offhand item
+            // and ensures use_offhand does not accidentally use the main hand.
+            inventory.setItem(40, stack);
+            inventory.setItem(slot, offhand);
+            syncInventory(sp);
+            return true;
+        }
+        return false;
+    }
+
+    /** Broadcast every server-side inventory edit to fake-player viewers. */
     public static void syncInventory(net.minecraft.server.level.ServerPlayer sp) {
+        if (sp == null) return;
         sp.getInventory().setChanged();
         sp.inventoryMenu.broadcastChanges();
-        if (sp.containerMenu != sp.inventoryMenu) {
-            sp.containerMenu.broadcastChanges();
-        }
+        if (sp.containerMenu != sp.inventoryMenu) sp.containerMenu.broadcastChanges();
     }
 
     /** Get or create the per-companion PathCaches. */
     public static PathCaches navCaches(AgentPlayer player) {
-        return NAV_CACHES.computeIfAbsent(player,
-                p -> new PathCaches(TaskContext.serverPlayer(p).serverLevel()));
+        var currentLevel = serverPlayer(player).serverLevel();
+        // A ServerPlayer keeps the same companion identity across dimension
+        // changes, while a PathCaches instance owns a concrete ServerLevel.
+        // Reusing the overworld view after a Nether/End teleport makes every
+        // subsequent path read blocks and chunk-loaded state from the wrong
+        // dimension. compute atomically replaces that stale view.
+        return NAV_CACHES.compute(player, (key, existing) ->
+                existing == null || existing.level() != currentLevel
+                        ? new PathCaches(currentLevel) : existing);
     }
 
     /** Remove caches for a companion (on disconnect). */

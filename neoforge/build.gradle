@@ -28,9 +28,14 @@ sourceSets {
         java {
             srcDir project(':api').file('src/main/java')
             srcDir project(':engine').file('src/main/java')
+            // The complete visual client is loader-neutral vanilla code.
+            // Both loader builds include this source set, but the standalone
+            // engine module and dedicated-server sources do not.
+            srcDir project(':engine').file('src/client/java')
             srcDir project(':tools').file('src/main/java')
         }
         resources {
+            srcDir project(':engine').file('src/client/resources')
             srcDir project(':tools').file('src/main/resources')
         }
     }
@@ -42,6 +47,16 @@ dependencies {
 
 neoForge {
     version = project.property('neoforge_version')
+
+    // ModDev does not infer the active development mod merely from
+    // neoforge.mods.toml. Without this declaration resources were visible in
+    // the Mods list, but the class directory was not scanned as MineAgent:
+    // @Mod, key mappings, commands, networking, and engine setup never ran.
+    mods {
+        mineagent {
+            sourceSet sourceSets.main
+        }
+    }
 
     runs {
         client {

@@ -96,45 +96,15 @@ public final class Placement {
             }
 
             Block block = state.getBlock();
-            InteractionHand placementHand = InteractionHand.MAIN_HAND;
+            int inventorySlot = findBlockInventorySlot(player, block);
+            if (inventorySlot < 0) return false;
+            InteractionHand placementHand = prepareBlockInHand(player, inventorySlot);
 
-            // Check inventory and consume in survival mode
-            if (!player.isCreative()) {
-                int inventorySlot = findBlockInventorySlot(player, block);
-                if (inventorySlot < 0) return false;
-                placementHand = prepareBlockInHand(player, inventorySlot);
-            }
-
-            // Direct setBlock is reserved for path scaffolding where a normal
-            // useItemOn ray cannot address the cell below/in front of a moving
-            // player reliably. Reproduce the observable parts a client would
-            // otherwise supply: aim at the target while visibly holding the
-            // consumed block, then swing and play the vanilla placement sound.
-            player.lookAt(EntityAnchorArgument.Anchor.EYES, pos.getCenter());
-            boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
-
-            if (placed && !player.isCreative()) {
-                // Consume one block from inventory
-                consumeBlockFromInventory(player, block);
-                // setBlock bypasses the normal menu interaction path, so no
-                // vanilla packet handler marks the fake player's inventory.
-                player.getInventory().setChanged();
-                player.inventoryMenu.broadcastChanges();
-                if (player.containerMenu != player.inventoryMenu) {
-                    player.containerMenu.broadcastChanges();
-                }
-            }
-
-            if (placed) {
-                player.swing(placementHand);
-                var sound = state.getSoundType();
-                level.playSound(null, pos, sound.getPlaceSound(),
-                        SoundSource.BLOCKS,
-                        (sound.getVolume() + 1.0f) / 2.0f,
-                        sound.getPitch() * 0.8f);
-            }
-
-            return placed;
+            // Path scaffolding must obey the same BlockItem/useItemOn contract
+            // as ordinary building. Direct setBlock hid invalid faces, skipped
+            // mod hooks and produced no authentic client placement sequence.
+            Attempt attempt = placeHeldBlock(player, pos, placementHand);
+            return attempt.placed() && level.getBlockState(pos).is(block);
         } catch (Exception e) {
             System.err.println("[MineAgent] Placement.placeBlock error: " + e.getMessage());
             return false;

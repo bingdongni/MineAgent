@@ -40,13 +40,9 @@ public class BuildTool implements Tool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("mode", "Build mode: 'place' or 'clear'")
-                .optionalString("block_type", "Block ID to place (e.g. 'minecraft:stone'). Ignored for 'clear' mode.")
-                // The old schema declared each position as a string while the
-                // executor requires an integer triple. Strict providers could
-                // therefore reject the only valid argument shape.
-                .array("positions", "Array of [x,y,z] integer triples",
-                        Map.of("type", "array",
-                                "items", Map.of("type", "integer"),
+                .optionalString("block_type", "Block ID to place; required only in place mode")
+                .array("positions", "Block coordinates",
+                        Map.of("type", "array", "items", Map.of("type", "integer"),
                                 "minItems", 3, "maxItems", 3), 1)
                 .build();
     }
@@ -55,72 +51,83 @@ public class BuildTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
         String mode = ToolArgs.getString(args, "mode");
-        if (mode == null) {
-            reply.accept("{\"error\":\"Missing required parameter 'mode'.\"}");
+        if (mode == null || mode.isBlank()) {
+            reply.accept(ToolArgs.errorJson("Missing required parameter 'mode'"));
             return;
         }
+        mode = mode.trim().toLowerCase(java.util.Locale.ROOT);
         if (!mode.equals("place") && !mode.equals("clear")) {
-            reply.accept(ToolArgs.errorJson("Invalid mode: " + mode
-                    + ". Use 'place' or 'clear'."));
+            reply.accept(ToolArgs.errorJson("Invalid mode: " + mode + "; use place or clear"));
             return;
         }
 
         String blockType = ToolArgs.getString(args, "block_type");
         if (mode.equals("place")) {
             var blockId = blockType == null ? null
-                    : net.minecraft.resources.ResourceLocation.tryParse(blockType);
+                    : net.minecraft.resources.ResourceLocation.tryParse(blockType.trim());
             if (blockId == null
-                    || !net.minecraft.core.registries.BuiltInRegistries.BLOCK.containsKey(blockId)
-                    || net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(blockId)
-                        .asItem() == net.minecraft.world.item.Items.AIR) {
-                // BuildTask searches inventory by this ID. Reject non-block
-                // items and unknown IDs before consuming a scheduler slot.
-                reply.accept(ToolArgs.errorJson("Unknown placeable block: " + blockType));
+                    || !net.minecraft.core.registries.BuiltInRegistries.BLOCK.containsKey(blockId)) {
+                reply.accept(ToolArgs.errorJson("Unknown block type: " + blockType));
                 return;
             }
-        } else if (blockType == null) {
-            // Clear mode never consumes or compares a block item.
+            var block = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(blockId);
+            if (block.asItem() == net.minecraft.world.item.Items.AIR) {
+                reply.accept(ToolArgs.errorJson("Block type has no placeable inventory item: " + blockId));
+                return;
+            }
+            blockType = blockId.toString();
+        } else {
             blockType = "minecraft:air";
         }
         JsonArray positionsArray = ToolArgs.getArray(args, "positions");
         if (positionsArray == null || positionsArray.isEmpty()) {
-            reply.accept("{\"error\":\"positions must be a non-empty array.\"}");
+            reply.accept(ToolArgs.errorJson("positions must be a non-empty array"));
             return;
         }
         if (positionsArray.size() > 512) {
-            reply.accept("{\"error\":\"Too many positions (max 512).\"}");
+            reply.accept(ToolArgs.errorJson("Too many positions (max 512)"));
             return;
         }
 
         int[][] positions = new int[positionsArray.size()][3];
         try {
-            var level = com.mineagent.engine.task.TaskContext.serverPlayer(player).serverLevel();
             for (int i = 0; i < positionsArray.size(); i++) {
-                var coord = positionsArray.get(i).getAsJsonArray();
-                if (coord.size() != 3) throw new IllegalArgumentException("coordinate length");
-                for (int axis = 0; axis < 3; axis++) {
-                    if (!coord.get(axis).isJsonPrimitive()) {
-                        throw new IllegalArgumentException("coordinate type");
-                    }
-                    // getAsInt truncates decimals; construction coordinates
-                    // must be represented by exact 32-bit integers.
-                    positions[i][axis] = new java.math.BigDecimal(
-                            coord.get(axis).getAsString()).intValueExact();
+                var element = positionsArray.get(i);
+                if (!element.isJsonArray() || element.getAsJsonArray().size() != 3) {
+                    throw new IllegalArgumentException("coordinate must contain exactly three integers");
                 }
-                if (Math.abs((long) positions[i][0]) > 30_000_000L
-                        || Math.abs((long) positions[i][2]) > 30_000_000L
-                        || positions[i][1] < level.getMinBuildHeight()
-                        || positions[i][1] >= level.getMaxBuildHeight()) {
-                    throw new IllegalArgumentException("coordinate outside world bounds");
+                var coord = element.getAsJsonArray();
+                positions[i][0] = exactInt(coord.get(0));
+                positions[i][1] = exactInt(coord.get(1));
+                positions[i][2] = exactInt(coord.get(2));
+                var level = ((com.mineagent.engine.entity.CompanionEntity) player)
+                        .serverPlayer().serverLevel();
+                var pos = new net.minecraft.core.BlockPos(
+                        positions[i][0], positions[i][1], positions[i][2]);
+                if (positions[i][1] < level.getMinBuildHeight()
+                        || positions[i][1] >= level.getMaxBuildHeight()
+                        || !level.getWorldBorder().isWithinBounds(pos)) {
+                    throw new IllegalArgumentException("coordinate is outside the buildable world");
                 }
             }
         } catch (Exception e) {
-            reply.accept("{\"error\":\"Each position must be [x, y, z].\"}");
+            reply.accept(ToolArgs.errorJson("Each position must be exactly [x, y, z] with integer coordinates inside the world border"));
             return;
         }
 
         var record = new BuildTaskRecord(toolCallId, mode, blockType, positions);
         TaskDispatch.dispatchAsync(player, record, reply);
+    }
+
+    private static int exactInt(com.google.gson.JsonElement value) {
+        if (value == null || !value.isJsonPrimitive()) {
+            throw new IllegalArgumentException("not a number");
+        }
+        try {
+            return new java.math.BigDecimal(value.getAsString().trim()).intValueExact();
+        } catch (NumberFormatException | ArithmeticException error) {
+            throw new IllegalArgumentException("not an exact integer", error);
+        }
     }
 
     /** Task record for building. */

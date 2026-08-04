@@ -1,15 +1,14 @@
 package com.mineagent.engine.task;
 
-import com.mineagent.engine.util.McCompat;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
 import com.mineagent.engine.pathing.cache.PathCaches;
 import com.mineagent.engine.pathing.execute.PlayerNav;
+import com.mineagent.engine.util.McCompat;
 import com.mineagent.tools.inventory.CollectItemsTool;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -20,17 +19,13 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-/**
- * Executes an item collection task — finds dropped item entities within
- * radius, navigates to each one, and relies on vanilla auto-pickup
- * mechanics to collect items when the companion walks over them.
- */
+/** Navigates to dropped items and verifies pickup through inventory deltas. */
 public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItemsTaskRecord> {
 
     private enum Phase { SCAN, NAVIGATE, PICKUP, DONE }
 
-    /** Distance within which vanilla auto-pickup triggers. */
     private static final double PICKUP_RANGE = 1.5;
+    private static final int MAX_WAIT_TICKS = 40;
 
     private PlayerNav nav;
     private Phase phase;
@@ -42,9 +37,6 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
     private int waitTicks;
     private String failReason;
 
-    /** Max ticks to wait for pickup after arriving at item position. */
-    private static final int MAX_WAIT_TICKS = 40;
-
     public CollectItemsTask(AgentPlayer player, CollectItemsTool.CollectItemsTaskRecord record) {
         super(player, record);
     }
@@ -54,6 +46,7 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         phase = Phase.SCAN;
         collectedCount = 0;
         currentItem = null;
+        targetItemType = null;
         waitTicks = 0;
         failReason = null;
         unreachableItems.clear();
@@ -68,35 +61,28 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
 
             @Override
             public void onNavigationFailed(String reason) {
-                if (currentItem != null) {
-                    unreachableItems.add(currentItem.getUUID());
-                }
+                if (currentItem != null) unreachableItems.add(currentItem.getUUID());
                 failReason = "Navigation to item failed: " + reason;
-                // Exclude this entity before rescanning. Retrying the same
-                // unreachable item forever prevents a terminal result.
                 currentItem = null;
-                // Don't abort — try scanning for another item
                 phase = Phase.SCAN;
             }
         });
-
         scanForItems();
     }
 
     @Override
     protected TaskState onTick() {
-        // Timeout check
         long gameTime = TaskContext.serverPlayer(player).level().getGameTime();
-        if (gameTime >= record.deadline()) {
+        if (record.deadline() > 0L && gameTime >= record.deadline()) {
             cancelNav();
             return TaskState.FAILED;
         }
 
         switch (phase) {
-            case SCAN -> tickScan();
+            case SCAN -> scanForItems();
             case NAVIGATE -> tickNavigate();
             case PICKUP -> tickPickup();
-            case DONE -> {}
+            case DONE -> { }
         }
 
         if (phase == Phase.DONE && collectedCount > 0) return TaskState.SUCCESS;
@@ -105,28 +91,16 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         return TaskState.RUNNING;
     }
 
-    private void tickScan() {
-        scanForItems();
-    }
-
     private void tickNavigate() {
         updateCollectedFromInventory();
-
-        // Check if item still exists
         if (currentItem == null || !currentItem.isAlive()) {
-            // Disappearance alone is not proof of pickup: the item may have
-            // despawned or another player may have taken it.
             currentItem = null;
-            // Item despawned or picked up — scan for next
             phase = Phase.SCAN;
             return;
         }
 
         nav.tick();
-
-        // Check if we're close enough for pickup
-        double dist = distanceToItem();
-        if (dist <= PICKUP_RANGE) {
+        if (distanceToItem() <= PICKUP_RANGE) {
             nav.cancel();
             touchCurrentItemWithinLimit();
             updateCollectedFromInventory();
@@ -137,29 +111,23 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
     private void tickPickup() {
         if (currentItem != null && currentItem.isAlive()
                 && distanceToItem() <= PICKUP_RANGE) {
-            // Use vanilla's real pickup entry point, then count only the units
-            // that actually appeared in the fake player's inventory.
+            // Fake players do not receive a client movement packet that would
+            // otherwise drive ItemEntity#playerTouch, so call vanilla's pickup
+            // entry point once physical range has actually been reached.
             touchCurrentItemWithinLimit();
         }
         updateCollectedFromInventory();
 
-        // Check if item was picked up (by vanilla mechanics)
         if (currentItem == null || !currentItem.isAlive()) {
             waitTicks = 0;
-            if (collectedCount >= record.maxCount) {
-                cancelNav();
-                return;
-            }
             currentItem = null;
-            phase = Phase.SCAN;
+            if (collectedCount >= record.maxCount) cancelNav();
+            else phase = Phase.SCAN;
             return;
         }
 
-        waitTicks++;
-        if (waitTicks > MAX_WAIT_TICKS) {
+        if (++waitTicks > MAX_WAIT_TICKS) {
             unreachableItems.add(currentItem.getUUID());
-            // Item wasn't picked up — maybe we're not close enough
-            // Try navigating again
             waitTicks = 0;
             currentItem = null;
             failReason = "Item could not enter inventory";
@@ -171,46 +139,31 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         var sp = TaskContext.serverPlayer(player);
         ServerLevel level = sp.serverLevel();
         var pos = sp.blockPosition();
-
-        // Search for item entities in radius
         AABB searchBox = new AABB(
                 pos.getX() - record.radius, pos.getY() - record.radius, pos.getZ() - record.radius,
-                pos.getX() + record.radius + 1, pos.getY() + record.radius + 1, pos.getZ() + record.radius + 1
-        );
+                pos.getX() + record.radius + 1, pos.getY() + record.radius + 1,
+                pos.getZ() + record.radius + 1);
 
-        List<ItemEntity> items;
-        if (record.itemId != null) {
-            items = level.getEntitiesOfClass(ItemEntity.class, searchBox,
-                    item -> item.isAlive()
-                            && !unreachableItems.contains(item.getUUID())
-                            && McCompat.isItem(item.getItem(), record.itemId));
-        } else {
-            items = level.getEntitiesOfClass(ItemEntity.class, searchBox,
-                    item -> item.isAlive() && !unreachableItems.contains(item.getUUID()));
-        }
-
+        List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, searchBox,
+                item -> item.isAlive()
+                        && !unreachableItems.contains(item.getUUID())
+                        && (record.itemId == null
+                            || McCompat.isItem(item.getItem(), record.itemId)));
         if (items.isEmpty()) {
             if (collectedCount > 0) {
-                // No more items found but we collected some — partial success
                 cancelNav();
                 failReason = null;
-                phase = Phase.DONE;
-                return;
+            } else if (failReason == null) {
+                failReason = "No items found within radius " + record.radius;
             }
-            failReason = "No items found within radius " + record.radius;
             phase = Phase.DONE;
             return;
         }
 
-        // Find nearest item
         currentItem = items.stream()
-                .min((a, b) -> {
-                    double distA = sp.position().distanceTo(a.position());
-                    double distB = sp.position().distanceTo(b.position());
-                    return Double.compare(distA, distB);
-                })
+                .min(java.util.Comparator.comparingDouble(
+                        item -> sp.distanceToSqr(item)))
                 .orElse(null);
-
         if (currentItem == null) {
             failReason = "No reachable items found";
             phase = Phase.DONE;
@@ -220,7 +173,6 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         targetItemType = currentItem.getItem().getItem();
         targetInventoryBaseline = inventoryCount(targetItemType);
         failReason = null;
-
         navigateToItem();
     }
 
@@ -229,32 +181,25 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
             phase = Phase.SCAN;
             return;
         }
-        BlockPos targetPos = currentItem.blockPosition();
-        nav.navigateTo(targetPos.getX(), targetPos.getY(), targetPos.getZ());
+        BlockPos target = currentItem.blockPosition();
+        nav.navigateTo(target.getX(), target.getY(), target.getZ());
         phase = Phase.NAVIGATE;
     }
 
     private double distanceToItem() {
-        if (currentItem == null) return Double.MAX_VALUE;
-        return TaskContext.serverPlayer(player).position().distanceTo(currentItem.position());
+        return currentItem == null ? Double.MAX_VALUE
+                : TaskContext.serverPlayer(player).position().distanceTo(currentItem.position());
     }
 
     private void updateCollectedFromInventory() {
         if (targetItemType == null) return;
-        int currentCount = inventoryCount(targetItemType);
-        int gained = currentCount - targetInventoryBaseline;
-        if (gained > 0) {
-            collectedCount += gained;
-        }
-        targetInventoryBaseline = currentCount;
+        int current = inventoryCount(targetItemType);
+        int gained = current - targetInventoryBaseline;
+        if (gained > 0) collectedCount += gained;
+        targetInventoryBaseline = current;
     }
 
-    /**
-     * Pick up no more than the remaining requested amount while preserving the
-     * authoritative world-item total. Vanilla playerTouch consumes an entire
-     * entity stack when inventory capacity allows it, so merely capping the
-     * reported counter would violate the tool's maxCount contract.
-     */
+    /** Preserve world item totals while respecting the requested maximum. */
     private void touchCurrentItemWithinLimit() {
         if (currentItem == null || !currentItem.isAlive()) return;
         int remaining = record.maxCount - collectedCount;
@@ -266,16 +211,8 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
             ItemStack excess = entityStack.split(excessCount);
             currentItem.setItem(entityStack);
 
-            // Materialize the excess before invoking playerTouch, which may
-            // discard currentItem. If spawning fails, restore the original
-            // stack and skip pickup so items can neither vanish nor duplicate.
             ItemEntity excessEntity = new ItemEntity(currentItem.level(),
                     currentItem.getX(), currentItem.getY(), currentItem.getZ(), excess);
-            // The fake player's physics tick runs immediately after this task
-            // tick. A zero-delay excess entity at the same coordinates is
-            // therefore picked up as well, violating maxCount. Delay it long
-            // enough for this collection action to finish and relinquish the
-            // body; the item remains a normal world entity afterward.
             excessEntity.setPickUpDelay(MAX_WAIT_TICKS + 20);
             if (!currentItem.level().addFreshEntity(excessEntity)) {
                 entityStack.grow(excess.getCount());
@@ -285,16 +222,15 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
         }
 
         currentItem.playerTouch(TaskContext.serverPlayer(player));
+        TaskContext.syncInventory(TaskContext.serverPlayer(player));
     }
 
     private int inventoryCount(Item item) {
         int total = 0;
         var inventory = TaskContext.serverPlayer(player).getInventory();
-        for (int i = 0; i < inventory.getContainerSize(); i++) {
-            var stack = inventory.getItem(i);
-            if (!stack.isEmpty() && stack.is(item)) {
-                total += stack.getCount();
-            }
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (!stack.isEmpty() && stack.is(item)) total += stack.getCount();
         }
         return total;
     }
@@ -305,9 +241,7 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
     }
 
     @Override
-    protected void onInterrupt() {
-        cancelNav();
-    }
+    protected void onInterrupt() { cancelNav(); }
 
     @Override
     protected String successMessage() {
@@ -317,12 +251,13 @@ public class CollectItemsTask extends CompanionTask<CollectItemsTool.CollectItem
 
     @Override
     protected String timeoutMessage() {
-        return "Item collection timed out after collecting " + collectedCount + "/" + record.maxCount + " items";
+        return "Item collection timed out after collecting " + collectedCount
+                + "/" + record.maxCount + " items";
     }
 
     @Override
     protected String failureMessage() {
-        if (failReason != null) return failReason;
-        return "Item collection failed after collecting " + collectedCount + " items";
+        return failReason != null ? failReason
+                : "Item collection failed after collecting " + collectedCount + " items";
     }
 }

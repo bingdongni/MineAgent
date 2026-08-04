@@ -138,6 +138,10 @@ public final class HumanLikeNoise {
      * @return 加噪后速度（±5%）
      */
     public static float jitterSpeed(float baseSpeed) {
+        // Zero is an intentional stop while pathing turns in place. Adding
+        // positive noise to zero makes the companion walk in its old facing
+        // direction and can push it off an edge before alignment is safe.
+        if (baseSpeed <= 0.0f) return 0.0f;
         float noise = (float) (RNG.nextGaussian() * 0.05);
         return clamp(baseSpeed + noise, 0f, 1f);
     }

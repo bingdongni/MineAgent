@@ -5,6 +5,7 @@ import com.mineagent.api.agent.tool.Schema;
 import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
+import com.mineagent.api.task.CompanionTickDispatcher;
 import com.mineagent.api.task.TaskState;
 
 import java.util.Map;
@@ -41,8 +42,8 @@ public class TaskStopTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
         String taskId = ToolArgs.getString(args, "task_id");
-        if (taskId == null) {
-            reply.accept("{\"error\":\"Missing required parameter 'task_id'.\"}");
+        if (taskId == null || taskId.isBlank()) {
+            reply.accept(ToolArgs.errorJson("Missing required parameter 'task_id'."));
             return;
         }
 
@@ -67,12 +68,11 @@ public class TaskStopTool implements Tool {
         // the loop is the caller of this tool and is waiting for our reply.
         var stateOpt = com.mineagent.engine.MineAgentEngine.getCompanion(player.companionId());
         if (stateOpt.isEmpty() || !stateOpt.get().auction.cancelTask(taskId)) {
-            // A completed/replaced task may remain in the history ledger. An
-            // old ID must never cancel a newer unrelated running task.
-            reply.accept(ToolArgs.errorJson(
-                    "Task '" + taskId + "' is not the active task."));
+            reply.accept(ToolArgs.errorJson("Task '" + taskId + "' is no longer active."));
             return;
         }
+
+        // PriorityAuction publishes the authoritative terminal ledger entry.
 
         JsonObject result = new JsonObject();
         result.addProperty("success", true);

@@ -38,25 +38,34 @@ public class MeleeAttackTool implements Tool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .integer("entity_id", "The entity ID of the target to attack", 0, Integer.MAX_VALUE)
-                .optionalInteger("hold_ticks", "How long to hold the attack button (0-40 ticks, default 0)", 0, 40)
+                .optionalInteger("hold_ticks", "Extra aim ticks before each swing (0-40, default 0)", 0, 40)
                 .build();
     }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
+        if (!ToolArgs.has(args, "entity_id")) {
+            reply.accept("{\"error\":\"Missing required parameter 'entity_id'.\"}");
+            return;
+        }
         Integer entityId = ToolArgs.getIntOrNull(args, "entity_id");
-        if (entityId == null || entityId <= 0) {
-            reply.accept("{\"error\":\"entity_id must be a positive integer.\"}");
+        if (entityId == null || entityId < 0) {
+            reply.accept(ToolArgs.errorJson("'entity_id' must be a non-negative integer."));
             return;
         }
-        Integer parsedHold = ToolArgs.has(args, "hold_ticks")
+        Integer holdTicks = ToolArgs.has(args, "hold_ticks")
                 ? ToolArgs.getIntOrNull(args, "hold_ticks") : 0;
-        if (parsedHold == null || parsedHold < 0 || parsedHold > 40) {
-            reply.accept("{\"error\":\"hold_ticks must be an integer between 0 and 40.\"}");
+        if (holdTicks == null || holdTicks < 0 || holdTicks > 40) {
+            reply.accept(ToolArgs.errorJson("'hold_ticks' must be an integer from 0 to 40."));
             return;
         }
-        int holdTicks = parsedHold;
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var target = sp.serverLevel().getEntity(entityId);
+        if (target == null || !target.isAlive() || target == sp || !target.isAttackable()) {
+            reply.accept(ToolArgs.errorJson("Entity " + entityId + " was not found or cannot be attacked."));
+            return;
+        }
 
         var record = new MeleeAttackTaskRecord(toolCallId, entityId, holdTicks);
         TaskDispatch.dispatchAsync(player, record, reply);

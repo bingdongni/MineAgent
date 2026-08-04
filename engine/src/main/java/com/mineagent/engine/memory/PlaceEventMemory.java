@@ -68,8 +68,8 @@ public class PlaceEventMemory {
 
         /** 获取位置键 */
         String locationKey() {
-            return subject.toLowerCase(Locale.ROOT) + ":" + x + "," + y + "," + z
-                    + ":" + dimension;
+            return subject.toLowerCase(Locale.ROOT) + ":" + x + "," + z
+                    + ":" + normalizeDimension(dimension);
         }
     }
 
@@ -99,8 +99,7 @@ public class PlaceEventMemory {
         if ("structure".equals(type)) score += 0.15f;
 
         // 稀有资源加分
-        String lower = (subject + " " + (note != null ? note : ""))
-                .toLowerCase(Locale.ROOT);
+        String lower = (subject + " " + (note != null ? note : "")).toLowerCase();
         if (lower.contains("diamond") || lower.contains("emerald") ||
             lower.contains("ancient") || lower.contains("netherite") ||
             lower.contains("elytra") || lower.contains("beacon")) {
@@ -117,14 +116,13 @@ public class PlaceEventMemory {
     /**
      * 记录一条位置事件（带去重）。
      */
-    public synchronized void remember(String type, String subject,
+    public void remember(String type, String subject,
                           int x, int y, int z, String dimension,
                           long timestamp, String note) {
-        Objects.requireNonNull(subject, "subject");
-        Objects.requireNonNull(dimension, "dimension");
-        // Include Y so vertically separated caves/structures do not overwrite
-        // each other merely because they share a column.
-        String locKey = locationKey(subject, x, y, z, dimension);
+        if (subject == null || subject.isBlank()) return;
+        String normalizedDimension = normalizeDimension(dimension);
+        String locKey = subject.toLowerCase(Locale.ROOT) + ":" + x + "," + z
+                + ":" + normalizedDimension;
 
         // 检查是否已存在相同位置相同subject的记忆
         PlaceEvent existing = locationIndex.get(locKey);
@@ -132,7 +130,7 @@ public class PlaceEventMemory {
             // 更新现有记忆：增加访问次数，更新重要性
             float newImportance = Math.max(existing.importance(),
                     calculateImportance(type, subject, note));
-            PlaceEvent updated = new PlaceEvent(type, subject, x, y, z, dimension,
+            PlaceEvent updated = new PlaceEvent(type, subject, x, y, z, normalizedDimension,
                     timestamp, note, newImportance, existing.visitCount() + 1, true);
 
             // 从旧位置移除，添加新记录
@@ -143,7 +141,7 @@ public class PlaceEventMemory {
 
         // 创建新记忆
         float importance = calculateImportance(type, subject, note);
-        PlaceEvent e = new PlaceEvent(type, subject, x, y, z, dimension,
+        PlaceEvent e = new PlaceEvent(type, subject, x, y, z, normalizedDimension,
                 timestamp, note, importance, 1, true);
         addToIndices(e);
 
@@ -161,8 +159,7 @@ public class PlaceEventMemory {
     /** 添加到索引（bySubject 列表读写两侧都必须 synchronized (list)） */
     private void addToIndices(PlaceEvent e) {
         events.add(e);
-        List<PlaceEvent> list = bySubject.computeIfAbsent(
-                e.subject().toLowerCase(Locale.ROOT),
+        List<PlaceEvent> list = bySubject.computeIfAbsent(e.subject().toLowerCase(Locale.ROOT),
                 k -> Collections.synchronizedList(new ArrayList<>()));
         synchronized (list) {
             list.add(e);
@@ -215,9 +212,10 @@ public class PlaceEventMemory {
     /**
      * 标记某个位置的资源为已失效（如已被挖掘）。
      */
-    public synchronized void invalidate(String subject, int x, int y, int z, String dimension) {
-        if (subject == null || dimension == null) return;
-        String locKey = locationKey(subject, x, y, z, dimension);
+    public void invalidate(String subject, int x, int y, int z, String dimension) {
+        if (subject == null || subject.isBlank()) return;
+        String locKey = subject.toLowerCase(Locale.ROOT) + ":" + x + "," + z
+                + ":" + normalizeDimension(dimension);
         PlaceEvent existing = locationIndex.get(locKey);
         if (existing != null) {
             PlaceEvent invalidated = existing.invalidated();
@@ -233,14 +231,10 @@ public class PlaceEventMemory {
      * @return 最近的 PlaceEvent，或 null
      */
     public PlaceEvent findLastSeen(String subject) {
-        if (subject == null) return null;
+        if (subject == null || subject.isBlank()) return null;
         List<PlaceEvent> list = bySubject.get(subject.toLowerCase(Locale.ROOT));
-        if (list == null) return null;
+        if (list == null || list.isEmpty()) return null;
         synchronized (list) {
-            // The subject list can be emptied between the map lookup and
-            // acquiring its monitor. Re-check under the same lock used by
-            // writers so the invalid-only fallback never indexes -1.
-            if (list.isEmpty()) return null;
             // 过滤掉已失效的，返回最新的有效记录
             for (int i = list.size() - 1; i >= 0; i--) {
                 PlaceEvent e = list.get(i);
@@ -254,13 +248,14 @@ public class PlaceEventMemory {
      * 查找某个 subject 在指定维度内的所有出现位置。
      */
     public List<PlaceEvent> findAll(String subject, String dimension) {
-        if (subject == null || dimension == null) return Collections.emptyList();
+        if (subject == null || subject.isBlank()) return Collections.emptyList();
         List<PlaceEvent> list = bySubject.get(subject.toLowerCase(Locale.ROOT));
         if (list == null) return Collections.emptyList();
+        String normalizedDimension = normalizeDimension(dimension);
         List<PlaceEvent> result = new ArrayList<>();
         synchronized (list) {
             for (PlaceEvent e : list) {
-                if (e.dimension().equals(dimension) && e.verified()) {
+                if (e.dimension().equals(normalizedDimension) && e.verified()) {
                     result.add(e);
                 }
             }
@@ -332,14 +327,8 @@ public class PlaceEventMemory {
         return ((long) x << 32) | (z & 0xFFFFFFFFL);
     }
 
-    private static String locationKey(String subject, int x, int y, int z,
-                                      String dimension) {
-        return subject.toLowerCase(Locale.ROOT) + ":" + x + "," + y + "," + z
-                + ":" + dimension;
-    }
-
     /** 清空所有记忆（用于测试或重置） */
-    public synchronized void clear() {
+    public void clear() {
         events.clear();
         bySubject.clear();
         locationIndex.clear();
@@ -357,52 +346,24 @@ public class PlaceEventMemory {
         }
     }
 
-    /** Snapshot explored chunks so restarts do not erase exploration state. */
-    public Set<Long> exportExploredChunks() {
-        return new HashSet<>(exploredChunks);
-    }
-
-    public synchronized void importExploredChunks(Collection<Long> imported) {
-        exploredChunks.clear();
-        if (imported != null) {
-            imported.stream().filter(Objects::nonNull).forEach(exploredChunks::add);
-        }
-    }
-
-    /** Replace both members stored in place_events.json under one lock. */
-    public synchronized void importSnapshot(List<PlaceEvent> imported,
-                                            Collection<Long> importedChunks) {
-        importAll(imported);
-        importExploredChunks(importedChunks);
-    }
-
     /**
      * 导入记忆事件列表（用于持久化恢复），替换当前所有数据。
      */
-    public synchronized void importAll(List<PlaceEvent> imported) {
-        List<PlaceEvent> validated = new ArrayList<>();
-        if (imported != null) {
-            for (PlaceEvent event : imported) {
-                if (event == null || event.subject() == null || event.subject().isBlank()
-                        || !Float.isFinite(event.importance())) {
-                    continue;
-                }
-                String dimension = event.dimension() == null || event.dimension().isBlank()
-                        ? "minecraft:overworld" : event.dimension().trim();
-                validated.add(new PlaceEvent(
-                        event.type(), event.subject().trim(), event.x(), event.y(), event.z(),
-                        dimension, event.timestamp(), event.note(),
-                        Math.max(0.0f, Math.min(1.0f, event.importance())),
-                        Math.max(0, event.visitCount()), event.verified()));
-            }
-        }
-        // addToIndices updates three correlated collections. Validate the whole
-        // input first so one malformed entry cannot expose a partial index.
+    public void importAll(List<PlaceEvent> imported) {
         events.clear();
         bySubject.clear();
         locationIndex.clear();
-        for (PlaceEvent event : validated) {
-            addToIndices(event);
+        if (imported == null) return;
+        for (PlaceEvent e : imported) {
+            if (e != null && e.subject() != null && e.dimension() != null) {
+                String dimension = normalizeDimension(e.dimension());
+                float importance = Float.isFinite(e.importance())
+                        ? Math.max(0.0f, Math.min(1.0f, e.importance())) : 0.5f;
+                addToIndices(new PlaceEvent(
+                        e.type() != null ? e.type() : "event", e.subject(),
+                        e.x(), e.y(), e.z(), dimension, e.timestamp(), e.note(),
+                        importance, Math.max(0, e.visitCount()), e.verified()));
+            }
         }
         // 导入后若超容量则按重要性淘汰
         while (events.size() > MAX_EVENTS) {
@@ -418,5 +379,14 @@ public class PlaceEventMemory {
     /** 获取记忆条目数 */
     public int size() {
         return events.size();
+    }
+
+    private static String normalizeDimension(String dimension) {
+        if (dimension == null || dimension.isBlank() || "overworld".equals(dimension)) {
+            return "minecraft:overworld";
+        }
+        if ("nether".equals(dimension)) return "minecraft:the_nether";
+        if ("end".equals(dimension)) return "minecraft:the_end";
+        return dimension;
     }
 }

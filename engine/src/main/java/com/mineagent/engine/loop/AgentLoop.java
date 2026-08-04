@@ -24,6 +24,7 @@ import com.mineagent.engine.world.InternalWorldModel;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -128,7 +129,7 @@ public class AgentLoop {
     private final Object inboxLock = new Object(); // unified inbox lock (L1 fix)
 
     private volatile boolean inProgress = false;
-    private volatile boolean paused = false;
+    private volatile boolean suspended = false;
 
     /**
      * Stale Request detection (borrowed from Mindcraft).
@@ -145,8 +146,6 @@ public class AgentLoop {
      * reduces latency for new messages by 5-10x (no waiting for the
      * old response to complete).
      */
-    // A monotonic counter cannot miss two events that happen in the same
-    // millisecond, unlike the old currentTimeMillis-based stale check.
     private final AtomicLong eventGeneration = new AtomicLong();
 
     /**
@@ -165,8 +164,6 @@ public class AgentLoop {
     private volatile int sameActionCount = 0;
 
     private final ExecutorService executor;
-    /** Worker thread only while blocked inside an LLM provider HTTP call. */
-    private volatile Thread activeLlmThread;
 
     // ── Cognitive subsystems ──
     private final PersonaProfile persona;
@@ -257,15 +254,17 @@ public class AgentLoop {
      * </ul>
      */
     public synchronized void wake(String reason) {
-        // Stale Request detection: mark this as a significant event.
-        // If an LLM call is in progress, it will see the timestamp changed
-        // and discard its response as stale.
+        // A monotonic generation cannot collide when two events arrive in the
+        // same millisecond. The previous wall-clock timestamp occasionally did,
+        // allowing an obsolete response to execute after a newer owner command.
         eventGeneration.incrementAndGet();
-        if (paused) {
-            // Preserve events while paused so resume sees what happened, but
-            // never start a request that could dispatch physical actions.
-            synchronized (inboxLock) {
-                inbox.add(reason);
+        if (suspended) {
+            // Preserve meaningful events for the first post-respawn turn, but
+            // never let a dead/paused companion start LLM or tool work.
+            if (!"body_log".equals(reason)) {
+                synchronized (inboxLock) {
+                    inbox.add(reason);
+                }
             }
             return;
         }
@@ -274,11 +273,15 @@ public class AgentLoop {
             synchronized (inboxLock) {
                 inbox.add(reason);
             }
-            // Interrupt only a provider HTTP wait. Tool callbacks scheduled on
-            // the server thread must never be cancelled halfway through a
-            // physical inventory/world mutation.
-            interruptActiveLlmRequest();
             return;
+        }
+        // Spawn/resume wakes do not already have an owner/body message. Queue
+        // the reason itself so providers such as Anthropic receive a real user
+        // event instead of an invalid request containing only system messages.
+        if (!"owner_message".equals(reason) && !"body_log".equals(reason)) {
+            synchronized (inboxLock) {
+                inbox.add(reason);
+            }
         }
         startTurn(reason);
     }
@@ -317,7 +320,6 @@ public class AgentLoop {
      * Add a body log entry and wake if idle.
      */
     public void onBodyLog(String narrative) {
-        if (narrative == null || narrative.isBlank()) return;
         // Trigger emotions based on body event content.
         // Use independent if-statements (not else-if) so that a single
         // narrative containing multiple event types (e.g. "attacked by
@@ -348,15 +350,9 @@ public class AgentLoop {
         synchronized (inboxLock) {
             inbox.add("[BODY] " + narrative);
         }
-        synchronized (this) {
-            // Body state is part of the request context. Always invalidate an
-            // in-flight response; previously busy turns neither advanced the
-            // generation nor reliably delivered the queued event afterward.
-            eventGeneration.incrementAndGet();
-            if (inProgress) interruptActiveLlmRequest();
-            if (!paused && !inProgress) {
-                startTurn("body_log");
-            }
+        // Only wake if idle - body logs are not urgent
+        if (!inProgress) {
+            wake("body_log");
         }
     }
 
@@ -389,8 +385,7 @@ public class AgentLoop {
                 else if (lower.contains("zombie") || lower.contains("僵尸")) { subject = "zombie"; type = "danger"; }
                 else if (lower.contains("tree") || lower.contains("树")) { subject = "tree"; type = "resource"; }
 
-                String dimension = com.mineagent.engine.task.TaskContext.serverPlayer(companion)
-                        .level().dimension().location().toString();
+                String dimension = companion.dimensionKey();
                 placeMemory.remember(type, subject, x, y, z, dimension,
                         System.currentTimeMillis(), narrative);
 
@@ -453,30 +448,29 @@ public class AgentLoop {
      * Cancel the current turn and clear the inbox.
      */
     public synchronized void cancel() {
-        // Invalidate the response of any request already in flight. Clearing
-        // only the inbox allowed a late response to execute stale tool calls.
-        eventGeneration.incrementAndGet();
-        interruptActiveLlmRequest();
         synchronized (inboxLock) {
             inbox.clear();
         }
-        // The running turn will finish naturally
-    }
-
-    /** Pause future turns and invalidate any response currently in flight. */
-    public synchronized void pause() {
-        paused = true;
+        // Invalidate the response currently being generated and any tool call
+        // that is still queued for the server thread. An action that has already
+        // entered vanilla code cannot be rolled back generically, but no stale
+        // response is allowed to start new work after this point.
         eventGeneration.incrementAndGet();
-        interruptActiveLlmRequest();
     }
 
-    /** Resume processing, including events accumulated while paused. */
+    /** Suspend new turns while preserving events that arrive during the pause. */
+    public synchronized void pause() {
+        suspended = true;
+        cancel();
+    }
+
+    /** Resume from a lifecycle pause and process the accumulated state once. */
     public synchronized void resume(String reason) {
-        if (!paused) {
+        if (!suspended) {
             wake(reason);
             return;
         }
-        paused = false;
+        suspended = false;
         wake(reason);
     }
 
@@ -510,7 +504,6 @@ public class AgentLoop {
     // ── Turn execution ─────────────────────────────────────────────
 
     private void startTurn(String trigger) {
-        if (paused) return;
         inProgress = true;
         try {
             executor.submit(() -> {
@@ -529,21 +522,18 @@ public class AgentLoop {
                 } finally {
                     synchronized (this) {
                         inProgress = false;
-                        // A response invalidated by pause may finish after body
-                        // events were queued. Do not drain those events into a
-                        // startTurn() which immediately returns while paused;
-                        // resume() will process the intact inbox.
-                        if (paused) return;
-                        // Check if inbox accumulated during this turn
-                        boolean hasPendingEvents;
+                        // Check if inbox accumulated during this turn. While
+                        // suspended it must remain queued until resume();
+                        // draining here would either lose death events or start
+                        // a tool-producing turn for a dead companion.
+                        if (suspended) return;
+                        List<String> batch;
                         synchronized (inboxLock) {
-                            hasPendingEvents = !inbox.isEmpty();
+                            batch = new ArrayList<>(inbox);
+                            inbox.clear();
                         }
-                        if (hasPendingEvents) {
-                            // executeTurn/drainInbox owns the transfer into
-                            // history. Clearing here discarded every event
-                            // received during the previous LLM request.
-                            startTurn("inbox_batch");
+                        if (!batch.isEmpty()) {
+                            startTurn("inbox_batch: " + String.join("; ", batch));
                         }
                     }
                 }
@@ -658,21 +648,22 @@ public class AgentLoop {
         consecutiveCacheHits = 0;
 
         // 3b. Call the LLM (with retry on transient errors)
-        LLMResponse response = callLLMWithRetry(provider, toolDefs);
-        if (response == null) {
+        VersionedResponse versioned = callLLMWithRetry(provider, toolDefs);
+        if (versioned == null) {
             // All retries exhausted - give up gracefully
             return;
         }
-
-        // Providers and third-party relays occasionally return syntactically
-        // valid envelopes with a missing choice/message. Treat that as an
-        // invalid response instead of crashing the loop thread.
-        if (response.choice() == null || response.choice().message() == null) {
-            System.err.println("[MineAgent] LLM response did not contain a choice message");
+        LLMResponse response = versioned.response();
+        long acceptedGeneration = versioned.generation();
+        if (eventGeneration.get() != acceptedGeneration) {
             return;
         }
-        ChatMessage assistantMsg = response.choice().message();
-        assistantMsg = normalizeToolCallIds(assistantMsg);
+
+        if (response.choice() == null || response.choice().message() == null) {
+            System.err.println("[MineAgent] Provider returned a response without a choice/message");
+            return;
+        }
+        ChatMessage assistantMsg = normalizeAssistantMessage(response.choice().message());
         // Skip empty assistant messages (no content AND no tool_calls).
         // Some providers occasionally return a no-op response; adding it to
         // history wastes tokens and can confuse subsequent rounds (the LLM
@@ -685,6 +676,23 @@ public class AgentLoop {
         if (!hasContent && !hasToolCalls) {
             System.err.println("[MineAgent] Empty assistant response "
                     + "(no content, no tool_calls) — skipping, not added to history");
+            return;
+        }
+
+        // The final wrap-up request is deliberately not allowed to execute
+        // more tools. Do not store the provider's rejected tool_calls: keeping
+        // them without tool result messages makes the next provider request
+        // protocol-invalid. Preserve only optional explanatory text.
+        if (roundNumber >= MAX_TOOL_ROUNDS && hasToolCalls) {
+            System.err.println("[MineAgent] LLM returned tool_calls after hitting "
+                    + "MAX_TOOL_ROUNDS cap (" + MAX_TOOL_ROUNDS + ") - ignoring them");
+            if (hasContent) {
+                ChatMessage textOnly = ChatMessage.assistant(assistantMsg.content());
+                synchronized (history) {
+                    history.add(textOnly);
+                }
+                speakToOwner(assistantMsg.content());
+            }
             return;
         }
         synchronized (history) {
@@ -769,32 +777,18 @@ public class AgentLoop {
             return;
         }
 
-        // 4b. Safety: enforce the MAX_TOOL_ROUNDS cap. executeTurn already
-        //     added a "[SYSTEM] you have called tools N times" message and
-        //     called us for a final wrap-up response. If the LLM STILL
-        //     returns tool_calls here, executing them and recursing would
-        //     loop forever (each recursion re-hits this branch). So we
-        //     ignore the tool_calls and return immediately.
-        if (roundNumber >= MAX_TOOL_ROUNDS) {
-            System.err.println("[MineAgent] LLM returned tool_calls after hitting "
-                    + "MAX_TOOL_ROUNDS cap (" + MAX_TOOL_ROUNDS + ") — ignoring "
-                    + "to prevent infinite tool-calling loop");
-            // An assistant message containing tool_calls must always be
-            // followed by one tool result per call. Otherwise the next API
-            // request rejects the whole conversation as malformed.
-            synchronized (history) {
-                for (var tc : assistantMsg.toolCalls()) {
-                    history.add(ChatMessage.toolResult(tc.id(), jsonError(
-                            "Tool call skipped because the per-turn tool limit was reached.")));
-                }
-            }
-            return;
-        }
-
         // 5. Execute tool calls
-        List<ChatMessage> toolResults = executeToolCalls(assistantMsg.toolCalls());
+        List<ChatMessage> toolResults = executeToolCalls(
+                assistantMsg.toolCalls(), acceptedGeneration);
         synchronized (history) {
             history.addAll(toolResults);
+        }
+
+        // A cancel/new event that arrived while tools were running owns the
+        // next decision. Keep the result messages to complete the provider
+        // protocol group, but never recurse using the obsolete turn.
+        if (eventGeneration.get() != acceptedGeneration) {
+            return;
         }
 
         // 5b. Cognitive feedback loop — analyze tool results to update
@@ -1110,59 +1104,35 @@ public class AgentLoop {
      *
      * @return the LLM response, or null if all retries exhausted or stale
      */
-    private LLMResponse callLLMWithRetry(LLMProvider provider,
-                                          List<Map<String, Object>> toolDefs) {
+    private record VersionedResponse(LLMResponse response, long generation) {}
+
+    private VersionedResponse callLLMWithRetry(LLMProvider provider,
+                                                List<Map<String, Object>> toolDefs) {
         List<ChatMessage> messagesToSend;
-        long callGeneration;
-        // The generation must bracket the history copy, and the inbox must be
-        // empty afterward. Re-snapshotting until stable could adopt an event
-        // that had entered inbox but had not yet been drained into history,
-        // yielding "new generation + old context" and accepting a stale reply.
-        long beforeSnapshot = eventGeneration.get();
         synchronized (history) {
-            messagesToSend = Collections.unmodifiableList(
-                    new ArrayList<>(history));
+            messagesToSend = Collections.unmodifiableList(new ArrayList<>(history));
         }
-        long afterSnapshot = eventGeneration.get();
-        boolean pendingInbox;
-        synchronized (inboxLock) {
-            pendingInbox = !inbox.isEmpty();
-        }
-        long finalGeneration = eventGeneration.get();
-        if (pendingInbox || beforeSnapshot != afterSnapshot
-                || afterSnapshot != finalGeneration) {
-            return null;
-        }
-        callGeneration = finalGeneration;
+
+        // Use a monotonic counter rather than wall-clock time. Two owner events
+        // can legitimately arrive in one millisecond, and a timestamp equality
+        // check would then accept an obsolete response.
+        long callGeneration = eventGeneration.get();
 
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            // A wake/cancel during retry backoff must abort before issuing
-            // another request for obsolete history.
-            if (eventGeneration.get() != callGeneration) return null;
             try {
-                LLMResponse response;
-                activeLlmThread = Thread.currentThread();
-                try {
-                    response = provider.complete(baseUrl, apiKey, model,
-                            messagesToSend, toolDefs, temperature, maxTokens, reasoningEffort);
-                } finally {
-                    activeLlmThread = null;
-                }
+                LLMResponse response = provider.complete(baseUrl, apiKey, model,
+                        messagesToSend, toolDefs, temperature, maxTokens, reasoningEffort);
 
                 // Stale Request check: if a significant event arrived during
                 // the LLM call, discard the response. The situation it was
                 // generated for no longer applies.
                 if (eventGeneration.get() != callGeneration) {
-                    // Provider interruption sets the worker's interrupt flag.
-                    // Clear it before this single-thread executor starts the
-                    // fresh turn queued in inbox.
-                    Thread.interrupted();
                     System.out.println("[MineAgent] Stale request detected — "
                             + "discarding LLM response (event arrived during call)");
                     return null;
                 }
 
-                return response;
+                return new VersionedResponse(response, callGeneration);
             } catch (RuntimeException e) {
                 String msg = e.getMessage() != null ? e.getMessage() : "";
                 System.err.println("[MineAgent] LLM call attempt " + (attempt + 1)
@@ -1170,25 +1140,28 @@ public class AgentLoop {
 
                 // Check stale on retry too
                 if (eventGeneration.get() != callGeneration) {
-                    Thread.interrupted();
                     System.out.println("[MineAgent] Stale request detected during retry — aborting");
                     return null;
                 }
 
-                boolean retryable = e instanceof LLMProviderException providerError
-                        && providerError.retryable();
+                boolean retryable = !(e instanceof LLMProviderException providerError)
+                        || providerError.retryable();
+                if (e instanceof IllegalArgumentException) {
+                    retryable = false;
+                }
+
                 if (!retryable) {
-                    System.err.println("[MineAgent] Permanent LLM failure; not retrying");
-                    speakToOwner("\u00a7c[Error] LLM call failed: " + msg);
+                    speakToOwner("§c[Error] LLM request failed: " + msg);
                     return null;
                 }
 
                 if (attempt < MAX_RETRIES - 1) {
-                    try {
-                        long delay = RETRY_BASE_MS * (1L << attempt); // exponential backoff
-                        Thread.sleep(delay);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
+                    long delay = RETRY_BASE_MS * (1L << attempt); // exponential backoff
+                    if (e instanceof LLMProviderException providerError
+                            && providerError.retryAfterMillis() != null) {
+                        delay = Math.max(delay, providerError.retryAfterMillis());
+                    }
+                    if (!waitForRetry(delay, callGeneration)) {
                         return null;
                     }
                 } else {
@@ -1203,11 +1176,21 @@ public class AgentLoop {
         return null;
     }
 
-    private void interruptActiveLlmRequest() {
-        Thread requestThread = activeLlmThread;
-        if (requestThread != null && requestThread != Thread.currentThread()) {
-            requestThread.interrupt();
+    /** Sleep in short slices so a new owner event or cancel wakes the loop logically. */
+    private boolean waitForRetry(long delayMillis, long callGeneration) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delayMillis);
+        while (eventGeneration.get() == callGeneration) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return true;
+            try {
+                TimeUnit.NANOSECONDS.sleep(Math.min(
+                        remaining, TimeUnit.MILLISECONDS.toNanos(250)));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
+        return false;
     }
 
     /**
@@ -1527,27 +1510,76 @@ public class AgentLoop {
             if (inbox.isEmpty()) return;
             var batch = new ArrayList<>(inbox);
             inbox.clear();
-            // Compose a system message with accumulated body logs
+            // Events are observations presented to the model, not immutable
+            // system-level instructions. A user-role event also guarantees a
+            // valid provider request for spawn/resume turns with no chat text.
             StringBuilder sb = new StringBuilder("[EVENTS]\n");
             for (String entry : batch) {
                 sb.append("- ").append(entry).append("\n");
             }
             synchronized (history) {
-                history.add(ChatMessage.system(sb.toString()));
+                history.add(ChatMessage.user(sb.toString()));
             }
         }
     }
 
     // ── Tool execution ─────────────────────────────────────────────
 
-    private List<ChatMessage> executeToolCalls(List<ChatMessage.ToolCallRef> toolCalls) {
+    private enum ToolExecutionState { PENDING, RUNNING, COMPLETED, EXPIRED }
+
+    /**
+     * Normalize provider output before it enters conversation history.
+     * Tool-call ids are protocol keys, so blank or duplicate ids would merge
+     * results in maps and leave at least one call without its required reply.
+     */
+    private static ChatMessage normalizeAssistantMessage(ChatMessage message) {
+        if (message.toolCalls() == null || message.toolCalls().isEmpty()) {
+            return ChatMessage.assistant(message.content());
+        }
+        Set<String> seenIds = new HashSet<>();
+        List<ChatMessage.ToolCallRef> normalized = new ArrayList<>(message.toolCalls().size());
+        for (ChatMessage.ToolCallRef call : message.toolCalls()) {
+            if (call == null) continue;
+            String id = call.id();
+            while (id == null || id.isBlank() || !seenIds.add(id)) {
+                id = "call_" + UUID.randomUUID().toString().replace("-", "");
+            }
+            String name = call.name() == null || call.name().isBlank()
+                    ? "unknown" : call.name().trim();
+            String arguments = call.arguments() == null || call.arguments().isBlank()
+                    ? "{}" : call.arguments();
+            normalized.add(new ChatMessage.ToolCallRef(id, name, arguments));
+        }
+        return ChatMessage.assistant(message.content(),
+                normalized.isEmpty() ? null : normalized);
+    }
+
+    private static String errorJson(String message) {
+        com.google.gson.JsonObject error = new com.google.gson.JsonObject();
+        error.addProperty("error", message == null ? "Unknown error" : message);
+        return error.toString();
+    }
+
+    private static String toolErrorJson(String toolName, Throwable failure) {
+        String detail = "Tool '" + toolName + "' failed: "
+                + failure.getClass().getSimpleName();
+        if (failure.getMessage() != null && !failure.getMessage().isBlank()) {
+            detail += " - " + failure.getMessage();
+        }
+        return errorJson(detail);
+    }
+
+    private List<ChatMessage> executeToolCalls(List<ChatMessage.ToolCallRef> toolCalls,
+                                                long acceptedGeneration) {
         // Each ToolExecution carries its own toolCallId and toolName so that
         // results are matched correctly even when some tools are skipped
         // (unknown tool / invalid args). Previously the wait loop indexed into
         // `toolCalls` with the `executions` index, which misaligned whenever a
         // tool was skipped — causing toolCallId/result mismatches.
         record ToolExecution(String toolCallId, String toolName,
-                             CompletableFuture<String> result,
+                             CountDownLatch latch,
+                             AtomicReference<String> result,
+                             AtomicReference<ToolExecutionState> state,
                              long deadlineNanos) {}
         List<ToolExecution> executions = new ArrayList<>();
         // Collect results keyed by toolCallId so the final list can be rebuilt
@@ -1559,7 +1591,7 @@ public class AgentLoop {
             Optional<Tool> toolOpt = ToolRegistry.get(tc.name());
             if (toolOpt.isEmpty()) {
                 resultsById.put(tc.id(), ChatMessage.toolResult(tc.id(),
-                        jsonError("Unknown tool: " + tc.name())));
+                        errorJson("Unknown tool: " + tc.name())));
                 continue;
             }
 
@@ -1569,26 +1601,44 @@ public class AgentLoop {
                 args = com.google.gson.JsonParser.parseString(tc.arguments()).getAsJsonObject();
             } catch (Exception e) {
                 resultsById.put(tc.id(), ChatMessage.toolResult(tc.id(),
-                        jsonError("Invalid arguments: " + e.getMessage())));
+                        errorJson("Invalid arguments: " + e.getMessage())));
                 continue;
             }
 
-            // CompletableFuture gives each invocation a single terminal result.
-            // complete() is atomic, so duplicate callbacks and callbacks arriving
-            // after timeout cannot overwrite the value consumed by the agent loop.
-            int timeout = tool.defaultTimeoutSeconds();
-            CompletableFuture<String> result = new CompletableFuture<>();
-            long deadlineNanos = System.nanoTime()
-                    + TimeUnit.SECONDS.toNanos(Math.max(1, timeout));
-            executions.add(new ToolExecution(tc.id(), tc.name(), result,
-                    deadlineNanos));
+            // Each tool gets its own latch(1), result holder, and timeout (M3 fix)
+            int timeout = Math.max(1, tool.defaultTimeoutSeconds());
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> resultHolder = new AtomicReference<>();
+            AtomicReference<ToolExecutionState> state =
+                    new AtomicReference<>(ToolExecutionState.PENDING);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
+            executions.add(new ToolExecution(
+                    tc.id(), tc.name(), latch, resultHolder, state, deadline));
 
             // Execute on server thread
-            Services.platform().scheduleOnServer(() -> {
+            Runnable serverCall = () -> {
+                // Cancellation/staleness may happen while this runnable waits in
+                // the server queue. CAS prevents it from entering tool code after
+                // the accepted turn has been invalidated or timed out.
+                if (eventGeneration.get() != acceptedGeneration
+                        || !state.compareAndSet(
+                                ToolExecutionState.PENDING, ToolExecutionState.RUNNING)) {
+                    state.compareAndSet(ToolExecutionState.PENDING,
+                            ToolExecutionState.EXPIRED);
+                    latch.countDown();
+                    return;
+                }
                 try {
                     tool.onServerCall(tc.id(), args, companion, callbackResult -> {
-                        result.complete(callbackResult != null
-                                ? callbackResult : "{\"success\":true}");
+                        if (state.compareAndSet(
+                                ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
+                            // Store before releasing the latch so the loop thread
+                            // observes a fully published callback result.
+                            // The AtomicReference also protects callbacks issued
+                            // by tools from a later tick.
+                            resultHolder.set(callbackResult);
+                            latch.countDown();
+                        }
                     });
                 } catch (Throwable t) {
                     // A tool throwing (e.g. NPE from missing/invalid args)
@@ -1597,11 +1647,22 @@ public class AgentLoop {
                     // meaningful error so the LLM can correct its call.
                     System.err.println("[MineAgent] Tool '" + tc.name()
                             + "' threw: " + t);
-                    result.complete(jsonError("Tool '" + tc.name()
-                            + "' failed: " + t.getClass().getSimpleName()
-                            + (t.getMessage() != null ? " - " + t.getMessage() : "")));
+                    if (state.compareAndSet(
+                            ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
+                        resultHolder.set(toolErrorJson(tc.name(), t));
+                        latch.countDown();
+                    }
                 }
-            });
+            };
+            try {
+                Services.platform().scheduleOnServer(serverCall);
+            } catch (Throwable schedulingFailure) {
+                if (state.compareAndSet(
+                        ToolExecutionState.PENDING, ToolExecutionState.COMPLETED)) {
+                    resultHolder.set(toolErrorJson(tc.name(), schedulingFailure));
+                    latch.countDown();
+                }
+            }
         }
 
         // Wait for all dispatched tools to complete. Use exec.toolCallId()
@@ -1609,22 +1670,20 @@ public class AgentLoop {
         // correct toolCallId regardless of how many tools were skipped above.
         for (ToolExecution exec : executions) {
             try {
-                // All tools were dispatched together. Waiting each one's full
-                // timeout sequentially made N calls take N * timeout seconds.
                 long remaining = exec.deadlineNanos() - System.nanoTime();
-                String rawResult;
-                if (remaining <= 0) {
-                    rawResult = "{\"error\":\"Tool execution timed out\"}";
-                    exec.result().complete(rawResult);
+                boolean done = remaining > 0
+                        && exec.latch().await(remaining, TimeUnit.NANOSECONDS);
+                if (!done) {
+                    exec.state().set(ToolExecutionState.EXPIRED);
+                    resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
+                            "{\"error\":\"Tool execution timed out\"}"));
                 } else {
-                    try {
-                        rawResult = exec.result().get(remaining, TimeUnit.NANOSECONDS);
-                    } catch (TimeoutException e) {
-                        rawResult = "{\"error\":\"Tool execution timed out\"}";
-                        exec.result().complete(rawResult);
+                    String rawResult = exec.result().get();
+                    if (rawResult == null) {
+                        rawResult = exec.state().get() == ToolExecutionState.EXPIRED
+                                ? "{\"error\":\"Tool execution cancelled\"}"
+                                : "{\"success\":true}";
                     }
-                }
-                {
                     // Truncate long tool results to keep the conversation compact.
                     // 截断长度根据工具类型差异化：
                     // - look_around/scan: 1200 字符（需要看到周围环境，不能太短）
@@ -1638,12 +1697,9 @@ public class AgentLoop {
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                exec.result().complete("{\"error\":\"Interrupted\"}");
+                exec.state().set(ToolExecutionState.EXPIRED);
                 resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
                         "{\"error\":\"Interrupted\"}"));
-            } catch (ExecutionException e) {
-                resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
-                        jsonError("Tool execution failed: " + e.getCause())));
             }
         }
 
@@ -1658,44 +1714,12 @@ public class AgentLoop {
     }
 
     /**
-     * Provider relays occasionally omit tool-call ids or repeat one id in the
-     * same assistant message. Tool results are correlated by that id, so such
-     * a response would overwrite a sibling result and leave malformed history.
-     */
-    private static ChatMessage normalizeToolCallIds(ChatMessage message) {
-        if (message.toolCalls() == null || message.toolCalls().isEmpty()) return message;
-
-        Set<String> seen = new HashSet<>();
-        List<ChatMessage.ToolCallRef> normalized = new ArrayList<>(message.toolCalls().size());
-        boolean changed = false;
-        for (ChatMessage.ToolCallRef call : message.toolCalls()) {
-            String id = call.id();
-            if (id == null || id.isBlank() || !seen.add(id)) {
-                do {
-                    id = "call_" + UUID.randomUUID().toString().replace("-", "");
-                } while (!seen.add(id));
-                changed = true;
-            }
-            String arguments = call.arguments();
-            if (arguments == null || arguments.isBlank()) {
-                arguments = "{}";
-                changed = true;
-            }
-            normalized.add(new ChatMessage.ToolCallRef(id, call.name(), arguments));
-        }
-        return changed
-                ? new ChatMessage(message.role(), message.content(), normalized,
-                        message.toolCallId())
-                : message;
-    }
-
-    /**
      * 根据工具名获取结果截断长度。
      * 感知类工具（look_around）需要更长，简单动作类可以更短。
      */
     private static int getToolResultLimit(String toolName) {
         if (toolName == null) return 800;
-        String lower = toolName.toLowerCase(Locale.ROOT);
+        String lower = toolName.toLowerCase();
         // 感知类：需要完整环境信息，给 1200 字符
         if (lower.contains("look") || lower.contains("scan")
                 || lower.contains("search") || lower.contains("find")) {
@@ -1708,12 +1732,6 @@ public class AgentLoop {
         }
         // 默认：800 字符
         return 800;
-    }
-
-    private static String jsonError(String message) {
-        com.google.gson.JsonObject error = new com.google.gson.JsonObject();
-        error.addProperty("error", message == null ? "Unknown error" : message);
-        return error.toString();
     }
 
     /**
@@ -1969,14 +1987,11 @@ public class AgentLoop {
         // Note: We deliberately do NOT force OpenAI format for relay URLs —
         // many relays support Anthropic /v1/messages and Gemini /v1beta/...
         // natively, and the user's choice of providerId is authoritative.
-        if (providerId != null && !providerId.isBlank()) {
-            // An explicit provider is the wire-protocol choice, not a model
-            // catalogue hint. Relays and local gateways routinely expose
-            // custom model IDs which are absent from defaultModels(); rejecting
-            // them here made valid OpenAI-compatible configurations unusable.
-            return LLMProviderRegistry.get(providerId)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Unknown LLM provider: " + providerId));
+        if (providerId != null) {
+            var byId = LLMProviderRegistry.get(providerId);
+            if (byId.isPresent() && byId.get().supportsModel(model)) {
+                return byId.get();
+            }
         }
         return LLMProviderRegistry.detectForModel(model)
                 .orElseThrow(() -> new IllegalStateException(
@@ -2297,9 +2312,7 @@ public class AgentLoop {
         // can reason "I saw iron ore 5 blocks north" without re-scanning.
         // This is critical for spatial reasoning and avoiding redundant
         // exploration (the MINDCUBE "build map first, then reason" insight).
-        String currentDimension = com.mineagent.engine.task.TaskContext.serverPlayer(companion)
-                .level().dimension().location().toString();
-        String spatialMemory = cognitiveMap.summarizeForPrompt(currentDimension);
+        String spatialMemory = cognitiveMap.summarizeForPrompt();
         if (!spatialMemory.isBlank()) {
             sb.append(spatialMemory);
         }
@@ -2352,20 +2365,35 @@ public class AgentLoop {
         return sb.toString();
     }
 
-    /** Shut down the loop executor without blocking the Minecraft server tick. */
+    /** Shut down the loop executor.
+     *  Calls {@link ExecutorService#shutdown()} to stop accepting new
+     *  tasks, then waits up to 5 seconds for the running turn (if any) to
+     *  finish gracefully. If the running turn does not complete in time,
+     *  forces a shutdown with {@link ExecutorService#shutdownNow()} so the
+     *  JVM can exit. Previously shutdown() returned immediately without
+     *  waiting, which could orphan a running turn mid-LLM-call. */
     public void shutdown() {
+        synchronized (this) {
+            suspended = true;
+            eventGeneration.incrementAndGet();
+        }
         // Save memories before shutting down so the companion does not
         // "forget" everything on restart. Memory stores are thread-safe,
         // so saving from this thread while a turn is running is safe.
         if (persistence != null) {
             persistence.saveAll();
         }
-        // onDespawn runs on the server thread. Waiting here for an HTTP call
-        // froze the entire game for up to five seconds per companion. Mark all
-        // in-flight responses stale and interrupt the worker; HttpClient.send
-        // is interruptible and the daemon cannot keep the JVM alive.
-        paused = true;
-        cancel();
-        executor.shutdownNow();
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                System.err.println("[MineAgent] Loop executor did not terminate "
+                        + "gracefully in 5s — forcing shutdown");
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            // awaitTermination interrupted — force shutdown and restore flag
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

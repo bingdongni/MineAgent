@@ -6,6 +6,7 @@ import com.mojang.authlib.properties.Property;
 
 import java.net.URI;
 import java.net.http.*;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -58,10 +59,7 @@ public final class SkinLoader {
         return Optional.ofNullable(SKIN_CACHE.get(companionId));
     }
 
-    /**
-     * Forget a despawned companion's cached texture. The cache is keyed by
-     * profile UUID, so retaining entries would leak one texture per profile.
-     */
+    /** Release the per-profile skin entry during reset or final despawn. */
     public static void evictCachedSkin(java.util.UUID companionId) {
         if (companionId != null) SKIN_CACHE.remove(companionId);
     }
@@ -88,20 +86,14 @@ public final class SkinLoader {
      * Asynchronously fetch a player's skin from the Mojang API.
      *
      * @param playerName the Minecraft player name to look up
-     * @param callback  called on the skin worker thread when loading finishes;
-     *                  callers that touch Minecraft state must reschedule
+     * @param callback  called on the server thread when the skin is loaded
+     *                  (or with an empty result if loading fails)
      */
     public static void loadSkinAsync(String playerName,
-                                       java.util.function.Consumer<Optional<SkinResult>> callback) {
-        Objects.requireNonNull(callback, "callback");
+                                      java.util.function.Consumer<Optional<SkinResult>> callback) {
         SKIN_EXECUTOR.submit(() -> {
             Optional<SkinResult> result = loadSkin(playerName);
-            try {
-                callback.accept(result);
-            } catch (RuntimeException callbackError) {
-                System.err.println("[MineAgent] Skin callback failed: "
-                        + callbackError.getMessage());
-            }
+            callback.accept(result);
         });
     }
 
@@ -112,7 +104,8 @@ public final class SkinLoader {
      * @return the skin result, or empty if not found
      */
     public static Optional<SkinResult> loadSkin(String playerName) {
-        // Validate before interpolating the value into a Mojang API URI.
+        // Mojang account names are ASCII and bounded. Validate before URI
+        // interpolation so malformed LLM/UI input cannot alter the request.
         if (playerName == null || !playerName.matches("[A-Za-z0-9_]{1,16}")) {
             return Optional.empty();
         }
@@ -163,11 +156,11 @@ public final class SkinLoader {
         }
 
         JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-        if (!json.has("id") || !json.get("id").isJsonPrimitive()) return null;
-        // Mojang returns UUID without dashes, we need to format it
+        // The session-server endpoint expects the canonical 32 hexadecimal
+        // characters returned by the profile API. Inserting dashes here made
+        // valid profile lookups fail on strict Mojang frontends.
         String rawUuid = json.get("id").getAsString();
-        if (!rawUuid.matches("[0-9a-fA-F]{32}")) return null;
-        return formatUuid(rawUuid);
+        return rawUuid.matches("[0-9a-fA-F]{32}") ? rawUuid : null;
     }
 
     /**
@@ -198,34 +191,15 @@ public final class SkinLoader {
 
         // Find the "textures" property
         for (var propElem : json.getAsJsonArray("properties")) {
-            if (!propElem.isJsonObject()) continue;
             JsonObject prop = propElem.getAsJsonObject();
-            if (prop.has("name") && prop.get("name").isJsonPrimitive()
-                    && "textures".equals(prop.get("name").getAsString())
-                    && prop.has("value") && prop.get("value").isJsonPrimitive()) {
+            if ("textures".equals(prop.get("name").getAsString())) {
                 String value = prop.get("value").getAsString();
-                if (value.isBlank()) continue;
-                String signature = prop.has("signature")
-                        && prop.get("signature").isJsonPrimitive()
-                        ? prop.get("signature").getAsString() : null;
+                String signature = prop.has("signature") ? prop.get("signature").getAsString() : null;
                 return Optional.of(new SkinResult(value, signature));
             }
         }
 
         return Optional.empty();
-    }
-
-    /**
-     * Format a UUID string without dashes to the standard format.
-     * e.g. "069a79f444e94726a5befca90e38aaf5" → "069a79f4-44e9-4726-a5be-fca90e38aaf5"
-     */
-    private static String formatUuid(String raw) {
-        if (raw.length() != 32) return raw;
-        return raw.substring(0, 8) + "-"
-                + raw.substring(8, 12) + "-"
-                + raw.substring(12, 16) + "-"
-                + raw.substring(16, 20) + "-"
-                + raw.substring(20);
     }
 
     /**
@@ -235,7 +209,7 @@ public final class SkinLoader {
     public static String decodeTextureValue(String base64Value) {
         try {
             byte[] decoded = Base64.getDecoder().decode(base64Value);
-            return new String(decoded);
+            return new String(decoded, StandardCharsets.UTF_8);
         } catch (Exception e) {
             return "{}";
         }

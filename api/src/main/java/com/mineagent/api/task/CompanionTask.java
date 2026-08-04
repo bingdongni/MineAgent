@@ -50,11 +50,8 @@ public abstract class CompanionTask<R extends TaskRecord> {
     protected String failureMessage() { return "failed"; }
 
     /**
-     * Return the terminal message for this task.
-     *
-     * <p>The scheduler owns the terminal transition. Exposing the protected
-     * task-specific messages through one final method lets it publish exactly
-     * one consistent result to the task ledger and AgentLoop.
+     * Expose exactly one task-specific terminal message to the scheduler,
+     * which owns the transition and publishes it to every observer.
      */
     public final String completionMessage(TaskState state, boolean timedOut) {
         if (state == TaskState.SUCCESS) return successMessage();

@@ -11,5 +11,8 @@ public record TaskResultPayload(UUID companionId, String toolCallId,
         if (companionId == null) throw new IllegalArgumentException("companionId required");
         if (toolCallId == null) toolCallId = "";
         if (message == null) message = "";
+        if (toolCallId.length() > 128 || message.length() > 4096) {
+            throw new IllegalArgumentException("task-result payload too large");
+        }
     }
 }

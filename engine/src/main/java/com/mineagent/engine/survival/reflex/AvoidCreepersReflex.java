@@ -10,34 +10,26 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Comparator;
-import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Per-companion policy for fleeing from nearby creepers.
- *
- * <p>The global config determines the initial state when a body is spawned;
- * enable/disable then changes only that companion. The registry stores one
- * reflex instance globally, so state must be keyed by companion UUID.
- */
+/** Per-companion policy for detecting and fleeing nearby creepers. */
 public final class AvoidCreepersReflex implements Reflex {
 
     private static final String ID = "avoid_creeper";
     private static final String DESC = "Flee from nearby creepers";
     private static final double DETECTION_RADIUS = 6.0;
 
-    private final java.util.Set<java.util.UUID> disabled =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** ReflexRegistry owns one shared instance, so state is keyed by UUID. */
+    private final Set<UUID> disabled = ConcurrentHashMap.newKeySet();
 
     @Override
-    public String id() {
-        return ID;
-    }
+    public String id() { return ID; }
 
     @Override
-    public String description() {
-        return DESC;
-    }
+    public String description() { return DESC; }
 
     @Override
     public boolean isEnabled(AgentPlayer companion) {
@@ -59,17 +51,14 @@ public final class AvoidCreepersReflex implements Reflex {
         if (companion != null) disabled.remove(companion.companionId());
     }
 
-    /** Find the nearest live creeper within the avoidance radius. */
     public Optional<Creeper> findNearestCreeper(AgentPlayer companion) {
         if (!isEnabled(companion)) return Optional.empty();
         try {
             ServerPlayer sp = ((CompanionEntity) companion).serverPlayer();
             AABB box = sp.getBoundingBox().inflate(DETECTION_RADIUS);
-            List<Creeper> creepers = sp.level().getEntitiesOfClass(
-                    Creeper.class, box, Creeper::isAlive);
-            return creepers.stream()
-                    .min(Comparator.comparingDouble(entity -> entity.distanceTo(sp)));
-        } catch (Exception error) {
+            return sp.level().getEntitiesOfClass(Creeper.class, box, Creeper::isAlive)
+                    .stream().min(Comparator.comparingDouble(entity -> entity.distanceTo(sp)));
+        } catch (Exception ignored) {
             return Optional.empty();
         }
     }
@@ -78,27 +67,20 @@ public final class AvoidCreepersReflex implements Reflex {
         return findNearestCreeper(companion).isPresent();
     }
 
-    /** Apply direct flee input; MobDefenseChain uses the same policy state. */
     public void fleeFrom(AgentPlayer companion, Creeper creeper) {
         if (!isEnabled(companion) || creeper == null) return;
         try {
-            InputDriver input = inputDriver(companion);
+            InputDriver input = ((CompanionEntity) companion).inputDriver();
             ServerPlayer sp = ((CompanionEntity) companion).serverPlayer();
             Vec3 away = sp.position().subtract(creeper.position());
-            if (away.lengthSqr() < 1.0e-8) return;
+            if (away.lengthSqr() < 1.0e-6) return;
             away = away.normalize();
             sp.setYRot((float) Math.toDegrees(Math.atan2(-away.x, away.z)));
             sp.setXRot(0);
             input.setForward(1.0f);
             input.setSprinting(true);
-            input.setJumping(true);
         } catch (Exception ignored) {
-            // Best-effort reflex; the survival chain remains authoritative.
+            // Emergency reflexes are best effort and must not stop the tick.
         }
-    }
-
-    private static InputDriver inputDriver(AgentPlayer companion) {
-        if (companion instanceof CompanionEntity entity) return entity.inputDriver();
-        throw new IllegalStateException("Companion is not a CompanionEntity");
     }
 }

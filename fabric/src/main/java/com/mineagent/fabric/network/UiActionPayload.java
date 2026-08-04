@@ -23,8 +23,8 @@ import java.util.UUID;
 public record UiActionPayload(UUID companionId, String action, String data)
         implements CustomPacketPayload {
 
-    private static final int MAX_ACTION_LENGTH = 64;
-    private static final int MAX_DATA_LENGTH = 4096;
+    private static final int MAX_ACTION = 64;
+    private static final int MAX_DATA = 4096;
 
     public static final CustomPacketPayload.Type<UiActionPayload> TYPE =
             new CustomPacketPayload.Type<>(
@@ -34,19 +34,18 @@ public record UiActionPayload(UUID companionId, String action, String data)
             StreamCodec.of(
                     (buf, p) -> {
                         buf.writeUUID(p.companionId());
-                        buf.writeUtf(p.action(), MAX_ACTION_LENGTH);
-                        buf.writeUtf(p.data() == null ? "" : p.data(), MAX_DATA_LENGTH);
+                        buf.writeUtf(p.action(), MAX_ACTION);
+                        buf.writeUtf(p.data() == null ? "" : p.data(), MAX_DATA);
                     },
                     buf -> new UiActionPayload(buf.readUUID(),
-                            buf.readUtf(MAX_ACTION_LENGTH), buf.readUtf(MAX_DATA_LENGTH)));
+                            buf.readUtf(MAX_ACTION), buf.readUtf(MAX_DATA)));
 
     public UiActionPayload {
         if (companionId == null) throw new IllegalArgumentException("companionId required");
-        if (action == null || action.isBlank()) throw new IllegalArgumentException("action required");
-        if (action.length() > MAX_ACTION_LENGTH) throw new IllegalArgumentException("action too long");
-        if (data != null && data.length() > MAX_DATA_LENGTH) {
+        if (action == null || action.isBlank() || action.length() > MAX_ACTION)
+            throw new IllegalArgumentException("invalid action");
+        if (data != null && data.length() > MAX_DATA)
             throw new IllegalArgumentException("data too long");
-        }
     }
 
     @Override

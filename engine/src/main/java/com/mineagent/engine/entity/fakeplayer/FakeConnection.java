@@ -54,36 +54,28 @@ public class FakeConnection extends Connection {
         for (String name : candidates) {
             try {
                 Field f = Connection.class.getDeclaredField(name);
-                if (installChannel(f)) return;
-            } catch (NoSuchFieldException ignored) {
+                f.setAccessible(true);
+                embeddedChannel = new EmbeddedChannel();
+                f.set(this, embeddedChannel);
+                return;
+            } catch (NoSuchFieldException | IllegalAccessException ignored) {
                 // try next name
             }
         }
         // Last resort: scan all declared fields for one of type Channel
         for (Field f : Connection.class.getDeclaredFields()) {
             if (f.getType() == io.netty.channel.Channel.class) {
-                if (installChannel(f)) return;
+                try {
+                    f.setAccessible(true);
+                    embeddedChannel = new EmbeddedChannel();
+                    f.set(this, embeddedChannel);
+                    return;
+                } catch (IllegalAccessException ignored) {
+                }
             }
         }
         System.err.println("[MineAgent] Could not set Connection.channel — "
                 + "server tick may crash with NPE");
-        throw new IllegalStateException("Could not initialize fake Connection.channel");
-    }
-
-    private boolean installChannel(Field field) {
-        EmbeddedChannel candidate = null;
-        try {
-            field.setAccessible(true);
-            candidate = new EmbeddedChannel();
-            field.set(this, candidate);
-            embeddedChannel = candidate;
-            return true;
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            // A failed candidate still owns queued reference-counted state.
-            // Release it before trying another mapped field.
-            if (candidate != null) candidate.finishAndReleaseAll();
-            return false;
-        }
     }
 
     /**
@@ -125,8 +117,6 @@ public class FakeConnection extends Connection {
      */
     @Override
     public void disconnect(net.minecraft.network.chat.Component reason) {
-        // Vanilla may call Connection.disconnect directly. Route that path
-        // through the same idempotent cleanup used by explicit despawn.
         close();
     }
 
@@ -145,11 +135,12 @@ public class FakeConnection extends Connection {
      */
     public void close() {
         open = false;
-        // EmbeddedChannel owns queued reference-counted buffers. Merely
-        // flipping the connection flag leaks those buffers across repeated
-        // companion spawn/despawn cycles in the same JVM.
         EmbeddedChannel channel = embeddedChannel;
         embeddedChannel = null;
-        if (channel != null) channel.finishAndReleaseAll();
+        if (channel != null) {
+            // EmbeddedChannel owns queued Netty buffers just like a real
+            // channel. Releasing them prevents one leak per spawn/despawn.
+            channel.finishAndReleaseAll();
+        }
     }
 }

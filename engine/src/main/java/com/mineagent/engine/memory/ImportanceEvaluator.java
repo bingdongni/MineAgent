@@ -293,21 +293,15 @@ public class ImportanceEvaluator {
      * 导入特征权重（用于持久化恢复），替换当前所有数据。
      */
     public void importWeights(Map<String, Float> weights, int savedLearnCount) {
-        Map<String, Float> validWeights = new java.util.HashMap<>();
+        featureWeights.clear();
         if (weights != null) {
-            // Deserialize into a temporary map first. ConcurrentHashMap rejects
-            // nulls, and NaN/Infinity poison comparisons and decay; clearing
-            // before validation previously lost all live weights on one bad
-            // entry in a manually edited or partially corrupted file.
             weights.forEach((feature, weight) -> {
-                if (feature != null && !feature.isBlank() && weight != null
-                        && Float.isFinite(weight)) {
-                    validWeights.put(feature, clamp(weight));
+                if (feature != null && !feature.isBlank()
+                        && weight != null && Float.isFinite(weight)) {
+                    featureWeights.put(feature, clamp(weight));
                 }
             });
         }
-        featureWeights.clear();
-        featureWeights.putAll(validWeights);
         learnCount.set(Math.max(0, savedLearnCount));
     }
 

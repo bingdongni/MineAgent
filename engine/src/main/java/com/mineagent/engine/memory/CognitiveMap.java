@@ -85,6 +85,7 @@ public class CognitiveMap {
     }
 
     public CognitiveMap(int maxPOIs) {
+        if (maxPOIs <= 0) throw new IllegalArgumentException("maxPOIs must be positive");
         this.maxPOIs = maxPOIs;
     }
 
@@ -127,19 +128,19 @@ public class CognitiveMap {
      * @param label     显示标签
      * @param timestamp 发现时间（毫秒）
      */
-    public synchronized void recordPoi(BlockPos pos, String category, String label, long timestamp) {
+    public void recordPoi(BlockPos pos, String category, String label, long timestamp) {
         recordPoi(pos, category, label, "minecraft:overworld", timestamp);
     }
 
-    public synchronized void recordPoi(BlockPos pos, String category, String label,
+    public void recordPoi(BlockPos pos, String category, String label,
                           String dimension, long timestamp) {
+        Objects.requireNonNull(pos, "pos");
         String cat = category != null ? category.toLowerCase(Locale.ROOT) : "event:unknown";
-        String dim = dimension == null || dimension.isBlank()
-                ? "minecraft:overworld" : dimension;
+        String dim = normalizeDimension(dimension);
 
         // 去重：同类别 + 近距离 → 强化现有 POI
-        String existingKey = findNearbyKey(cat, pos.getX(), pos.getY(), pos.getZ(),
-                dim, DEDUP_RADIUS);
+        String existingKey = findNearbyKey(
+                cat, dim, pos.getX(), pos.getZ(), DEDUP_RADIUS);
         if (existingKey != null) {
             PointOfInterest existing = pois.get(existingKey);
             if (existing != null) {
@@ -153,9 +154,7 @@ public class CognitiveMap {
                 pos.getX(), pos.getY(), pos.getZ(),
                 dim,
                 timestamp, importance, 1, true, timestamp);
-        // Y is part of identity: an ore vein in a cave must not overwrite a
-        // same-X/Z landmark on the surface.
-        pois.put(poiKey(cat, pos.getX(), pos.getY(), pos.getZ(), dim), poi);
+        pois.put(poiKey(cat, dim, pos.getX(), pos.getZ()), poi);
 
         evictIfNeeded();
     }
@@ -173,11 +172,12 @@ public class CognitiveMap {
     }
 
     public List<PointOfInterest> findNearby(int x, int z, int radius, String dimension) {
+        String dim = dimension == null ? null : normalizeDimension(dimension);
         long r2 = (long) radius * radius;
         List<PointOfInterest> result = new ArrayList<>();
         for (PointOfInterest poi : pois.values()) {
             if (!poi.verified()) continue;
-            if (dimension != null && !dimension.equals(poi.dimension())) continue;
+            if (dim != null && !dim.equals(poi.dimension())) continue;
             long dx = poi.x() - x;
             long dz = poi.z() - z;
             if (dx * dx + dz * dz <= r2) {
@@ -201,10 +201,11 @@ public class CognitiveMap {
 
     public List<PointOfInterest> findByCategory(String category, String dimension) {
         String query = category != null ? category.toLowerCase(Locale.ROOT) : "";
+        String dim = dimension == null ? null : normalizeDimension(dimension);
         List<PointOfInterest> result = new ArrayList<>();
         for (PointOfInterest poi : pois.values()) {
             if (!poi.verified()) continue;
-            if (dimension != null && !dimension.equals(poi.dimension())) continue;
+            if (dim != null && !dim.equals(poi.dimension())) continue;
             String cat = poi.category();
             // 精确匹配，或前缀匹配（"resource" 匹配 "resource:iron_ore"）
             if (cat.equals(query) || cat.startsWith(query + ":")) {
@@ -219,9 +220,15 @@ public class CognitiveMap {
      * 标记指定位置附近的 POI 为已失效（如资源已被挖走）。
      */
     public void invalidateNearby(int x, int z, int radius) {
+        invalidateNearby(x, z, radius, null);
+    }
+
+    public void invalidateNearby(int x, int z, int radius, String dimension) {
+        String dim = dimension == null ? null : normalizeDimension(dimension);
         long r2 = (long) radius * radius;
         for (Map.Entry<String, PointOfInterest> entry : pois.entrySet()) {
             PointOfInterest poi = entry.getValue();
+            if (dim != null && !dim.equals(poi.dimension())) continue;
             long dx = poi.x() - x;
             long dz = poi.z() - z;
             if (dx * dx + dz * dz <= r2) {
@@ -235,15 +242,9 @@ public class CognitiveMap {
      * 按类别分组，只显示已验证且重要的 POI，避免 token 膨胀。
      */
     public String summarizeForPrompt() {
-        return summarizeForPrompt(null);
-    }
-
-    public String summarizeForPrompt(String dimension) {
         List<PointOfInterest> verified = new ArrayList<>();
         for (PointOfInterest poi : pois.values()) {
-            if (poi.verified() && (dimension == null || dimension.equals(poi.dimension()))) {
-                verified.add(poi);
-            }
+            if (poi.verified()) verified.add(poi);
         }
         if (verified.isEmpty()) return "";
 
@@ -262,7 +263,8 @@ public class CognitiveMap {
             if (count >= 3) continue;
             sb.append("- ").append(poi.label())
               .append(" at (").append(poi.x()).append(",")
-              .append(poi.y()).append(",").append(poi.z()).append(")");
+              .append(poi.y()).append(",").append(poi.z()).append(")")
+              .append(" [").append(poi.dimension()).append("]");
             if (poi.visitCount() > 2) {
                 sb.append(" [已确认x").append(poi.visitCount()).append("]");
             }
@@ -285,55 +287,56 @@ public class CognitiveMap {
     /**
      * 导入 POI 列表（用于持久化恢复），替换当前所有数据。
      */
-    public synchronized void importAll(List<PointOfInterest> imported) {
-        Map<String, PointOfInterest> validated = new HashMap<>();
-        if (imported != null) {
-            for (PointOfInterest poi : imported) {
-                if (poi == null || poi.category() == null || poi.category().isBlank()
-                        || !Float.isFinite(poi.importance())) {
-                    continue;
-                }
-                String category = poi.category().trim().toLowerCase(Locale.ROOT);
-                String dimension = poi.dimension() == null || poi.dimension().isBlank()
-                        ? "minecraft:overworld" : poi.dimension().trim();
+    public void importAll(List<PointOfInterest> imported) {
+        pois.clear();
+        if (imported == null) return;
+        for (PointOfInterest poi : imported) {
+            if (poi != null && poi.category() != null) {
+                String dimension = normalizeDimension(poi.dimension());
+                float importance = Float.isFinite(poi.importance())
+                        ? Math.max(0.0f, Math.min(1.0f, poi.importance())) : 0.5f;
                 PointOfInterest normalized = new PointOfInterest(
-                        category, poi.label(), poi.x(), poi.y(), poi.z(), dimension,
-                        poi.timestamp(), Math.max(0.0f, Math.min(1.0f, poi.importance())),
-                        Math.max(0, poi.visitCount()), poi.verified(), poi.lastVisitTime());
-                validated.put(poiKey(category, normalized.x(), normalized.y(),
-                        normalized.z(), dimension), normalized);
+                        poi.category().toLowerCase(Locale.ROOT), poi.label(),
+                        poi.x(), poi.y(), poi.z(), dimension, poi.timestamp(),
+                        importance, Math.max(0, poi.visitCount()), poi.verified(),
+                        poi.lastVisitTime());
+                pois.put(poiKey(normalized.category(), normalized.dimension(),
+                        normalized.x(), normalized.z()), normalized);
             }
         }
-        // Build the replacement before mutation. NaN importance values from a
-        // corrupt file otherwise poison ranking and eviction after restoration.
-        pois.clear();
-        pois.putAll(validated);
         evictIfNeeded();
     }
 
     // ─── 私有方法 ───
 
     /** 生成 POI 存储键 */
-    private String poiKey(String category, int x, int y, int z, String dimension) {
-        return category + ":" + x + "," + y + "," + z + ":" + dimension;
+    private String poiKey(String category, String dimension, int x, int z) {
+        return dimension + ":" + category + ":" + x + "," + z;
     }
 
     /** 查找同类别且在半径内的已有 POI 键 */
-    private String findNearbyKey(String category, int x, int y, int z,
-                                 String dimension, int radius) {
+    private String findNearbyKey(String category, String dimension,
+                                 int x, int z, int radius) {
         long r2 = (long) radius * radius;
         for (Map.Entry<String, PointOfInterest> entry : pois.entrySet()) {
             PointOfInterest poi = entry.getValue();
-            if (!poi.category().equals(category)) continue;
-            if (!Objects.equals(poi.dimension(), dimension)) continue;
+            if (!poi.category().equals(category) || !poi.dimension().equals(dimension)) continue;
             long dx = poi.x() - x;
-            long dy = poi.y() - y;
             long dz = poi.z() - z;
-            if (dx * dx + dy * dy + dz * dz <= r2) {
+            if (dx * dx + dz * dz <= r2) {
                 return entry.getKey();
             }
         }
         return null;
+    }
+
+    private static String normalizeDimension(String dimension) {
+        if (dimension == null || dimension.isBlank() || "overworld".equals(dimension)) {
+            return "minecraft:overworld";
+        }
+        if ("nether".equals(dimension)) return "minecraft:the_nether";
+        if ("end".equals(dimension)) return "minecraft:the_end";
+        return dimension;
     }
 
     /**
@@ -376,7 +379,7 @@ public class CognitiveMap {
     }
 
     /** 清空所有数据 */
-    public synchronized void clear() {
+    public void clear() {
         pois.clear();
     }
 }

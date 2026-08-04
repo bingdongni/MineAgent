@@ -89,8 +89,8 @@ public class PathingCore {
         this.caches = caches;
         this.pathConfig = pathConfig != null
                 ? pathConfig : MineAgentConfig.PathfindingConfig.DEFAULTS;
-        // The old default constructor silently ignored maxSearchNodes and
-        // allowParkour, so config edits never changed actual searches.
+        // Configuration must reach the actual search implementation; keeping
+        // it only in PlayerNav made max nodes and parkour toggles cosmetic.
         this.finder = new AStarPathFinder(this.pathConfig.maxSearchNodes(),
                 this.pathConfig.allowParkour());
     }
@@ -101,15 +101,8 @@ public class PathingCore {
      * @param goal the goal to navigate to
      */
     public void setGoal(Goal goal) {
-        // A task may retarget the same PlayerNav while a movement is still
-        // executing. Dropping the executor reference without stop() leaves
-        // its movement input and any active block-break state alive.
-        if (executor != null) {
-            executor.stop();
-        }
-        if (state == State.SEARCH) {
-            finder.cancel();
-        }
+        if (executor != null) executor.stop();
+        if (state == State.SEARCH) finder.cancel();
         this.currentGoal = goal;
         this.repathAttempts = 0;
         this.state = State.SEARCH;
@@ -215,11 +208,9 @@ public class PathingCore {
             PathBase path = lastResult.path();
             if (!bridgeDisabledForCurrentGoal
                     && requiredSupportBlocks(path) > com.mineagent.engine.act.Placement
-                            .supportBlockCount(TaskContext.serverPlayer(player))) {
-                // A* prices bridge edges but does not include inventory count
-                // in its node key. Reject a path that needs more blocks than
-                // exist and retry without bridge edges, instead of executing
-                // half a bridge and then stranding the companion over a void.
+                    .supportBlockCount(TaskContext.serverPlayer(player))) {
+                // The A* node key does not include remaining inventory. Reject
+                // a bridge that cannot be completed before stepping over void.
                 bridgeDisabledForCurrentGoal = true;
                 lastResult = null;
                 state = State.SEARCH;
@@ -289,10 +280,10 @@ public class PathingCore {
             var support = movement.requiredSupportPosition();
             if (support != null
                     && !com.mineagent.engine.pathing.util.BlockHelper.isClimbable(
-                            level.getBlockState(new net.minecraft.core.BlockPos(
-                                    movement.dstX(), movement.dstY(), movement.dstZ())))
+                    level.getBlockState(new net.minecraft.core.BlockPos(
+                            movement.dstX(), movement.dstY(), movement.dstZ())))
                     && !com.mineagent.engine.pathing.util.BlockHelper.canStandOn(
-                            level.getBlockState(support))) {
+                    level.getBlockState(support))) {
                 missing.add(support.immutable());
             }
         }

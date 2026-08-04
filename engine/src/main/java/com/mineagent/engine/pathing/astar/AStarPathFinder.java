@@ -64,7 +64,7 @@ public class AStarPathFinder {
     }
 
     public AStarPathFinder(int nodeLimit, boolean allowParkour) {
-        this.nodeLimit = nodeLimit;
+        this.nodeLimit = Math.max(1, nodeLimit);
         this.allowParkour = allowParkour;
         this.nodePool = new ObjectPool<>(PathNode::new);
         this.visitedNodes = new Long2ObjectOpenHashMap(1024);
@@ -300,18 +300,16 @@ public class AStarPathFinder {
         // Pillar up
         expandPillar(current, goal, favoring, ctx);
 
-        // Real vertical traversal for ladders, vines and scaffolding. This is
-        // distinct from a pillar: it consumes no block and also supports down.
+        // Ladders, vines and scaffolding are true vertical edges and consume
+        // no support block; treating them as pillars wastes inventory.
         expandClimb(current, 1, goal, favoring, ctx);
         expandClimb(current, -1, goal, favoring, ctx);
 
         if (allowParkour) {
-            // Parkour is optional because its jump execution is less robust
-            // than ordinary walking on high-latency or low-TPS servers.
-            expandParkour(current, 0, -2, goal, favoring, ctx);  // North
-            expandParkour(current, 0, 2, goal, favoring, ctx);   // South
-            expandParkour(current, 2, 0, goal, favoring, ctx);   // East
-            expandParkour(current, -2, 0, goal, favoring, ctx);  // West
+            expandParkour(current, 0, -2, goal, favoring, ctx);
+            expandParkour(current, 0, 2, goal, favoring, ctx);
+            expandParkour(current, 2, 0, goal, favoring, ctx);
+            expandParkour(current, -2, 0, goal, favoring, ctx);
         }
     }
 
@@ -392,12 +390,12 @@ public class AStarPathFinder {
 
     private void expandClimb(PathNode current, int dy, Goal goal,
                              Favoring favoring, CalculationContext ctx) {
-        int ny = current.y + dy;
-        MovementClimb move = new MovementClimb(
-                current.x, current.y, current.z, ny);
-        double cost = move.calculateCost(ctx);
+        int targetY = current.y + dy;
+        MovementClimb movement = new MovementClimb(
+                current.x, current.y, current.z, targetY);
+        double cost = movement.calculateCost(ctx);
         if (cost < Double.POSITIVE_INFINITY) {
-            considerNode(current, current.x, ny, current.z,
+            considerNode(current, current.x, targetY, current.z,
                     cost, goal, favoring);
         }
     }
@@ -613,12 +611,8 @@ public class AStarPathFinder {
         int dy = to.y - from.y;
         int dz = to.z - from.z;
 
-        // A vertical geometry can represent either a climb or a pillar. The
-        // node map stores positions rather than edge types, so reconstruct the
-        // physical climb first when the world still contains one.
         if (dx == 0 && dz == 0 && Math.abs(dy) == 1) {
-            MovementClimb climb = new MovementClimb(
-                    from.x, from.y, from.z, to.y);
+            MovementClimb climb = new MovementClimb(from.x, from.y, from.z, to.y);
             if (currentCtx != null
                     && climb.calculateCost(currentCtx) < Double.POSITIVE_INFINITY) {
                 return climb;
@@ -678,9 +672,8 @@ public class AStarPathFinder {
      * a single long for efficient hashing.
      */
     private static long posKey(int x, int y, int z) {
-        // Minecraft uses 26 signed bits for X/Z and 12 for Y. The previous
-        // 24-bit masks aliased valid world coordinates 16,777,216 blocks
-        // apart, violating the visited-map uniqueness contract.
+        // Match Minecraft's 26/12/26 position packing so valid world X/Z
+        // coordinates cannot alias 16,777,216 blocks apart.
         return ((long) (x & 0x3FFFFFF) << 38)
                 | ((long) (y & 0xFFF) << 26)
                 | (z & 0x3FFFFFFL);

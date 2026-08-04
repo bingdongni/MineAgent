@@ -7,6 +7,7 @@ import com.mineagent.api.network.payload.ClientUiActionPayload;
 import com.mineagent.api.network.payload.ExecuteToolPayload;
 import com.mineagent.api.task.reflex.ReflexRegistry;
 import com.mineagent.engine.MineAgentEngine;
+import com.mineagent.engine.network.MineAgentNetwork;
 import com.mineagent.engine.entity.CompanionEntity;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -54,18 +55,18 @@ public final class ServerPacketHandler {
         if (companionState.isEmpty()) {
             System.err.println("[MineAgent] ExecuteTool: companion not found: "
                     + payload.companionId());
-            sendToolFailure(sender, payload, "Companion not found.");
+            sendToolResult(sender, payload, false, "Companion not found");
             return;
         }
 
         CompanionEntity companion = companionState.get().companion;
 
         // Verify the sender owns this companion
-        if (!isOwnedBy(companion, sender)) {
+        if (!companion.serverPlayerOwner().getUUID().equals(sender.getUUID())) {
             System.err.println("[MineAgent] ExecuteTool: player "
                     + sender.getName().getString()
                     + " does not own companion " + payload.companionId());
-            sendToolFailure(sender, payload, "Companion not found or not owned by sender.");
+            sendToolResult(sender, payload, false, "Companion not found or not owned");
             return;
         }
 
@@ -74,7 +75,8 @@ public final class ServerPacketHandler {
         if (toolOpt.isEmpty()) {
             System.err.println("[MineAgent] ExecuteTool: unknown tool: "
                     + payload.toolName());
-            sendToolFailure(sender, payload, "Unknown tool: " + payload.toolName());
+            sendToolResult(sender, payload, false,
+                    "Unknown tool: " + payload.toolName());
             return;
         }
 
@@ -87,70 +89,28 @@ public final class ServerPacketHandler {
         } catch (Exception e) {
             System.err.println("[MineAgent] ExecuteTool: invalid arguments: "
                     + e.getMessage());
-            sendToolFailure(sender, payload, "Invalid tool arguments.");
+            sendToolResult(sender, payload, false, "Invalid arguments: " + e.getMessage());
             return;
         }
 
-        // Tool callbacks may finish asynchronously. Re-enter the server
-        // executor before touching companion state or networking, and accept
-        // only the first callback so a faulty tool cannot publish two results.
+        // Execute the tool
         AtomicBoolean replied = new AtomicBoolean();
         try {
             tool.onServerCall(payload.toolCallId(), args, companion, result -> {
                 if (!replied.compareAndSet(false, true)) return;
-                server.execute(() -> {
-            // This path originates at a client rather than AgentLoop, so send
-            // its acknowledgement back over the matching S2C payload instead
-            // of leaving the result only in the server log.
-            boolean success = isSuccessfulToolResult(result);
-            MineAgentEngine.getCompanion(payload.companionId()).ifPresent(current -> {
-                if (isOwnedBy(current.companion, sender)) {
-                    com.mineagent.engine.network.MineAgentNetwork.sendTaskResultTo(sender,
-                            new com.mineagent.api.network.payload.TaskResultPayload(
-                                    payload.companionId(), payload.toolCallId(), success,
-                                    result != null ? result : ""));
-                }
+                boolean success = isSuccessfulToolResult(result);
+                sendToolResult(sender, payload, success,
+                        result != null ? result : "{}");
+                System.out.println("[MineAgent] Tool " + payload.toolName()
+                        + " completed for companion " + payload.companionId());
             });
-            // Tool execution completed — the result is handled by the agent loop
-            System.out.println("[MineAgent] Tool " + payload.toolName()
-                    + " completed for companion " + payload.companionId());
-                });
-            });
-        } catch (Throwable t) {
-            // This handler runs on the main server thread. An unchecked tool
-            // failure must become a failed result instead of aborting a tick.
-            System.err.println("[MineAgent] ExecuteTool: tool '" + payload.toolName()
-                    + "' threw " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        } catch (Throwable failure) {
             if (replied.compareAndSet(false, true)) {
-                sendToolFailure(sender, payload,
-                        "Tool failed: " + t.getClass().getSimpleName());
+                sendToolResult(sender, payload, false,
+                        "Tool failed: " + failure.getClass().getSimpleName()
+                                + " - " + String.valueOf(failure.getMessage()));
             }
         }
-    }
-
-    private static boolean isSuccessfulToolResult(String result) {
-        if (result == null) return false;
-        try {
-            var json = JsonParser.parseString(result);
-            return !json.isJsonObject() || !json.getAsJsonObject().has("error");
-        } catch (Exception invalidResult) {
-            return false;
-        }
-    }
-
-    private static void sendToolFailure(ServerPlayer sender, ExecuteToolPayload payload,
-                                        String message) {
-        if (sender == null || payload == null) return;
-        com.mineagent.engine.network.MineAgentNetwork.sendTaskResultTo(sender,
-                new com.mineagent.api.network.payload.TaskResultPayload(
-                        payload.companionId(), payload.toolCallId(), false, message));
-    }
-
-    /** Reject stale companion states with no live owner at packet boundaries. */
-    private static boolean isOwnedBy(CompanionEntity companion, ServerPlayer sender) {
-        if (companion == null || sender == null) return false;
-        ServerPlayer owner = companion.serverPlayerOwner();
-        return owner != null && owner.getUUID().equals(sender.getUUID());
     }
 
     /**
@@ -180,7 +140,7 @@ public final class ServerPacketHandler {
         var state = companionState.get();
 
         // Verify ownership
-        if (!isOwnedBy(state.companion, sender)) {
+        if (!state.companion.serverPlayerOwner().getUUID().equals(sender.getUUID())) {
             System.err.println("[MineAgent] CancelTasks: player does not own companion");
             return;
         }
@@ -193,6 +153,27 @@ public final class ServerPacketHandler {
 
         System.out.println("[MineAgent] All tasks cancelled for companion "
                 + payload.companionId());
+    }
+
+    private static void sendToolResult(ServerPlayer sender, ExecuteToolPayload request,
+                                       boolean success, String message) {
+        com.mineagent.engine.network.MineAgentNetwork.sendTaskResultTo(sender,
+                new com.mineagent.api.network.payload.TaskResultPayload(
+                        request.companionId(), request.toolCallId(), success,
+                        message != null ? message : ""));
+    }
+
+    private static boolean isSuccessfulToolResult(String result) {
+        if (result == null || result.isBlank()) return true;
+        try {
+            var parsed = JsonParser.parseString(result);
+            if (!parsed.isJsonObject()) return true;
+            JsonObject object = parsed.getAsJsonObject();
+            if (object.has("error")) return false;
+            return !object.has("success") || object.get("success").getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return true;
+        }
     }
 
     /**
@@ -227,7 +208,9 @@ public final class ServerPacketHandler {
                     if (cid != null) {
                         Optional<MineAgentEngine.CompanionState> cs =
                                 MineAgentEngine.getCompanion(cid);
-                        if (cs.isPresent() && isOwnedBy(cs.get().companion, sender)) {
+                        if (cs.isPresent()
+                                && cs.get().companion.serverPlayerOwner()
+                                        .getUUID().equals(sender.getUUID())) {
                             String ownerName = sender.getName().getString();
                             cs.get().loop.onOwnerMessage("[" + ownerName + "]: " + data);
                             return;
@@ -257,6 +240,16 @@ public final class ServerPacketHandler {
                         cfg.llm().temperature(), null, false);
                 return;
             }
+            case "request_companions" -> {
+                // Recover missed spawn packets using authoritative ownership
+                // and both IDs; the client must never guess from player lists.
+                for (var owned : MineAgentEngine.getCompanionsByOwner(sender.getUUID())) {
+                    MineAgentNetwork.sendUiActionTo(sender,
+                            owned.companion.companionId(), "companion_spawned",
+                            owned.companion.serverPlayer().getUUID().toString());
+                }
+                return;
+            }
             default -> { /* fall through to companion-scoped actions */ }
         }
 
@@ -274,7 +267,7 @@ public final class ServerPacketHandler {
         var state = companionState.get();
 
         // Verify ownership
-        if (!isOwnedBy(state.companion, sender)) {
+        if (!state.companion.serverPlayerOwner().getUUID().equals(sender.getUUID())) {
             System.err.println("[MineAgent] ClientUiAction: player does not own companion");
             return;
         }
@@ -295,19 +288,22 @@ public final class ServerPacketHandler {
                     int eq = data.indexOf('=');
                     if (eq > 0) {
                         reflexId = data.substring(0, eq);
-                        String requested = data.substring(eq + 1);
-                        if ("true".equalsIgnoreCase(requested)) {
+                        String rawState = data.substring(eq + 1).trim();
+                        // Boolean.parseBoolean silently maps every typo to
+                        // false, so malformed/untrusted packets used to turn a
+                        // reflex off. Only the protocol's two legal values are
+                        // accepted as an explicit state.
+                        if ("true".equalsIgnoreCase(rawState)) {
                             explicitState = true;
-                        } else if ("false".equalsIgnoreCase(requested)) {
+                        } else if ("false".equalsIgnoreCase(rawState)) {
                             explicitState = false;
                         } else {
-                            // Boolean.parseBoolean maps every typo to false,
-                            // turning malformed/untrusted packets into a real
-                            // state change. Reject values outside the protocol.
-                            System.err.println("[MineAgent] Invalid reflex state: " + requested);
+                            System.err.println("[MineAgent] Invalid reflex state: " + rawState);
                             return;
                         }
                     }
+                    reflexId = reflexId.trim();
+                    if (reflexId.isEmpty()) return;
                     var reflex = ReflexRegistry.get(reflexId);
                     if (reflex.isPresent()) {
                         boolean target = explicitState != null
@@ -332,17 +328,19 @@ public final class ServerPacketHandler {
                         + " removed by owner");
             }
             case "pause" -> {
-                // Cancel physical work as well as pausing the LLM. Otherwise
-                // an already-running path keeps moving after UI pause.
                 state.auction.cancelTask();
-                state.lifecycle.pause();
+                state.lifecycle.pauseByOwner();
                 System.out.println("[MineAgent] Companion " + payload.companionId()
                         + " paused by owner");
             }
             case "resume" -> {
-                state.lifecycle.resume();
-                System.out.println("[MineAgent] Companion " + payload.companionId()
-                        + " resumed by owner");
+                if (state.lifecycle.resumeByOwner()) {
+                    System.out.println("[MineAgent] Companion " + payload.companionId()
+                            + " resumed by owner");
+                } else {
+                    sender.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                            "§c[MineAgent] Dead companions must be respawned first."));
+                }
             }
             default -> System.err.println("[MineAgent] Unknown UI action: " + action);
         }

@@ -31,7 +31,7 @@ public class LocateBiomeTool implements Tool {
             - "minecraft:desert" - Desert
             - "minecraft:jungle" - Jungle
             - "minecraft:taiga" - Taiga
-            - "minecraft:snowy_plains" - Snowy Plains
+            - "minecraft:snowy_tundra" - Snowy Tundra
             - "minecraft:mushroom_fields" - Mushroom Fields
             - "minecraft:swamp" - Swamp
             
@@ -51,10 +51,11 @@ public class LocateBiomeTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
         String biomeType = ToolArgs.getString(args, "biome_type");
-        if (biomeType == null) {
-            reply.accept("{\"error\":\"Missing required parameter 'biome_type'.\"}");
+        if (biomeType == null || biomeType.isBlank()) {
+            reply.accept(ToolArgs.errorJson("Missing required parameter 'biome_type'"));
             return;
         }
+        biomeType = biomeType.trim();
 
         var sp = ((CompanionEntity) player).serverPlayer();
         var level = sp.level();
@@ -72,8 +73,8 @@ public class LocateBiomeTool implements Tool {
                 net.minecraft.core.registries.Registries.BIOME, biomeResourceLoc);
 
         if (!biomeRegistry.containsKey(biomeKey)) {
-            reply.accept(ToolArgs.errorJson(
-                    "Biome type '" + biomeType + "' not found in this world."));
+            reply.accept(ToolArgs.errorJson("Biome type '" + biomeType
+                    + "' not found in this world"));
             return;
         }
 

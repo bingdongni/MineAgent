@@ -8,6 +8,7 @@ import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 
 import java.util.Map;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 import net.minecraft.world.entity.player.Player;
@@ -48,23 +49,20 @@ public class ScanNearbyEntitiesTool implements Tool {
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
-        Integer parsedRadius = ToolArgs.has(args, "radius")
+        Integer radius = ToolArgs.has(args, "radius")
                 ? ToolArgs.getIntOrNull(args, "radius") : DEFAULT_RADIUS;
-        if (parsedRadius == null || parsedRadius < 1 || parsedRadius > MAX_RADIUS) {
-            reply.accept("{\"error\":\"radius must be an integer between 1 and 64.\"}");
+        if (radius == null || radius < 1 || radius > MAX_RADIUS) {
+            reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to " + MAX_RADIUS + "."));
             return;
         }
-        int radius = parsedRadius;
         String entityType = ToolArgs.getString(args, "entity_type");
         if (entityType != null) {
-            var entityId = net.minecraft.resources.ResourceLocation.tryParse(entityType);
-            if (entityId == null
-                    || !net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE
-                            .containsKey(entityId)) {
+            var id = net.minecraft.resources.ResourceLocation.tryParse(entityType);
+            if (id == null || !net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.containsKey(id)) {
                 reply.accept(ToolArgs.errorJson("Unknown entity type: " + entityType));
                 return;
             }
-            entityType = entityId.toString();
+            entityType = id.toString();
         }
 
         var sp = ((CompanionEntity) player).serverPlayer();
@@ -100,13 +98,13 @@ public class ScanNearbyEntitiesTool implements Tool {
             String direction = getDirection(dx, dz);
             double dist = Math.sqrt(distSq);
 
-            sb.append(String.format("%d. %s at (%.0f,%.0f,%.0f) %s dist=%.1f",
+            sb.append(String.format(Locale.ROOT, "%d. %s at (%.0f,%.0f,%.0f) %s dist=%.1f",
                     count + 1, cleanName, entity.getX(), entity.getY(), entity.getZ(),
                     direction, dist));
 
             // Health
             if (entity instanceof net.minecraft.world.entity.LivingEntity living) {
-                sb.append(String.format(" HP=%.0f/%.0f", living.getHealth(), living.getMaxHealth()));
+                sb.append(String.format(Locale.ROOT, " HP=%.0f/%.0f", living.getHealth(), living.getMaxHealth()));
             }
 
             // Threat assessment
@@ -125,7 +123,7 @@ public class ScanNearbyEntitiesTool implements Tool {
                         targetName = p.getName().getString();
                         playerInDanger++;
                         sb.append(" >> ATTACKING: ").append(targetName);
-                        sb.append(String.format(" (HP=%.0f/%.0f)", p.getHealth(), p.getMaxHealth()));
+                        sb.append(String.format(Locale.ROOT, " (HP=%.0f/%.0f)", p.getHealth(), p.getMaxHealth()));
                     } else {
                         targetName = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE
                                 .getKey(target.getType()).toString().replace("minecraft:", "");
@@ -153,7 +151,7 @@ public class ScanNearbyEntitiesTool implements Tool {
         }
 
         sb.append("\n--- SUMMARY ---\n");
-        sb.append(String.format("Total: %d entities | Hostile: %d | Players in danger: %d\n",
+        sb.append(String.format(Locale.ROOT, "Total: %d entities | Hostile: %d | Players in danger: %d\n",
                 count, threatCount, playerInDanger));
 
         if (playerInDanger > 0) {

@@ -7,35 +7,19 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
-/**
- * Scans for blocks of a given type within a radius around a center position.
- * Used by mining and building tasks to find target blocks.
- */
+/** Loaded-chunk-only block search with an optional tick-sliced cursor. */
 public final class BlockScanner {
-
     private BlockScanner() {}
 
-    /**
-     * Find all block positions matching the given block type within a radius.
-     *
-     * @param level     the server level
-     * @param centerX   center X
-     * @param centerY   center Y
-     * @param centerZ   center Z
-     * @param radius    search radius in blocks
-     * @param blockType the block ID string (e.g. "minecraft:iron_ore")
-     * @return list of matching positions, sorted by distance (nearest first)
-     */
     public static List<BlockPos> findBlocks(ServerLevel level, int centerX, int centerY,
                                              int centerZ, int radius, String blockType) {
-        ScanSession session = begin(level, centerX, centerY, centerZ,
-                radius, blockType);
+        ScanSession session = begin(level, centerX, centerY, centerZ, radius, blockType);
         while (!session.isComplete()) session.scan(16_384);
         return session.results();
     }
 
-    /** Start a cursor that can safely spread a large scan across ticks. */
     public static ScanSession begin(ServerLevel level, int centerX, int centerY,
                                     int centerZ, int radius, String blockType) {
         return new ScanSession(level, centerX, centerY, centerZ, radius, blockType);
@@ -59,8 +43,8 @@ public final class BlockScanner {
 
         private ScanSession(ServerLevel level, int centerX, int centerY,
                             int centerZ, int radius, String blockType) {
-            this.level = java.util.Objects.requireNonNull(level, "level");
-            this.blockType = java.util.Objects.requireNonNull(blockType, "blockType");
+            this.level = Objects.requireNonNull(level, "level");
+            this.blockType = Objects.requireNonNull(blockType, "blockType");
             this.centerX = centerX;
             this.centerY = centerY;
             this.centerZ = centerZ;
@@ -73,7 +57,7 @@ public final class BlockScanner {
             this.y = minY;
         }
 
-        /** Inspect at most {@code budget} coordinates without loading chunks. */
+        /** Inspect at most budget coordinates and never load a chunk. */
         public void scan(int budget) {
             if (complete || budget <= 0) return;
             while (budget-- > 0 && !complete) {
@@ -98,9 +82,8 @@ public final class BlockScanner {
             z = centerZ - radius;
             if (++x <= centerX + radius) return;
             complete = true;
-            matches.sort((a, b) -> Double.compare(
-                    distSq(a, centerX, centerY, centerZ),
-                    distSq(b, centerX, centerY, centerZ)));
+            matches.sort(java.util.Comparator.comparingDouble(
+                    pos -> distSq(pos, centerX, centerY, centerZ)));
         }
 
         public boolean isComplete() { return complete; }

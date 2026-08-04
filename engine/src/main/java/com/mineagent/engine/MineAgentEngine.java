@@ -260,10 +260,109 @@ public final class MineAgentEngine {
                 state.loop.getReasoningEffort(),
                 skinName != null ? skinName : "",
                 skinValue,
-                skinSignature
+                skinSignature,
+                serializeCompanionBody(state)
         );
 
         com.mineagent.engine.entity.CompanionStore.save(worldDataDir, saved);
+    }
+
+    /** Serialize vanilla-owned body state without persisting entity identity. */
+    private static String serializeCompanionBody(CompanionState state) {
+        var sp = state.companion.serverPlayer();
+        var body = new net.minecraft.nbt.CompoundTag();
+        body.put("Inventory", sp.getInventory().save(new net.minecraft.nbt.ListTag()));
+        body.put("EnderItems", sp.getEnderChestInventory().createTag(sp.registryAccess()));
+        body.putInt("SelectedSlot", sp.getInventory().selected);
+        body.putFloat("Health", sp.getHealth());
+        sp.getFoodData().addAdditionalSaveData(body);
+        body.putInt("XpLevel", sp.experienceLevel);
+        body.putInt("XpTotal", sp.totalExperience);
+        body.putFloat("XpProgress", sp.experienceProgress);
+        body.putString("Dimension", sp.level().dimension().location().toString());
+        body.putDouble("PosX", sp.getX());
+        body.putDouble("PosY", sp.getY());
+        body.putDouble("PosZ", sp.getZ());
+        body.putFloat("Yaw", sp.getYRot());
+        body.putFloat("Pitch", sp.getXRot());
+        body.putString("Mode", getCompanionMode(state.companion.companionId()).name());
+        return body.toString();
+    }
+
+    /** Restore the body snapshot after the fake player has been registered. */
+    private static void restoreCompanionBody(CompanionEntity companion, String bodyData) {
+        if (bodyData == null || bodyData.isBlank()) return; // version-1 save
+        var sp = companion.serverPlayer();
+        try {
+            var body = net.minecraft.nbt.TagParser.parseTag(bodyData);
+            if (body.contains("Inventory", net.minecraft.nbt.Tag.TAG_LIST)) {
+                sp.getInventory().load(body.getList(
+                        "Inventory", net.minecraft.nbt.Tag.TAG_COMPOUND));
+            }
+            if (body.contains("EnderItems", net.minecraft.nbt.Tag.TAG_LIST)) {
+                sp.getEnderChestInventory().fromTag(body.getList(
+                        "EnderItems", net.minecraft.nbt.Tag.TAG_COMPOUND), sp.registryAccess());
+            }
+            if (body.contains("SelectedSlot")) {
+                sp.getInventory().selected = net.minecraft.util.Mth.clamp(
+                        body.getInt("SelectedSlot"), 0,
+                        net.minecraft.world.entity.player.Inventory.getSelectionSize() - 1);
+            }
+            if (body.contains("Health")) {
+                float savedHealth = body.getFloat("Health");
+                sp.setHealth(Float.isFinite(savedHealth) && savedHealth > 0.0f
+                        ? Math.min(savedHealth, sp.getMaxHealth()) : sp.getMaxHealth());
+            }
+            sp.getFoodData().readAdditionalSaveData(body);
+            sp.experienceLevel = Math.max(0, body.getInt("XpLevel"));
+            sp.totalExperience = Math.max(0, body.getInt("XpTotal"));
+            float progress = body.getFloat("XpProgress");
+            sp.experienceProgress = Float.isFinite(progress)
+                    ? net.minecraft.util.Mth.clamp(progress, 0.0f, 1.0f) : 0.0f;
+
+            restoreSavedPosition(sp, body);
+
+            if (body.contains("Mode")) {
+                try {
+                    COMPANION_MODES.put(companion.companionId(),
+                            CompanionMode.valueOf(body.getString("Mode")));
+                } catch (IllegalArgumentException ignored) {
+                    COMPANION_MODES.put(companion.companionId(), CompanionMode.FREE);
+                }
+            }
+            sp.getInventory().setChanged();
+            sp.containerMenu.broadcastChanges();
+        } catch (Exception invalidBody) {
+            // The companion config/skin can still be restored even if one old
+            // or manually edited body snapshot is unusable.
+            System.err.println("[MineAgent] Could not restore body for '"
+                    + companion.companionName() + "': " + invalidBody.getMessage());
+        }
+    }
+
+    private static void restoreSavedPosition(ServerPlayer sp,
+                                             net.minecraft.nbt.CompoundTag body) {
+        String dimensionName = body.getString("Dimension");
+        net.minecraft.resources.ResourceLocation location =
+                net.minecraft.resources.ResourceLocation.tryParse(dimensionName);
+        if (location == null) return;
+        var dimension = net.minecraft.resources.ResourceKey.create(
+                net.minecraft.core.registries.Registries.DIMENSION, location);
+        var level = sp.getServer().getLevel(dimension);
+        if (level == null) return;
+        double x = body.getDouble("PosX");
+        double y = body.getDouble("PosY");
+        double z = body.getDouble("PosZ");
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return;
+        var savedPos = net.minecraft.core.BlockPos.containing(x, y, z);
+        if (!level.getWorldBorder().isWithinBounds(savedPos)
+                || savedPos.getY() < level.getMinBuildHeight()
+                || savedPos.getY() >= level.getMaxBuildHeight()) return;
+        // Load only the exact saved chunk. SafeTeleport itself uses getChunkNow
+        // and therefore never fans out into unbounded synchronous chunk loads.
+        level.getChunkAt(savedPos);
+        com.mineagent.engine.entity.SafeTeleport.near(sp, level, savedPos,
+                body.getFloat("Yaw"), body.getFloat("Pitch"));
     }
 
     /**
@@ -846,7 +945,7 @@ public final class MineAgentEngine {
             // manually created and never registered to ServerConnectionListener,
             // so FakePlayerNetworkHandler.tick() was NEVER called.
             //
-            // Without connection.tick(), player.tick() is never invoked, which
+            // Without connection.tick(), ServerPlayer.doTick() is never invoked, so
             // means LivingEntity.tick() → aiStep() → travel() never runs, so
             // movement physics (reading zza/xxa set by the pathing system) are
             // never applied. The companion stands still forever regardless of
@@ -858,7 +957,7 @@ public final class MineAgentEngine {
             // This ensures inputs are set first, then physics are applied in
             // the same tick — zero-latency movement.
             //
-            // We call connection.tick() instead of player.tick() directly so
+            // We call connection.tick() instead of doTick() directly so
             // that FakePlayerNetworkHandler's keep-alive logic also runs.
             try {
                 // Do not advance vanilla's death timer. ServerPlayer.doTick()
@@ -1015,7 +1114,10 @@ public final class MineAgentEngine {
      * Set the companion mode for a specific companion.
      */
     public static void setCompanionMode(UUID companionId, CompanionMode mode) {
+        if (companionId == null || mode == null) return;
         COMPANION_MODES.put(companionId, mode);
+        CompanionState state = COMPANIONS.get(companionId);
+        if (state != null) persistCompanion(state);
         System.out.println("[MineAgent] Companion mode set to " + mode + " for " + companionId);
     }
 
@@ -1050,8 +1152,14 @@ public final class MineAgentEngine {
         // to a point 3 blocks away from the owner (not on top of the owner)
         if (newMode == CompanionMode.FOLLOW) {
             var sp = state.companion.serverPlayer();
-            double distance = Math.sqrt(sp.distanceToSqr(owner));
-            if (distance > 48.0) {
+            // distanceToSqr only compares coordinates; matching coordinates in
+            // different dimensions would otherwise look "near" and leave the
+            // follower permanently outside the owner's world.
+            boolean differentDimension = sp.level().dimension() != owner.level().dimension();
+            double distance = differentDimension
+                    ? Double.POSITIVE_INFINITY
+                    : Math.sqrt(sp.distanceToSqr(owner));
+            if (differentDimension || distance > 48.0) {
                 if (com.mineagent.engine.entity.SafeTeleport.beside(sp, owner)) {
                     source.sendSuccess(() -> Component.literal(
                             "§b[MineAgent] Companion was far away — teleported near you!"), false);
@@ -1285,6 +1393,7 @@ public final class MineAgentEngine {
                 // actually spawned (problem 4 fix: previously "has been restored!"
                 // was sent even on failure).
                 if (companion != null) {
+                    restoreCompanionBody(companion, saved.bodyData());
                     // Apply cached skin if available (no network request needed!)
                     if (saved.skinValue() != null && !saved.skinValue().isEmpty()) {
                         var sp = companion.serverPlayer();

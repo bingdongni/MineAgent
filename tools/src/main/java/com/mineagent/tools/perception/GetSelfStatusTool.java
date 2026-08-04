@@ -7,6 +7,7 @@ import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 
 import java.util.Map;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 /**
@@ -39,11 +40,11 @@ public class GetSelfStatusTool implements Tool {
 
         StringBuilder sb = new StringBuilder();
         sb.append("=== STATUS ===\n");
-        sb.append(String.format("Position: (%d, %d, %d)\n", pos.getX(), pos.getY(), pos.getZ()));
-        sb.append(String.format("Health: %.1f/%.1f\n", sp.getHealth(), sp.getMaxHealth()));
-        sb.append(String.format("Food: %d | Saturation: %.1f\n",
+        sb.append(String.format(Locale.ROOT, "Position: (%d, %d, %d)\n", pos.getX(), pos.getY(), pos.getZ()));
+        sb.append(String.format(Locale.ROOT, "Health: %.1f/%.1f\n", sp.getHealth(), sp.getMaxHealth()));
+        sb.append(String.format(Locale.ROOT, "Food: %d | Saturation: %.1f\n",
                 sp.getFoodData().getFoodLevel(), sp.getFoodData().getSaturationLevel()));
-        sb.append(String.format("Air: %d | XP Level: %d\n", sp.getAirSupply(), sp.experienceLevel));
+        sb.append(String.format(Locale.ROOT, "Air: %d | XP Level: %d\n", sp.getAirSupply(), sp.experienceLevel));
 
         // Active potion effects
         var effects = sp.getActiveEffects();
@@ -110,11 +111,11 @@ public class GetSelfStatusTool implements Tool {
                 String itemName = stack.getHoverName().getString();
                 String slotType = (i < 9) ? "Hotbar" : "Inv";
                 int slotNum = (i < 9) ? i : i - 9;
-                sb.append(String.format("[%s %d] %s x%d\n", slotType, slotNum, itemName, stack.getCount()));
+                sb.append(String.format(Locale.ROOT, "[%s %d] %s x%d\n", slotType, slotNum, itemName, stack.getCount()));
                 if (i < 9) hotbarCount++; else invCount++;
             }
         }
-        sb.append(String.format("\nHotbar: %d/9 slots | Inventory: %d/27 slots used\n",
+        sb.append(String.format(Locale.ROOT, "\nHotbar: %d/9 slots | Inventory: %d/27 slots used\n",
                 hotbarCount, invCount));
 
         reply.accept(sb.toString());

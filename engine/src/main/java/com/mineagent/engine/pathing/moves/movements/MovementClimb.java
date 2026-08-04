@@ -70,8 +70,12 @@ public final class MovementClimb extends Movement {
 
     @Override
     public boolean isFinished(AgentPlayer player) {
-        int currentY = TaskContext.serverPlayer(player).blockPosition().getY();
-        return ascending ? currentY >= dstY : currentY <= dstY;
+        var pos = TaskContext.serverPlayer(player).blockPosition();
+        // Reaching the altitude after drifting out of the ladder/vine column
+        // is not completion; the following edge was planned from this exact
+        // x/z cell and would otherwise start from an invalid predecessor.
+        return pos.getX() == dstX && pos.getZ() == dstZ
+                && (ascending ? pos.getY() >= dstY : pos.getY() <= dstY);
     }
 
     private static Direction attachmentDirection(BlockState state) {

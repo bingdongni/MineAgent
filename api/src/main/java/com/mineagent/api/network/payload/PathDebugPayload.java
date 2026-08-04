@@ -17,7 +17,8 @@ public record PathDebugPayload(UUID companionId, List<double[]> pathNodes,
     public PathDebugPayload {
         if (companionId == null) throw new IllegalArgumentException("companionId required");
         if (pathNodes == null) throw new IllegalArgumentException("pathNodes required");
-        if (pathStatus == null) throw new IllegalArgumentException("pathStatus required");
+        if (pathStatus == null || pathStatus.isBlank() || pathStatus.length() > 128)
+            throw new IllegalArgumentException("invalid pathStatus");
         if (pathNodes.size() > 4096) throw new IllegalArgumentException("too many path nodes");
         List<double[]> copy = new java.util.ArrayList<>(pathNodes.size());
         for (double[] node : pathNodes) {

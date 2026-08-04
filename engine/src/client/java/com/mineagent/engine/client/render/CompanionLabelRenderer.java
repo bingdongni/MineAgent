@@ -1,4 +1,6 @@
-package com.mineagent.fabric.client.render;
+package com.mineagent.engine.client.render;
+
+import com.mineagent.engine.client.MineAgentClientController;
 
 import com.mojang.blaze3d.platform.Window;
 import net.minecraft.client.Minecraft;
@@ -90,9 +92,7 @@ public final class CompanionLabelRenderer {
 
     // ── Colors (ARGB) ──
     private static final int PANEL_BG = 0xB0000000;       // 70% alpha black
-    // Include an opaque alpha byte. applyAlpha() scales the existing alpha;
-    // 0x00B0FFFF therefore made every companion name fully transparent.
-    private static final int NAME_COLOR = 0xFFB0FFFF;      // cyan
+    private static final int NAME_COLOR = 0xB0FFFF;        // cyan
     private static final int HP_TEXT_COLOR = 0xFFFF5555;   // red text
     private static final int FOOD_TEXT_COLOR = 0xFFC19A6B; // tan text
     private static final int LOW_HP_COLOR = 0xFFFFFF44;   // yellow warning
@@ -291,13 +291,12 @@ public final class CompanionLabelRenderer {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null || mc.cameraEntity == null) return;
 
-        // Use IDs explicitly announced by the server. Rendering every
-        // non-local Player leaked MineAgent labels onto humans in multiplayer.
+        // Only render fake-player UUIDs supplied by the server. Treating every
+        // remote Player as AI mislabels real users and exposes their status.
         List<Player> companions = new ArrayList<>();
         for (var entity : mc.level.entitiesForRendering()) {
             if (entity instanceof Player p && entity != mc.player
-                    && com.mineagent.fabric.client.MineAgentClient
-                            .isKnownCompanion(p.getUUID())) {
+                    && MineAgentClientController.isCompanionPlayer(p.getUUID())) {
                 companions.add(p);
             }
         }

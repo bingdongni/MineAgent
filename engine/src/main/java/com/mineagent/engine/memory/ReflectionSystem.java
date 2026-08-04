@@ -429,19 +429,9 @@ public class ReflectionSystem {
                 }
             }
         }
-        Map<String, Integer> validPatterns = new java.util.HashMap<>();
-        if (patterns != null) {
-            // Validate before replacing live state. ConcurrentHashMap rejects
-            // nulls, and non-positive/corrupt counts have no useful semantic
-            // meaning in failure-frequency ranking.
-            patterns.forEach((pattern, count) -> {
-                if (pattern != null && !pattern.isBlank()
-                        && count != null && count > 0) {
-                    validPatterns.put(pattern, count);
-                }
-            });
-        }
         failurePatterns.clear();
-        failurePatterns.putAll(validPatterns);
+        if (patterns != null) {
+            failurePatterns.putAll(patterns);
+        }
     }
 }

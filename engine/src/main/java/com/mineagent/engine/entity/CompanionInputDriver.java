@@ -64,28 +64,9 @@ public class CompanionInputDriver implements InputDriver {
             var entityHit = (EntityHitResult) hit;
             player.attack(entityHit.getEntity());
         } else if (hit.getType() == HitResult.Type.BLOCK) {
-            // Break block — single-click mode: send START then immediately
-            // STOP. Why both packets:
-            //
-            //  - FakePlayerGameMode with instantBreak=true (default): START
-            //    already destroys the block instantly via destroyBlock();
-            //    the subsequent STOP targets now-air and is a harmless
-            //    no-op, so this is safe.
-            //  - FakePlayerGameMode with instantBreak=false, or a vanilla
-            //    ServerPlayerGameMode: sending START alone leaves the
-            //    destroy state machine stuck in "destroyingBlock=true"
-            //    with no per-tick progress and no termination — the block
-            //    is never broken AND the player can't begin breaking
-            //    another block (the state machine is seized). STOP_DESTROY_BLOCK
-            //    lets the server finalize the break for low-hardness blocks
-            //    (dirt, sand, grass — single-tick breaks) and, for harder
-            //    blocks, at least cleanly resets the destroy state so the
-            //    companion isn't wedged. This is the "single click = one
-            //    break attempt" contract for this driver.
-            //
-            // We intentionally do NOT branch on instanceof FakePlayerGameMode
-            // to keep this driver decoupled from the FakePlayerGameMode
-            // type; the START+STOP pair is correct for both modes.
+            // Keep START held across ticks. FakePlayerGameMode supplies the
+            // missing client-side completion signal once vanilla hardness
+            // progress reaches one; clear()/target changes send ABORT.
             var blockHit = (BlockHitResult) hit;
             var pos = blockHit.getBlockPos();
             var dir = blockHit.getDirection();

@@ -12,11 +12,11 @@ public final class Ballistics {
     private Ballistics() {}
 
     /** Gravity acceleration for arrows (blocks/tick^2). */
-    public static final double ARROW_GRAVITY = 0.03;
+    public static final double ARROW_GRAVITY = 0.05;
     /** Gravity acceleration for thrown projectiles (snowballs, eggs). */
     public static final double THROWN_GRAVITY = 0.03;
     /** Gravity acceleration for tridents. */
-    public static final double TRIDENT_GRAVITY = 0.012;
+    public static final double TRIDENT_GRAVITY = 0.05;
 
     /** Default arrow velocity (blocks/tick) at full charge. */
     public static final double ARROW_VELOCITY = 3.0;
@@ -104,9 +104,12 @@ public final class Ballistics {
         if (itemId == null) return ARROW_VELOCITY;
         return switch (itemId) {
             case "minecraft:bow" -> {
-                // Bow velocity scales with charge time (0 to ~3.0)
-                double chargeFraction = Math.min(1.0, chargeTicks / 20.0);
-                yield 0.5 + chargeFraction * (ARROW_VELOCITY - 0.5);
+                // BowItem uses ((t/20)^2 + 2*(t/20))/3 as power, capped
+                // at one, then multiplies it by the 3.0 projectile speed.
+                double fraction = Math.min(1.0, Math.max(0.0, chargeTicks / 20.0));
+                double power = Math.min(1.0,
+                        (fraction * fraction + 2.0 * fraction) / 3.0);
+                yield power * ARROW_VELOCITY;
             }
             case "minecraft:crossbow" -> ARROW_VELOCITY * 1.1; // slightly faster
             case "minecraft:trident" -> TRIDENT_VELOCITY;
@@ -126,5 +129,13 @@ public final class Ballistics {
             case "minecraft:trident" -> 20.0;
             default -> 15.0; // thrown projectiles
         };
+    }
+
+    /** Charge-aware range prevents weak bow shots being attempted from 30 blocks. */
+    public static double effectiveRange(String itemId, int chargeTicks) {
+        double base = effectiveRange(itemId);
+        if (!"minecraft:bow".equals(itemId)) return base;
+        double speed = velocityForWeapon(itemId, chargeTicks);
+        return Math.max(5.0, base * speed / ARROW_VELOCITY);
     }
 }

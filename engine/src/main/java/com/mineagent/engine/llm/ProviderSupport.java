@@ -51,7 +51,8 @@ final class ProviderSupport {
     }
 
     static void validateRequest(String provider, String apiKey, String model,
-                                List<ChatMessage> messages, int maxTokens) {
+                                List<ChatMessage> messages, double temperature,
+                                int maxTokens) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException(provider + " API key is not configured");
         }
@@ -63,6 +64,10 @@ final class ProviderSupport {
         }
         if (maxTokens <= 0) {
             throw new IllegalArgumentException(provider + " maxTokens must be positive");
+        }
+        if (!Double.isFinite(temperature) || temperature < 0.0 || temperature > 2.0) {
+            throw new IllegalArgumentException(
+                    provider + " temperature must be finite and between 0 and 2");
         }
     }
 

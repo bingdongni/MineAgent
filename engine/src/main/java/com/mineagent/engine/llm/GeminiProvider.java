@@ -69,7 +69,8 @@ public class GeminiProvider implements LLMProvider {
                                  String reasoningEffort) {
         // Fail fast on null/blank model — otherwise model.startsWith() below
         // would throw NPE, masking the real configuration issue.
-        ProviderSupport.validateRequest("Gemini", apiKey, model, messages, maxTokens);
+        ProviderSupport.validateRequest(
+                "Gemini", apiKey, model, messages, temperature, maxTokens);
         String resolvedBaseUrl = ProviderSupport.validatedBaseUrl(
                 baseUrl, defaultBaseUrl(), "Gemini");
         try {
@@ -109,9 +110,7 @@ public class GeminiProvider implements LLMProvider {
             for (ChatMessage msg : messages) {
                 if ("system".equals(msg.role())) continue; // system handled separately
 
-                JsonObject contentObj = new JsonObject();
-                contentObj.addProperty("role", translateRole(msg.role()));
-
+                String role = translateRole(msg.role());
                 JsonArray parts = new JsonArray();
 
                 // Tool results — Gemini requires the function name here.
@@ -121,7 +120,12 @@ public class GeminiProvider implements LLMProvider {
                 // Also: Gemini's response field MUST be a JSON object.
                 // If tool content is not valid JSON, wrap it in {"result": "..."}.
                 if ("tool".equals(msg.role()) && msg.toolCallId() != null) {
-                    String funcName = toolCallIdToName.getOrDefault(msg.toolCallId(), "unknown");
+                    String funcName = toolCallIdToName.get(msg.toolCallId());
+                    if (funcName == null) {
+                        System.err.println("[MineAgent] Skipping orphan Gemini tool result id="
+                                + msg.toolCallId());
+                        continue;
+                    }
                     JsonObject responsePart = new JsonObject();
                     JsonObject funcResponse = new JsonObject();
                     funcResponse.addProperty("name", funcName);
@@ -163,8 +167,7 @@ public class GeminiProvider implements LLMProvider {
                 // Skip messages with empty parts (Gemini rejects empty parts array)
                 if (parts.isEmpty()) continue;
 
-                contentObj.add("parts", parts);
-                contents.add(contentObj);
+                appendContent(contents, role, parts);
             }
             body.add("contents", contents);
 
@@ -323,11 +326,14 @@ public class GeminiProvider implements LLMProvider {
 
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw LLMProviderException.http("Gemini",
-                        response.statusCode(), response.body());
+                        response.statusCode(), response.body(),
+                        response.headers().firstValue("Retry-After").orElse(null));
             }
 
             try {
                 return parseGeminiResponse(response.body(), model);
+            } catch (LLMProviderException e) {
+                throw e;
             } catch (RuntimeException e) {
                 throw ProviderSupport.malformedResponse("Gemini", response.body(), e);
             }
@@ -346,9 +352,28 @@ public class GeminiProvider implements LLMProvider {
     private String translateRole(String role) {
         return switch (role) {
             case "assistant" -> "model";
-            case "tool" -> "function";
+            // generateContent only accepts user/model conversation roles.
+            // functionResponse is a part within a user turn, not a role.
+            case "tool" -> "user";
             default -> role;
         };
+    }
+
+    private static void appendContent(JsonArray contents, String role, JsonArray parts) {
+        if (!contents.isEmpty()) {
+            JsonObject previous = contents.get(contents.size() - 1).getAsJsonObject();
+            if (role.equals(previous.get("role").getAsString())) {
+                JsonArray previousParts = previous.getAsJsonArray("parts");
+                for (JsonElement part : parts) {
+                    previousParts.add(part);
+                }
+                return;
+            }
+        }
+        JsonObject content = new JsonObject();
+        content.addProperty("role", role);
+        content.add("parts", parts);
+        contents.add(content);
     }
 
     /**
@@ -377,6 +402,15 @@ public class GeminiProvider implements LLMProvider {
         // Without this guard we'd NPE or throw IndexOutOfBoundsException,
         // masking the real cause.
         if (!root.has("candidates") || !root.get("candidates").isJsonArray()) {
+            if (root.has("promptFeedback") && root.get("promptFeedback").isJsonObject()) {
+                JsonObject feedback = root.getAsJsonObject("promptFeedback");
+                if (feedback.has("blockReason")
+                        && !feedback.get("blockReason").isJsonNull()) {
+                    throw new LLMProviderException(
+                            "Gemini request blocked: " + feedback.get("blockReason").getAsString(),
+                            null, false, null);
+                }
+            }
             throw new RuntimeException("Gemini API returned no 'candidates' field "
                     + "(likely safety filter, content moderation, or upstream "
                     + "error). Response: " + ProviderSupport.truncate(json, 500));
@@ -420,6 +454,12 @@ public class GeminiProvider implements LLMProvider {
             if (candidate.has("finishReason")) {
                 finishReason = candidate.get("finishReason").getAsString();
             }
+            if ((content == null || content.isBlank()) && toolCalls.isEmpty()
+                    && isBlockedFinishReason(finishReason)) {
+                throw new LLMProviderException(
+                        "Gemini response blocked: " + finishReason,
+                        null, false, null);
+            }
         }
 
         if (!toolCalls.isEmpty()) finishReason = "tool_calls";
@@ -438,5 +478,11 @@ public class GeminiProvider implements LLMProvider {
 
         return new LLMResponse("", model,
                 new LLMResponse.Choice(0, message, finishReason), usage, finishReason);
+    }
+
+    private static boolean isBlockedFinishReason(String reason) {
+        return "SAFETY".equals(reason) || "RECITATION".equals(reason)
+                || "BLOCKLIST".equals(reason) || "PROHIBITED_CONTENT".equals(reason)
+                || "SPII".equals(reason);
     }
 }

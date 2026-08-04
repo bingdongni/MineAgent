@@ -40,11 +40,7 @@ public final class ToolArgs {
         if (args == null) return defaultVal;
         Object val = args.get(key);
         if (val instanceof Boolean b) return b;
-        if (val instanceof String s) {
-            String normalized = s.trim().toLowerCase(Locale.ROOT);
-            if (normalized.equals("true") || normalized.equals("1")) return true;
-            if (normalized.equals("false") || normalized.equals("0")) return false;
-        }
+        if (val instanceof String s) return Boolean.parseBoolean(s);
         return defaultVal;
     }
 
@@ -63,15 +59,9 @@ public final class ToolArgs {
     public static double parseDouble(Map<String, Object> args, String key, double defaultVal) {
         if (args == null) return defaultVal;
         Object val = args.get(key);
-        if (val instanceof Number n) {
-            double parsed = n.doubleValue();
-            return Double.isFinite(parsed) ? parsed : defaultVal;
-        }
+        if (val instanceof Number n) return n.doubleValue();
         if (val instanceof String s) {
-            try {
-                double parsed = Double.parseDouble(s);
-                return Double.isFinite(parsed) ? parsed : defaultVal;
-            } catch (NumberFormatException e) { return defaultVal; }
+            try { return Double.parseDouble(s); } catch (NumberFormatException e) { return defaultVal; }
         }
         return defaultVal;
     }
@@ -157,14 +147,9 @@ public final class ToolArgs {
         try {
             var p = e.getAsJsonPrimitive();
             if (p.isNumber() || p.isString()) {
-                // intValue() silently truncated 1.9 and overflowed large
-                // values. Coordinates and slot indices must be exact ints.
                 return new java.math.BigDecimal(p.getAsString().trim()).intValueExact();
             }
-        } catch (NumberFormatException | ArithmeticException ignored) {
-            // A present but malformed value is absent from the typed view. This
-            // prevents bad LLM arguments from silently turning into coordinate 0.
-        }
+        } catch (NumberFormatException | ArithmeticException ignored) {}
         return null;
     }
 
@@ -177,15 +162,9 @@ public final class ToolArgs {
         if (e == null) return defaultVal;
         if (e.isJsonPrimitive()) {
             var p = e.getAsJsonPrimitive();
-            if (p.isNumber()) {
-                double parsed = p.getAsNumber().doubleValue();
-                return Double.isFinite(parsed) ? parsed : defaultVal;
-            }
+            if (p.isNumber()) return p.getAsNumber().doubleValue();
             if (p.isString()) {
-                try {
-                    double parsed = Double.parseDouble(p.getAsString().trim());
-                    return Double.isFinite(parsed) ? parsed : defaultVal;
-                }
+                try { return Double.parseDouble(p.getAsString().trim()); }
                 catch (NumberFormatException ex) { return defaultVal; }
             }
         }
@@ -204,9 +183,7 @@ public final class ToolArgs {
                 double value = Double.parseDouble(p.getAsString().trim());
                 return Double.isFinite(value) ? value : null;
             }
-        } catch (NumberFormatException ignored) {
-            // See getIntOrNull: invalid data must not be accepted as zero.
-        }
+        } catch (NumberFormatException ignored) {}
         return null;
     }
 
@@ -240,9 +217,9 @@ public final class ToolArgs {
         if (p.isBoolean()) return p.getAsBoolean();
         if (p.isNumber()) return p.getAsNumber().intValue() != 0;
         if (p.isString()) {
-            String s = p.getAsString().trim().toLowerCase(Locale.ROOT);
-            if (s.equals("true") || s.equals("1")) return true;
-            if (s.equals("false") || s.equals("0")) return false;
+            String value = p.getAsString().trim().toLowerCase(Locale.ROOT);
+            if (value.equals("true") || value.equals("1")) return true;
+            if (value.equals("false") || value.equals("0")) return false;
         }
         return null;
     }
@@ -291,7 +268,7 @@ public final class ToolArgs {
                 .replace("\n", "\\n").replace("\r", "\\r");
     }
 
-    /** Build an error object without exposing callers to JSON escaping bugs. */
+    /** Build structured error JSON so arbitrary exception text stays escaped. */
     public static String errorJson(String message) {
         JsonObject result = new JsonObject();
         result.addProperty("error", message == null ? "Unknown error" : message);

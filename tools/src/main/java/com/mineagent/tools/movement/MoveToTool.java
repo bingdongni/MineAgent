@@ -33,9 +33,8 @@ public class MoveToTool implements Tool {
             - "y": climb/descend to altitude y
             - "block": walk adjacent to the block at (x, y, z)
             
-            The companion can dig through breakable obstacles, build short
-            bridges when carrying support blocks, and use ordinary jumps.
-            Returns a task_id for tracking.
+            The companion will dig through blocks, build bridges, and climb pillars
+            to reach the goal. Returns a task_id for tracking.
             """;
     }
 
@@ -43,7 +42,7 @@ public class MoveToTool implements Tool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("goal_mode", "Goal mode: xz, xzy, y, or block")
-                .optionalInteger("x", "Target X coordinate (not required for y mode)", -30000000, 30000000)
+                .optionalInteger("x", "Target X coordinate (required for xz/xzy/block)", -30_000_000, 30_000_000)
                 .optionalInteger("y", "Target Y coordinate (required for xzy/y/block)", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .optionalInteger("z", "Target Z coordinate (required for xz/xzy/block)", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .build();
@@ -57,11 +56,9 @@ public class MoveToTool implements Tool {
             reply.accept("{\"error\":\"Missing required parameter 'goal_mode'. Use xz/xzy/y/block.\"}");
             return;
         }
-        var sp = com.mineagent.engine.task.TaskContext.serverPlayer(player);
         Integer parsedX = ToolArgs.getIntOrNull(args, "x");
         Integer y = ToolArgs.getIntOrNull(args, "y");
         Integer z = ToolArgs.getIntOrNull(args, "z");
-        int x = parsedX != null ? parsedX : sp.blockPosition().getX();
 
         // Validate goal mode
         if (!java.util.Set.of("xz", "xzy", "y", "block").contains(goalMode)) {
@@ -80,8 +77,8 @@ public class MoveToTool implements Tool {
             }
             case "xzy", "block" -> {
                 if (parsedX == null || y == null || z == null) {
-                    reply.accept("{\"error\":\"goal_mode '" + goalMode
-                            + "' requires x, y, and z coordinates.\"}");
+                    reply.accept(ToolArgs.errorJson("goal_mode '" + goalMode
+                            + "' requires x, y, and z coordinates."));
                     return;
                 }
             }
@@ -93,14 +90,14 @@ public class MoveToTool implements Tool {
             }
         }
 
-        if (Math.abs((long) x) > 30_000_000L
-                || (z != null && Math.abs((long) z) > 30_000_000L)) {
-            reply.accept("{\"error\":\"x and z must be within +/-30000000.\"}");
-            return;
-        }
-        if (y != null && (y < sp.serverLevel().getMinBuildHeight()
-                || y >= sp.serverLevel().getMaxBuildHeight())) {
-            reply.accept(ToolArgs.errorJson("y is outside this dimension's build height."));
+        int x = parsedX != null ? parsedX : (int) Math.floor(player.posX());
+        var target = new net.minecraft.core.BlockPos(x,
+                y != null ? y : (int) Math.floor(player.posY()),
+                z != null ? z : (int) Math.floor(player.posZ()));
+        var level = ((com.mineagent.engine.entity.CompanionEntity) player)
+                .serverPlayer().serverLevel();
+        if (!level.isInWorldBounds(target)) {
+            reply.accept(ToolArgs.errorJson("Target is outside this dimension's world bounds: " + target.toShortString()));
             return;
         }
 

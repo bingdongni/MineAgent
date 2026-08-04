@@ -75,8 +75,9 @@ public final class UnstuckDetector {
         this(DEFAULT_WINDOW_SIZE);
     }
 
+    /** Honor the configured stuck duration while keeping a sane lower bound. */
     public UnstuckDetector(int windowSize) {
-        this.windowSize = Math.max(2, windowSize);
+        this.windowSize = Math.max(10, windowSize);
         this.tryingBuffer = new boolean[this.windowSize];
         this.xBuffer = new double[this.windowSize];
         this.zBuffer = new double[this.windowSize];
@@ -183,7 +184,7 @@ public final class UnstuckDetector {
      */
     public double currentDisplacement() {
         if (recordedTicks < 2) return 0.0;
-        int oldestIdx = recordedTicks < windowSize ? 0 : writeIndex;
+        int oldestIdx = writeIndex;
         int newestIdx = (writeIndex - 1 + windowSize) % windowSize;
         double dx = xBuffer[newestIdx] - xBuffer[oldestIdx];
         double dz = zBuffer[newestIdx] - zBuffer[oldestIdx];

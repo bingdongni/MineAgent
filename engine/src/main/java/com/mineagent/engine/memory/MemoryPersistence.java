@@ -2,12 +2,19 @@ package com.mineagent.engine.memory;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
-import java.lang.reflect.Type;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -39,7 +46,7 @@ public class MemoryPersistence {
     private static final String PLACE_EVENT_FILE = "place_events.json";
     private static final String IMPORTANCE_FILE = "importance_weights.json";
     private static final String REFLECTION_FILE = "reflections.json";
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
 
     /** 自动保存间隔（毫秒） */
     private static final long AUTO_SAVE_INTERVAL = 60_000;
@@ -108,21 +115,40 @@ public class MemoryPersistence {
      */
     public synchronized void loadAll() {
         if (!Files.isDirectory(memoryDir)) return;
-        try { loadCognitiveMap(); } catch (Exception e) {
-            System.err.println("[MineAgent] Load cognitive map failed: " + e.getMessage());
-        }
-        try { loadPlaceEventMemory(); } catch (Exception e) {
-            System.err.println("[MineAgent] Load place events failed: " + e.getMessage());
-        }
-        try { loadImportanceWeights(); } catch (Exception e) {
-            System.err.println("[MineAgent] Load importance weights failed: " + e.getMessage());
-        }
-        try { loadReflections(); } catch (Exception e) {
-            System.err.println("[MineAgent] Load reflections failed: " + e.getMessage());
-        }
-        // Loading is disk activity too. Without this update the first agent
-        // turn immediately rewrote every file despite no memory changing.
+        loadWithQuarantine(COGNITIVE_MAP_FILE, "cognitive map", this::loadCognitiveMap);
+        loadWithQuarantine(PLACE_EVENT_FILE, "place events", this::loadPlaceEventMemory);
+        loadWithQuarantine(IMPORTANCE_FILE, "importance weights", this::loadImportanceWeights);
+        loadWithQuarantine(REFLECTION_FILE, "reflections", this::loadReflections);
+        // Do not immediately overwrite a quarantined or partially recovered
+        // file on the first agent turn. The normal one-minute autosave will
+        // persist the validated in-memory subset while the original remains.
         lastSaveTime = System.currentTimeMillis();
+    }
+
+    @FunctionalInterface
+    private interface MemoryLoader { void load() throws IOException; }
+
+    private void loadWithQuarantine(String fileName, String label, MemoryLoader loader) {
+        try {
+            loader.load();
+        } catch (Exception failure) {
+            System.err.println("[MineAgent] Load " + label + " failed: "
+                    + failure.getMessage());
+            quarantine(memoryDir.resolve(fileName));
+        }
+    }
+
+    private static void quarantine(Path file) {
+        if (!Files.exists(file)) return;
+        Path quarantined = file.resolveSibling(file.getFileName()
+                + ".corrupt-" + System.currentTimeMillis());
+        try {
+            Files.move(file, quarantined, StandardCopyOption.REPLACE_EXISTING);
+            System.err.println("[MineAgent] Preserved invalid memory file as " + quarantined);
+        } catch (IOException moveFailure) {
+            System.err.println("[MineAgent] Could not quarantine invalid memory file: "
+                    + moveFailure.getMessage());
+        }
     }
 
     // ─── CognitiveMap ───
@@ -138,13 +164,25 @@ public class MemoryPersistence {
     private void loadCognitiveMap() throws IOException {
         Path file = memoryDir.resolve(COGNITIVE_MAP_FILE);
         if (!Files.exists(file)) return;
-        Type type = new TypeToken<Map<String, Object>>() {}.getType();
-        Map<String, Object> data = GSON.fromJson(Files.readString(file), type);
-        validateSnapshot(data, "pois", file);
-
-        Type poiListType = new TypeToken<List<CognitiveMap.PointOfInterest>>() {}.getType();
-        List<CognitiveMap.PointOfInterest> pois =
-                GSON.fromJson(GSON.toJsonTree(data.get("pois")), poiListType);
+        JsonObject data = readRoot(file);
+        JsonArray entries = arrayField(data, "pois");
+        List<CognitiveMap.PointOfInterest> pois = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement entry : entries) {
+            try {
+                CognitiveMap.PointOfInterest poi =
+                        GSON.fromJson(entry, CognitiveMap.PointOfInterest.class);
+                if (poi == null || poi.category() == null || poi.category().isBlank()
+                        || !Float.isFinite(poi.importance()) || poi.visitCount() < 0) {
+                    skipped++;
+                    continue;
+                }
+                pois.add(poi);
+            } catch (RuntimeException malformedEntry) {
+                skipped++;
+            }
+        }
+        logSkipped(COGNITIVE_MAP_FILE, skipped);
         cognitiveMap.importAll(pois);
     }
 
@@ -155,27 +193,34 @@ public class MemoryPersistence {
         data.put("version", FORMAT_VERSION);
         data.put("timestamp", System.currentTimeMillis());
         data.put("events", placeEventMemory.exportAll());
-        data.put("exploredChunks", placeEventMemory.exportExploredChunks());
         writeAtomic(memoryDir.resolve(PLACE_EVENT_FILE), GSON.toJson(data));
     }
 
     private void loadPlaceEventMemory() throws IOException {
         Path file = memoryDir.resolve(PLACE_EVENT_FILE);
         if (!Files.exists(file)) return;
-        Type type = new TypeToken<Map<String, Object>>() {}.getType();
-        Map<String, Object> data = GSON.fromJson(Files.readString(file), type);
-        validateSnapshot(data, "events", file);
-
-        // Parse every member before changing either live collection. A corrupt
-        // chunk list must not produce a mixed snapshot in memory.
-        Type eventListType = new TypeToken<List<PlaceEventMemory.PlaceEvent>>() {}.getType();
-        List<PlaceEventMemory.PlaceEvent> events =
-                GSON.fromJson(GSON.toJsonTree(data.get("events")), eventListType);
-        Type chunksType = new TypeToken<List<Long>>() {}.getType();
-        List<Long> exploredChunks = data.containsKey("exploredChunks")
-                ? GSON.fromJson(GSON.toJsonTree(data.get("exploredChunks")), chunksType)
-                : new ArrayList<>();
-        placeEventMemory.importSnapshot(events, exploredChunks);
+        JsonObject data = readRoot(file);
+        JsonArray entries = arrayField(data, "events");
+        List<PlaceEventMemory.PlaceEvent> events = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement entry : entries) {
+            try {
+                PlaceEventMemory.PlaceEvent event =
+                        GSON.fromJson(entry, PlaceEventMemory.PlaceEvent.class);
+                if (event == null || event.subject() == null || event.subject().isBlank()
+                        || event.dimension() == null || event.dimension().isBlank()
+                        || event.type() == null || !Float.isFinite(event.importance())
+                        || event.visitCount() < 0) {
+                    skipped++;
+                    continue;
+                }
+                events.add(event);
+            } catch (RuntimeException malformedEntry) {
+                skipped++;
+            }
+        }
+        logSkipped(PLACE_EVENT_FILE, skipped);
+        placeEventMemory.importAll(events);
     }
 
     // ─── ImportanceEvaluator ───
@@ -192,14 +237,27 @@ public class MemoryPersistence {
     private void loadImportanceWeights() throws IOException {
         Path file = memoryDir.resolve(IMPORTANCE_FILE);
         if (!Files.exists(file)) return;
-        Type type = new TypeToken<Map<String, Object>>() {}.getType();
-        Map<String, Object> data = GSON.fromJson(Files.readString(file), type);
-        validateSnapshot(data, "weights", file);
-
-        Type weightsType = new TypeToken<Map<String, Float>>() {}.getType();
-        Map<String, Float> weights =
-                GSON.fromJson(GSON.toJsonTree(data.get("weights")), weightsType);
-        int learnCount = data.get("learnCount") instanceof Number n ? n.intValue() : 0;
+        JsonObject data = readRoot(file);
+        Map<String, Float> weights = new HashMap<>();
+        int skipped = 0;
+        if (data.has("weights") && data.get("weights").isJsonObject()) {
+            for (Map.Entry<String, JsonElement> entry
+                    : data.getAsJsonObject("weights").entrySet()) {
+                try {
+                    float weight = entry.getValue().getAsFloat();
+                    if (entry.getKey().isBlank() || !Float.isFinite(weight)) {
+                        skipped++;
+                    } else {
+                        weights.put(entry.getKey(), weight);
+                    }
+                } catch (RuntimeException malformedEntry) {
+                    skipped++;
+                }
+            }
+        }
+        int learnCount = data.has("learnCount") && data.get("learnCount").isJsonPrimitive()
+                ? Math.max(0, data.get("learnCount").getAsInt()) : 0;
+        logSkipped(IMPORTANCE_FILE, skipped);
         importanceEvaluator.importWeights(weights, learnCount);
     }
 
@@ -219,66 +277,107 @@ public class MemoryPersistence {
      * （截断文件会导致下次启动时该记忆系统被静默清零）。
      */
     private static void writeAtomic(Path target, String content) throws IOException {
-        Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
-        IOException failure = null;
+        Files.createDirectories(target.getParent());
+        Path tmp = Files.createTempFile(target.getParent(),
+                target.getFileName() + ".", ".tmp");
         try {
-            Files.writeString(tmp, content);
+            byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+            try (FileChannel channel = FileChannel.open(tmp,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                ByteBuffer buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) channel.write(buffer);
+                // The rename is only useful if the complete JSON reached disk.
+                channel.force(true);
+            }
             try {
-                Files.move(tmp, target,
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                // The completed temporary file remains safer than modifying
-                // the target in place when atomic replacement is unavailable.
-                Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             }
-        } catch (IOException e) {
-            failure = e;
-            throw e;
         } finally {
-            try {
-                // Failed writes and moves otherwise leave a partial .tmp file
-                // which migrateTo() could later move into another companion.
-                Files.deleteIfExists(tmp);
-            } catch (IOException cleanupError) {
-                if (failure != null) {
-                    failure.addSuppressed(cleanupError);
-                } else {
-                    throw cleanupError;
-                }
-            }
-        }
-    }
-
-    /** Reject incomplete or newer snapshots before they replace live memory. */
-    private static void validateSnapshot(Map<String, Object> data, String requiredField,
-                                         Path file) throws IOException {
-        if (data == null || !data.containsKey(requiredField)
-                || data.get(requiredField) == null) {
-            throw new IOException("Incomplete memory snapshot: " + file.getFileName());
-        }
-        Object rawVersion = data.get("version");
-        if (rawVersion != null && (!(rawVersion instanceof Number number)
-                || number.intValue() != FORMAT_VERSION)) {
-            throw new IOException("Unsupported memory format in " + file.getFileName()
-                    + ": " + rawVersion);
+            Files.deleteIfExists(tmp);
         }
     }
 
     private void loadReflections() throws IOException {
         Path file = memoryDir.resolve(REFLECTION_FILE);
         if (!Files.exists(file)) return;
-        Type type = new TypeToken<Map<String, Object>>() {}.getType();
-        Map<String, Object> data = GSON.fromJson(Files.readString(file), type);
-        validateSnapshot(data, "reflections", file);
-
-        Type reflListType = new TypeToken<List<ReflectionSystem.Reflection>>() {}.getType();
-        List<ReflectionSystem.Reflection> reflections =
-                GSON.fromJson(GSON.toJsonTree(data.get("reflections")), reflListType);
-        Type patternsType = new TypeToken<Map<String, Integer>>() {}.getType();
-        Map<String, Integer> patterns =
-                GSON.fromJson(GSON.toJsonTree(data.get("patterns")), patternsType);
+        JsonObject data = readRoot(file);
+        List<ReflectionSystem.Reflection> reflections = new ArrayList<>();
+        int skipped = 0;
+        for (JsonElement entry : arrayField(data, "reflections")) {
+            try {
+                ReflectionSystem.Reflection reflection =
+                        GSON.fromJson(entry, ReflectionSystem.Reflection.class);
+                if (reflection == null || reflection.level() == null
+                        || reflection.trigger() == null || reflection.lesson() == null
+                        || reflection.applicability() == null) {
+                    skipped++;
+                } else {
+                    reflections.add(reflection);
+                }
+            } catch (RuntimeException malformedEntry) {
+                skipped++;
+            }
+        }
+        Map<String, Integer> patterns = new HashMap<>();
+        if (data.has("patterns") && data.get("patterns").isJsonObject()) {
+            for (Map.Entry<String, JsonElement> entry
+                    : data.getAsJsonObject("patterns").entrySet()) {
+                try {
+                    int count = entry.getValue().getAsInt();
+                    if (!entry.getKey().isBlank() && count >= 0) {
+                        patterns.put(entry.getKey(), count);
+                    } else {
+                        skipped++;
+                    }
+                } catch (RuntimeException malformedEntry) {
+                    skipped++;
+                }
+            }
+        }
+        logSkipped(REFLECTION_FILE, skipped);
         reflectionSystem.importAll(reflections, patterns);
+    }
+
+    private static JsonObject readRoot(Path file) throws IOException {
+        JsonElement parsed;
+        try {
+            parsed = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
+        } catch (RuntimeException malformedJson) {
+            throw new IOException("invalid JSON", malformedJson);
+        }
+        if (!parsed.isJsonObject()) {
+            throw new IOException("memory root must be a JSON object");
+        }
+        JsonObject root = parsed.getAsJsonObject();
+        if (root.has("version")) {
+            try {
+                int version = root.get("version").getAsInt();
+                if (version < 1 || version > FORMAT_VERSION) {
+                    throw new IOException("unsupported memory version " + version);
+                }
+            } catch (UnsupportedOperationException | NumberFormatException badVersion) {
+                throw new IOException("invalid memory version", badVersion);
+            }
+        }
+        return root;
+    }
+
+    private static JsonArray arrayField(JsonObject root, String name) throws IOException {
+        if (!root.has(name) || root.get(name).isJsonNull()) return new JsonArray();
+        if (!root.get(name).isJsonArray()) {
+            throw new IOException("field '" + name + "' must be an array");
+        }
+        return root.getAsJsonArray(name);
+    }
+
+    private static void logSkipped(String fileName, int skipped) {
+        if (skipped > 0) {
+            System.err.println("[MineAgent] Skipped " + skipped
+                    + " invalid record(s) while loading " + fileName);
+        }
     }
 
     /**
@@ -288,10 +387,6 @@ public class MemoryPersistence {
     public synchronized void migrateTo(Path newDir) {
         if (newDir == null || newDir.equals(memoryDir)) return;
         Path oldDir = memoryDir;
-        // Switch the active directory only after every move has completed.  A
-        // failed/partial migration must keep saving to the old directory so a
-        // later save can reconstruct files that were already moved.
-        boolean migrated = false;
         // Flush current in-memory state to the old location first
         saveAll();
         try {
@@ -307,33 +402,23 @@ public class MemoryPersistence {
                 }
                 Files.deleteIfExists(oldDir);
             }
-            migrated = true;
         } catch (IOException e) {
             System.err.println("[MineAgent] Memory migration failed: " + e.getMessage());
         }
-        // Keep writing to the old directory after a partial move failure. A
-        // later save reconstructs any files already moved and avoids splitting
-        // one companion's memory permanently across two directories.
-        if (migrated) this.memoryDir = newDir;
+        this.memoryDir = newDir;
     }
 
     /**
      * 清空该伴游的所有持久化记忆文件。
      */
     public synchronized void clearAll() {
-        for (String fileName : List.of(COGNITIVE_MAP_FILE, PLACE_EVENT_FILE,
-                IMPORTANCE_FILE, REFLECTION_FILE)) {
-            try {
-                // Each file is independent. One locked/corrupt entry must not
-                // prevent every later memory file from being removed.
-                Files.deleteIfExists(memoryDir.resolve(fileName));
-                // saveAll() uses this same monitor, so a .tmp file cannot be
-                // recreated between deleting the final and temporary files.
-                Files.deleteIfExists(memoryDir.resolve(fileName + ".tmp"));
-            } catch (IOException e) {
-                System.err.println("[MineAgent] Failed to clear memory file "
-                        + fileName + ": " + e.getMessage());
-            }
+        try {
+            Files.deleteIfExists(memoryDir.resolve(COGNITIVE_MAP_FILE));
+            Files.deleteIfExists(memoryDir.resolve(PLACE_EVENT_FILE));
+            Files.deleteIfExists(memoryDir.resolve(IMPORTANCE_FILE));
+            Files.deleteIfExists(memoryDir.resolve(REFLECTION_FILE));
+        } catch (IOException e) {
+            System.err.println("[MineAgent] Failed to clear memories: " + e.getMessage());
         }
     }
 }

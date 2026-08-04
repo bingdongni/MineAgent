@@ -70,7 +70,8 @@ public class OpenAICompatibleProvider implements LLMProvider {
                                  List<Map<String, Object>> tools,
                                  double temperature, int maxTokens,
                                  String reasoningEffort) {
-        ProviderSupport.validateRequest(providerId, apiKey, model, messages, maxTokens);
+        ProviderSupport.validateRequest(
+                providerId, apiKey, model, messages, temperature, maxTokens);
         String resolvedBaseUrl = ProviderSupport.validatedBaseUrl(
                 baseUrl, defaultBaseUrl, providerId);
         try {
@@ -101,7 +102,8 @@ public class OpenAICompatibleProvider implements LLMProvider {
                 // Preserve the status code so AgentLoop retries transient
                 // failures without retrying bad credentials or bad requests.
                 throw LLMProviderException.http(providerId,
-                        response.statusCode(), response.body());
+                        response.statusCode(), response.body(),
+                        response.headers().firstValue("Retry-After").orElse(null));
             }
 
             try {
@@ -558,8 +560,9 @@ public class OpenAICompatibleProvider implements LLMProvider {
         // Detection mirrors injectOpenAI(): "o3" / "o4-" prefixes on the
         // lower-cased model name. We use the raw prefix check here for
         // consistency with the rest of this class.
-        boolean isOSeries = model != null
-                && (model.startsWith("o3") || model.startsWith("o4"));
+        String normalizedModel = model == null ? "" : model.toLowerCase(Locale.ROOT);
+        boolean isOSeries = normalizedModel.startsWith("o3")
+                || normalizedModel.startsWith("o4");
         if (!isOSeries) {
             body.addProperty("temperature", temperature);
             body.addProperty("max_tokens", maxTokens);
@@ -583,7 +586,12 @@ public class OpenAICompatibleProvider implements LLMProvider {
         // pollute each other's caches. Unknown relays that don't support
         // this field will simply ignore it (extra body fields are
         // permitted by the OpenAI spec).
-        body.addProperty("prompt_cache_key", providerId + ":" + model);
+        // prompt_cache_key is an OpenAI extension, not part of the shared
+        // chat-completions schema. Strict DeepSeek/Qwen/GLM relays reject
+        // unknown fields with 400, so only send it to the OpenAI provider.
+        if ("openai".equals(providerId)) {
+            body.addProperty("prompt_cache_key", providerId + ":" + model);
+        }
 
         return body;
     }

@@ -38,10 +38,7 @@ public final class BlockHelper {
      */
     @SuppressWarnings("deprecation")
     public static boolean canStandOn(BlockState state) {
-        // Solid does not imply safe support. Magma/campfires cause damage and
-        // powder snow lets an unequipped player sink, so A* must not select
-        // them as an ordinary landing surface.
-        return !isHazardous(state)
+        return state != null && !isHazardous(state)
                 && (state.isSolid() || state.is(Blocks.SCAFFOLDING));
     }
 
@@ -51,19 +48,12 @@ public final class BlockHelper {
      */
     @SuppressWarnings("deprecation")
     public static boolean isPassable(BlockState state) {
+        if (state == null) return false;
         if (state.isAir()) return true;
-        // Ladders and vines have a thin collision shape but are intentional
-        // occupancy cells for a player. Treat them as traversable so a path
-        // can enter the bottom/top of a climb instead of mining the ladder.
         if (isClimbable(state)) return true;
-        // Lava has no collision shape, but treating it like air makes A* walk
-        // into a lethal fluid whenever its finite cost happens to beat a long
-        // detour. Water remains traversable and receives its normal cost.
         if (isHazardous(state)) return false;
-        // BlockState#isSolid is not a collision predicate: fences, closed
-        // doors and several modded thin blocks can report non-solid while
-        // still blocking a player. A* must use the same collision geometry
-        // that movement physics sees or it will repeatedly plan through them.
+        // Solidity is not collision geometry: fences and closed doors can be
+        // non-solid while still blocking the same player physics we execute.
         return state.isPathfindable(
                 net.minecraft.world.level.pathfinder.PathComputationType.LAND)
                 || state.getCollisionShape(
@@ -75,14 +65,14 @@ public final class BlockHelper {
      * Check if a block is water.
      */
     public static boolean isWater(BlockState state) {
-        return state.getFluidState().is(net.minecraft.tags.FluidTags.WATER);
+        return state != null && state.getFluidState().is(net.minecraft.tags.FluidTags.WATER);
     }
 
     /**
      * Check if a block is lava.
      */
     public static boolean isLava(BlockState state) {
-        return state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA);
+        return state != null && state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA);
     }
 
     /**
@@ -100,13 +90,13 @@ public final class BlockHelper {
         return isLava(state);
     }
 
-    /** Vanilla climbable tag plus scaffolding's jump/descend column behavior. */
+    /** Vanilla climbable blocks plus scaffolding's vertical traversal. */
     public static boolean isClimbable(BlockState state) {
         return state != null && (state.is(net.minecraft.tags.BlockTags.CLIMBABLE)
                 || state.is(Blocks.SCAFFOLDING));
     }
 
-    /** Hazards that should be cleared or routed around, never walked as air. */
+    /** Blocks and fluids that must not be treated as ordinary walkable space. */
     public static boolean isHazardous(BlockState state) {
         if (state == null) return true;
         return isHarmfulFluid(state)
@@ -121,7 +111,7 @@ public final class BlockHelper {
                 || state.is(Blocks.POWDER_SNOW);
     }
 
-    /** Whether a closed passage can be opened by an ordinary right click. */
+    /** Whether a closed vanilla passage can be opened by an ordinary hand click. */
     public static boolean canOpenByHand(BlockState state) {
         if (state == null) return false;
         Block block = state.getBlock();
@@ -134,28 +124,19 @@ public final class BlockHelper {
             return state.hasProperty(net.minecraft.world.level.block.FenceGateBlock.OPEN)
                     && !state.getValue(net.minecraft.world.level.block.FenceGateBlock.OPEN);
         }
-        // TrapDoorBlock#getType is protected in 1.21.1. Vanilla has only one
-        // non-hand-openable trapdoor, so exclude it explicitly.
-        if (block instanceof net.minecraft.world.level.block.TrapDoorBlock
-                && block != Blocks.IRON_TRAPDOOR) {
-            return state.hasProperty(net.minecraft.world.level.block.TrapDoorBlock.OPEN)
-                    && !state.getValue(net.minecraft.world.level.block.TrapDoorBlock.OPEN);
-        }
-        return false;
+        return block instanceof net.minecraft.world.level.block.TrapDoorBlock
+                && block != Blocks.IRON_TRAPDOOR
+                && state.hasProperty(net.minecraft.world.level.block.TrapDoorBlock.OPEN)
+                && !state.getValue(net.minecraft.world.level.block.TrapDoorBlock.OPEN);
     }
 
     /**
      * Check if a block can be broken by the companion (dig-through).
-     * Excludes blocks that survival gameplay cannot legitimately destroy.
+     * Excludes unbreakable blocks like bedrock and obsidian.
      */
     @SuppressWarnings("deprecation")
     public static boolean isBreakable(BlockState state) {
-        if (state == null || state.isAir() || !state.getFluidState().isEmpty()) {
-            // Fluids have no block-breaking lifecycle. Treating lava as a
-            // breakable obstruction let A* emit a finite edge that the
-            // executor could only retry until timeout.
-            return false;
-        }
+        if (state == null || state.isAir() || !state.getFluidState().isEmpty()) return false;
         Block block = state.getBlock();
         return block != Blocks.BEDROCK
                 && block != Blocks.END_PORTAL
@@ -219,10 +200,8 @@ public final class BlockHelper {
      */
     public static boolean canPlaceBlockAt(Level level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
-        // An empty FluidState does not imply replaceability: every ordinary
-        // solid block has an empty fluid state. Vanilla's block-state predicate
-        // correctly covers air, fluids, grass, snow layers, and modded blocks.
-        return state.canBeReplaced();
+        return state.isAir() || state.getFluidState().is(Fluids.WATER)
+                || state.getFluidState().is(Fluids.EMPTY);
     }
 
     /**

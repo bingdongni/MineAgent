@@ -8,6 +8,7 @@ import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.task.TaskContext;
 
 import java.util.Map;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 /**
@@ -83,7 +84,7 @@ public class LearnedSkillsTool implements Tool {
             s.addProperty("name", skill.name());
             s.addProperty("description", skill.description());
             s.addProperty("success_rate",
-                    String.format("%.0f%%", skill.successRate() * 100));
+                    String.format(Locale.ROOT, "%.0f%%", skill.successRate() * 100));
             s.addProperty("invocations", skill.invocations());
             arr.add(s);
         }

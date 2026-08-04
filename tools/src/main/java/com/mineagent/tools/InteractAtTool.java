@@ -55,41 +55,49 @@ public class InteractAtTool implements Tool {
             reply.accept("{\"error\":\"Missing required parameter 'button'.\"}");
             return;
         }
+        if (!ToolArgs.has(args, "x") || !ToolArgs.has(args, "y") || !ToolArgs.has(args, "z")) {
+            reply.accept("{\"error\":\"Missing required parameters x, y, z.\"}");
+            return;
+        }
         Integer x = ToolArgs.getIntOrNull(args, "x");
         Integer y = ToolArgs.getIntOrNull(args, "y");
         Integer z = ToolArgs.getIntOrNull(args, "z");
         if (x == null || y == null || z == null) {
-            reply.accept("{\"error\":\"x, y, and z must be valid integers.\"}");
+            reply.accept(ToolArgs.errorJson("Parameters x, y, and z must be exact integers."));
             return;
         }
-        var level = com.mineagent.engine.task.TaskContext.serverPlayer(player).serverLevel();
-        if (Math.abs((long) x) > 30_000_000L || Math.abs((long) z) > 30_000_000L
-                || y < level.getMinBuildHeight() || y >= level.getMaxBuildHeight()) {
-            reply.accept("{\"error\":\"Target position is outside world bounds.\"}");
-            return;
-        }
-        Integer parsedHold = ToolArgs.has(args, "hold_ticks")
+        Integer holdTicks = ToolArgs.has(args, "hold_ticks")
                 ? ToolArgs.getIntOrNull(args, "hold_ticks") : 0;
-        if (parsedHold == null || parsedHold < 0 || parsedHold > 40) {
-            reply.accept("{\"error\":\"hold_ticks must be an integer between 0 and 40.\"}");
+        if (holdTicks == null || holdTicks < 0 || holdTicks > 40) {
+            reply.accept(ToolArgs.errorJson("'hold_ticks' must be an integer from 0 to 40."));
             return;
         }
-        int holdTicks = parsedHold;
         String itemId = ToolArgs.getString(args, "item_id");
-        if (itemId != null) {
-            var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
-            if (id == null
-                    || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
-                reply.accept(ToolArgs.errorJson("Unknown held item: " + itemId));
-                return;
-            }
-        }
 
         // Validate button
         if (!java.util.Set.of("use", "attack", "use_offhand").contains(button)) {
             reply.accept(ToolArgs.errorJson("Invalid button: " + button
                     + ". Use 'use', 'attack', or 'use_offhand'."));
             return;
+        }
+
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var target = new net.minecraft.core.BlockPos(x, y, z);
+        if (!sp.level().isInWorldBounds(target)) {
+            reply.accept(ToolArgs.errorJson("Target block is outside this dimension's world bounds."));
+            return;
+        }
+        if (sp.level().getBlockState(target).isAir()) {
+            reply.accept(ToolArgs.errorJson("Target block is air at " + target.toShortString()));
+            return;
+        }
+        if (itemId != null) {
+            var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
+            if (id == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
+                reply.accept(ToolArgs.errorJson("Unknown item: " + itemId));
+                return;
+            }
+            itemId = id.toString();
         }
 
         var record = new InteractAtTaskRecord(toolCallId, button, x, y, z, holdTicks, itemId);

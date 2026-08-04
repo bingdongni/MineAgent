@@ -86,9 +86,8 @@ public final class TaskLease {
      * @param currentTick current game tick
      */
     public void onProgress(long currentTick) {
-        // Measure the gap before replacing lastProgressTick. The old order made
-        // this difference permanently zero, allowing an expired progress stream
-        // to keep renewing its lease.
+        // Measure before updating the marker. Updating first made this gap
+        // permanently zero, allowing stale progress to renew an expired lease.
         long progressGap = currentTick - lastProgressTick;
         if (leaseActive && progressGap <= PROGRESS_GRACE_TICKS) {
             // Renew lease, but never exceed hard deadline

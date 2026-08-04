@@ -1,7 +1,8 @@
-package com.mineagent.fabric.client.render;
+package com.mineagent.engine.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
@@ -10,6 +11,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.ClipContext;
+
+import java.awt.Color;
 
 /**
  * Renders the AI companion's vision in the world:
@@ -52,11 +55,13 @@ public final class CompanionVisionRenderer {
     /** Cone radius at maximum distance. */
     private static final double CONE_RADIUS = 8.0;
 
-    // VertexConsumer#setColor(int) uses FastColor.ARGB32 in 1.21.1.
-    private static final int COLOR_LOS_RAY     = 0xFF00FFFF;  // Cyan
-    private static final int COLOR_LOOK_TARGET = 0xFFFFFF00;  // Yellow
+    // Colors (ABGR int)
+    private static final int COLOR_LOS_RAY     = 0xFF_FFFF00; // Cyan (ABGR: FF00FFFF)
+    private static final int COLOR_LOOK_TARGET = 0xFF00FFFF;  // Yellow
+    private static final int COLOR_MINE_TARGET = 0xFF0080FF;  // Orange
     private static final int COLOR_RESOURCE    = 0xFF00FF00;  // Green
-    private static final int COLOR_DANGER      = 0xFFFF0000;  // Red
+    private static final int COLOR_DANGER      = 0xFF0000FF;  // Red
+    private static final int COLOR_ENTITY_TARGET = 0xFFFF00FF; // Magenta
     private static final int COLOR_CONE        = 0x3000FFFF;  // Semi-transparent cyan
 
     private CompanionVisionRenderer() {}
@@ -153,11 +158,7 @@ public final class CompanionVisionRenderer {
         // Draw a circle outline at CONE_RADIUS distance from eye, centered on look direction
         // Calculate the "right" and "up" vectors relative to look direction
         Vec3 forward = lookDir.normalize();
-        // A vertical look vector is parallel to world-up; their cross product
-        // is zero and collapses the complete cone. Choose a stable alternate
-        // basis for the near-vertical case.
-        Vec3 up = Math.abs(forward.y) > 0.99
-                ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+        Vec3 up = new Vec3(0, 1, 0);
         Vec3 right = forward.cross(up).normalize();
         Vec3 realUp = right.cross(forward).normalize();
 

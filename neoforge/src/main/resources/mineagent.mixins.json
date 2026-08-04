@@ -4,11 +4,9 @@
   "package": "com.mineagent.neoforge.mixin",
   "compatibilityLevel": "JAVA_21",
   "server": [
-    "ServerPlayerMixin"
+    "NameTagMixin"
   ],
-  "client": [
-    "MinecraftMixin"
-  ],
+  "client": [],
   "injectors": {
     "defaultRequire": 1
   }

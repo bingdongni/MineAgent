@@ -39,10 +39,10 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
     private static final double SURVIVAL_REACH = 4.5;
 
     /** Whether to use creative-mode reach distance. */
-    private boolean creativeReach = true;
+    private boolean creativeReach;
 
     /** Whether to use instant block breaking. */
-    private boolean instantBreak = true;
+    private boolean instantBreak;
 
     /**
      * Client-owned mining state that vanilla does not keep for a fake player.

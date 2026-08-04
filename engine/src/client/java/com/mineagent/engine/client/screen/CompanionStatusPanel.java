@@ -1,9 +1,10 @@
-package com.mineagent.fabric.client.screen;
+package com.mineagent.engine.client.screen;
 
-import com.mineagent.fabric.client.ui.MineAgentUiComponents;
+import com.mineagent.engine.client.ui.MineAgentUiComponents;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.network.chat.Component;
 
 /**
  * HUD overlay showing companion status - rendered on the game HUD
@@ -26,7 +27,7 @@ public final class CompanionStatusPanel {
     private static boolean visible = true;
 
     /** Panel width in pixels. */
-    private static final int PANEL_WIDTH = 140;
+    private static final int PANEL_WIDTH = 150;
 
     /** Panel padding from the screen edge. */
     private static final int EDGE_PADDING = 6;
@@ -35,10 +36,10 @@ public final class CompanionStatusPanel {
     private static final int INNER_PAD = 4;
 
     /** Bar width in pixels. */
-    private static final int BAR_WIDTH = 100;
+    private static final int BAR_WIDTH = 88;
 
     /** Bar height in pixels. */
-    private static final int BAR_HEIGHT = 8;
+    private static final int BAR_HEIGHT = 6;
 
     /** Line height for text. */
     private static final int LINE_HEIGHT = 11;
@@ -115,13 +116,10 @@ public final class CompanionStatusPanel {
         int screenWidth = mc.getWindow().getGuiScaledWidth();
         int screenHeight = mc.getWindow().getGuiScaledHeight();
 
-        // Calculate total panel height
-        // Each bar consumes a label line plus the bar and its 2px gap. The old
-        // formula counted only three lines total, so task/position overflowed
-        // the panel background and could overlap following HUD content.
-        int panelHeight = INNER_PAD * 2 + LINE_HEIGHT
-                + 3 * (LINE_HEIGHT + BAR_HEIGHT + 2)
-                + LINE_HEIGHT * 2;
+        // Bars use one compact line each. The old height formula counted only
+        // one text line for all three labels even though drawBar consumed one
+        // label line per bar, so task/position text rendered below the panel.
+        int panelHeight = INNER_PAD * 2 + LINE_HEIGHT * 6;
 
         // Boundary-safe: clamp panel position to visible screen
         int panelX = MineAgentUiComponents.clamp(
@@ -151,7 +149,7 @@ public final class CompanionStatusPanel {
         // --- Title (with status indicator dot) ---
         MineAgentUiComponents.drawStatusIndicator(
                 graphics, textX, currentY + 2,
-                "§fCompanion", true);
+                Component.translatable("screen.mineagent.hud.companion"), true);
         currentY += LINE_HEIGHT;
 
         // --- Health bar ---
@@ -176,12 +174,16 @@ public final class CompanionStatusPanel {
         );
 
         // --- Current task ---
-        String taskDisplay = "Task: " + currentTask;
+        String taskDisplay = Component.translatable(
+                "screen.mineagent.hud.task", currentTask).getString();
+        taskDisplay = mc.font.plainSubstrByWidth(taskDisplay,
+                PANEL_WIDTH - INNER_PAD * 2);
         graphics.drawString(mc.font, taskDisplay, textX, currentY, 0xFFFF55, true);
         currentY += LINE_HEIGHT;
 
         // --- Position ---
-        String posDisplay = String.format("Pos: %.0f, %.0f, %.0f", posX, posY, posZ);
+        String posDisplay = Component.translatable("screen.mineagent.hud.position",
+                Math.round(posX), Math.round(posY), Math.round(posZ)).getString();
         graphics.drawString(mc.font, posDisplay, textX, currentY, 0xAAAAAA, false);
     }
 
@@ -203,28 +205,29 @@ public final class CompanionStatusPanel {
                                int x, int y, String label,
                                float current, float maximum,
                                int fillColor, int bgColor) {
-        // Label
-        String labelText = label + ": " + (int) current + "/" + (int) maximum;
+        // Put the label and bar on one stable row. This keeps the always-on HUD
+        // compact and makes the declared panel height match the rendered height.
+        String labelText = label + " " + (int) current;
         graphics.drawString(mc.font, labelText, x, y, 0xCCCCCC, false);
-        y += LINE_HEIGHT;
 
         // Bar background
-        int barX = x + 2;
-        graphics.fill(barX, y, barX + BAR_WIDTH, y + BAR_HEIGHT, bgColor);
+        int barX = x + 42;
+        int barY = y + 1;
+        graphics.fill(barX, barY, barX + BAR_WIDTH, barY + BAR_HEIGHT, bgColor);
 
         // Bar fill
         if (maximum > 0) {
-            int fillWidth = Math.max(0, Math.min(BAR_WIDTH,
-                    (int) ((current / maximum) * BAR_WIDTH)));
+            int fillWidth = Math.max(0, (int) ((current / maximum) * BAR_WIDTH));
             if (fillWidth > 0) {
-                graphics.fill(barX, y, barX + fillWidth, y + BAR_HEIGHT, fillColor);
+                graphics.fill(barX, barY, barX + fillWidth, barY + BAR_HEIGHT, fillColor);
             }
         }
 
         // Bar border
-        graphics.renderOutline(barX - 1, y - 1, BAR_WIDTH + 2, BAR_HEIGHT + 2, 0xFF333333);
+        graphics.renderOutline(barX - 1, barY - 1,
+                BAR_WIDTH + 2, BAR_HEIGHT + 2, 0xFF333333);
 
-        return y + BAR_HEIGHT + 2;
+        return y + LINE_HEIGHT;
     }
 
     // --- State update methods (called from network packet handlers) ---

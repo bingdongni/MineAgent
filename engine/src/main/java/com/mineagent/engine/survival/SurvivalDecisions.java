@@ -118,15 +118,9 @@ public final class SurvivalDecisions {
      * @return priority (MOB_DEFENSE or higher with escalation), or -INF
      */
     public static float mobDefensePriority(float hp, float maxHp, int hostileCount) {
-        if (hostileCount <= 0) return Float.NEGATIVE_INFINITY;
+        if (hostileCount == 0) return Float.NEGATIVE_INFINITY;
 
-        // Modded attributes or a body during partial teardown can expose a
-        // non-finite/zero max health. Dividing by it produces NaN/Infinity,
-        // which then defeats every comparison and silently disables urgency
-        // escalation. Treat that invalid state as critical instead.
-        float hpRatio = Float.isFinite(maxHp) && maxHp > 0.0f
-                ? hp / maxHp : 0.0f;
-        if (!Float.isFinite(hpRatio)) hpRatio = 0.0f;
+        float hpRatio = hp / maxHp;
         float priority = MOB_DEFENSE;
 
         // Escalation: HP-based

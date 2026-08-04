@@ -15,7 +15,7 @@ MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服�
 | 加载器 | 状态 | 说明 |
 | --- | --- | --- |
 | Fabric | 正式支持 | 已实际构建并在游戏中运行；包含完整客户端菜单、聊天、状态 HUD 和调试视图。 |
-| NeoForge | 实验性 | 可构建并随 Release 提供；核心服务端与命令路径可供测试，但尚未达到 Fabric 的客户端 UI、网络功能和实机验证覆盖。 |
+| NeoForge | 实验性 | 可构建并随 Release 提供；已共享完整客户端菜单、聊天、HUD、调试视图和网络功能，但实机覆盖仍少于 Fabric。 |
 
 两个 JAR 会附在同一个 GitHub Release 中。一次游戏实例只能安装与其加载器对应的一个 JAR，不能同时安装 Fabric 和 NeoForge 版本。
 
@@ -52,7 +52,7 @@ MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服�
 /mineagent quick
 ```
 
-Fabric 用户也可以按 `M` 打开主菜单完成配置和创建。常用命令：
+Fabric 和 NeoForge 用户都可以按 `M` 打开主菜单完成配置和创建。常用命令：
 
 ```text
 /mineagent help
@@ -65,7 +65,7 @@ Fabric 用户也可以按 `M` 打开主菜单完成配置和创建。常用命�
 /mineagent reload
 ```
 
-Fabric 默认按键：
+默认按键（Fabric 与 NeoForge）：
 
 | 按键 | 功能 |
 | --- | --- |
@@ -109,8 +109,8 @@ Linux/macOS：
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.1.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.1.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.1.1.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.1.1.jar`
 
 ## 项目结构
 
@@ -119,8 +119,8 @@ Linux/macOS：
 | `api` | 平台无关的工具、任务、配置、LLM 和网络契约 |
 | `engine` | Agent 循环、假玩家、路径规划、生存链、任务和记忆 |
 | `tools` | LLM 可调用工具和内置技能资料 |
-| `fabric` | Fabric 启动、网络、Mixin 和完整客户端界面 |
-| `neoforge` | NeoForge 实验性启动、事件与平台适配 |
+| `fabric` | Fabric 启动、网络、Mixin 与共享客户端界面的平台接入 |
+| `neoforge` | NeoForge 实验性启动、生命周期、网络与共享客户端界面的平台接入 |
 
 ## 参与贡献
 

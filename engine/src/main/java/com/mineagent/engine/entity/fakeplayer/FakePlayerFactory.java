@@ -12,6 +12,7 @@ import net.minecraft.world.level.GameType;
 import java.util.UUID;
 import java.util.Map;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Factory for creating fake ServerPlayer instances that operate without a
@@ -165,7 +166,8 @@ public final class FakePlayerFactory {
     public static GameProfile createOfflineProfile(String name) {
         // Generate a deterministic offline UUID from the name
         // No prefix — use the name directly for skin mod compatibility
-        UUID offlineUuid = UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes());
+        UUID offlineUuid = UUID.nameUUIDFromBytes(
+                ("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
         return new GameProfile(offlineUuid, name);
     }
 

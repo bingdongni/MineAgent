@@ -7,6 +7,6 @@ MineAgent is currently an alpha release for Minecraft 1.21.1 and requires Java 2
 
 Install exactly one JAR matching your mod loader. Do not install the Fabric and NeoForge artifacts together.
 
-The NeoForge build is published for testing and feedback, but does not yet have Fabric-equivalent client UI, networking parity, or the same in-game validation coverage. Please include the loader, exact versions, reproduction steps, and sanitized logs in bug reports.
+The NeoForge build now uses the same complete client UI, key bindings, HUD/debug views, and loader-neutral network contract as Fabric. It remains experimental because its in-game compatibility coverage is still smaller. Please include the loader, exact versions, reproduction steps, and sanitized logs in bug reports.
 
 API requests may cost money. MineAgent stores API keys as plain text in its configuration and companion save file; review `SECURITY.md` before sharing logs, configuration, or worlds.

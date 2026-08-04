@@ -27,12 +27,12 @@ public class LocateStructureTool implements Tool {
     public String description() {
         return """
             Find the nearest structure of a specified type. Common structures:
-            - "minecraft:village_plains" - Plains village
+            - "#minecraft:village" - Any village variant (tag)
             - "minecraft:fortress" - Nether fortresses
             - "minecraft:end_city" - End cities
-            - "minecraft:woodland_mansion" - Woodland mansions
+            - "minecraft:mansion" - Woodland mansions
             - "minecraft:stronghold" - Strongholds
-            - "minecraft:mineshaft" - Mineshafts
+            - "#minecraft:mineshaft" - Any mineshaft variant (tag)
             - "minecraft:pillager_outpost" - Pillager outposts
             - "minecraft:ancient_city" - Ancient cities
             
@@ -44,7 +44,7 @@ public class LocateStructureTool implements Tool {
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("structure_type", "Structure type ID (e.g. 'minecraft:village')")
+                .string("structure_type", "Structure ID or #tag (e.g. 'minecraft:fortress' or '#minecraft:village')")
                 .build();
     }
 
@@ -52,30 +52,36 @@ public class LocateStructureTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
         String structureType = ToolArgs.getString(args, "structure_type");
-        if (structureType == null) {
-            reply.accept("{\"error\":\"Missing required parameter 'structure_type'.\"}");
+        if (structureType == null || structureType.isBlank()) {
+            reply.accept(ToolArgs.errorJson("Missing required parameter 'structure_type'"));
             return;
         }
+        structureType = structureType.trim();
 
         var sp = ((CompanionEntity) player).serverPlayer();
         var level = sp.level();
         var registryAccess = level.registryAccess();
 
         // Resolve the structure type
-        var structureResourceLoc = net.minecraft.resources.ResourceLocation.tryParse(structureType);
+        boolean tagRequest = structureType.startsWith("#");
+        var structureResourceLoc = net.minecraft.resources.ResourceLocation.tryParse(
+                tagRequest ? structureType.substring(1) : structureType);
         if (structureResourceLoc == null) {
             reply.accept(ToolArgs.errorJson("Invalid structure type: " + structureType));
             return;
         }
 
         var structureRegistry = registryAccess.registryOrThrow(net.minecraft.core.registries.Registries.STRUCTURE);
-        var structureKey = net.minecraft.resources.ResourceKey.create(
-                net.minecraft.core.registries.Registries.STRUCTURE, structureResourceLoc);
-
-        var structureOptional = structureRegistry.getHolder(structureKey);
-        if (structureOptional.isEmpty()) {
-            reply.accept(ToolArgs.errorJson(
-                    "Structure type '" + structureType + "' not found in this world."));
+        boolean exists = tagRequest
+                ? structureRegistry.getTag(net.minecraft.tags.TagKey.create(
+                        net.minecraft.core.registries.Registries.STRUCTURE,
+                        structureResourceLoc)).filter(tag -> tag.size() > 0).isPresent()
+                : structureRegistry.getHolder(net.minecraft.resources.ResourceKey.create(
+                        net.minecraft.core.registries.Registries.STRUCTURE,
+                        structureResourceLoc)).isPresent();
+        if (!exists) {
+            reply.accept(ToolArgs.errorJson("Structure type '" + structureType
+                    + "' not found in this world"));
             return;
         }
 

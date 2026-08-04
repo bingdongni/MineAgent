@@ -6,7 +6,6 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
-import com.mineagent.engine.task.TaskContext;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -48,25 +47,22 @@ public class DropItemsTool implements Tool {
             reply.accept("{\"error\":\"Missing required parameter 'item_id'.\"}");
             return;
         }
+        if (!ToolArgs.has(args, "count")) {
+            reply.accept("{\"error\":\"Missing required parameter 'count'.\"}");
+            return;
+        }
         var parsedItemId = net.minecraft.resources.ResourceLocation.tryParse(itemId);
         if (parsedItemId == null
                 || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(parsedItemId)) {
             reply.accept(ToolArgs.errorJson("Unknown item: " + itemId));
             return;
         }
-        // ResourceLocation accepts shorthand such as "stone" and resolves it
-        // to minecraft:stone. Compare against that canonical registry ID.
         itemId = parsedItemId.toString();
-        Integer requestedCount = ToolArgs.getIntOrNull(args, "count");
-        if (requestedCount == null) {
-            reply.accept("{\"error\":\"count must be a valid integer.\"}");
+        Integer count = ToolArgs.getIntOrNull(args, "count");
+        if (count == null || count < 1 || count > MAX_DROP_COUNT) {
+            reply.accept(ToolArgs.errorJson("'count' must be an integer from 1 to " + MAX_DROP_COUNT + "."));
             return;
         }
-        if (requestedCount < 1 || requestedCount > MAX_DROP_COUNT) {
-            reply.accept("{\"error\":\"count must be between 1 and 64.\"}");
-            return;
-        }
-        int count = requestedCount;
 
         var sp = ((CompanionEntity) player).serverPlayer();
         var inv = sp.getInventory();
@@ -84,7 +80,14 @@ public class DropItemsTool implements Tool {
 
             int toDrop = Math.min(remaining, stack.getCount());
             var dropStack = stack.split(toDrop);
-            sp.drop(dropStack, false, true);
+            var droppedEntity = sp.drop(dropStack, false, true);
+            if (droppedEntity == null) {
+                // Player#drop is normally guaranteed on the logical server,
+                // but restoring the split stack keeps item conservation if a
+                // platform hook vetoes entity creation.
+                stack.grow(toDrop);
+                break;
+            }
             remaining -= toDrop;
             dropped += toDrop;
 
@@ -97,11 +100,13 @@ public class DropItemsTool implements Tool {
             reply.accept(ToolArgs.errorJson("Item '" + itemId + "' not found in inventory."));
         } else {
             // Sync inventory so the owner's client sees items removed
-            TaskContext.syncInventory(sp);
+            inv.setChanged();
+            sp.containerMenu.broadcastChanges();
             JsonObject result = new JsonObject();
             result.addProperty("success", true);
             result.addProperty("item", itemId);
             result.addProperty("dropped", dropped);
+            result.addProperty("requested", count);
             reply.accept(result.toString());
         }
     }

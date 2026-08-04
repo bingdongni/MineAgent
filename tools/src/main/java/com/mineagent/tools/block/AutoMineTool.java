@@ -6,6 +6,10 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.TaskDispatch;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.core.registries.Registries;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -52,29 +56,42 @@ public class AutoMineTool implements Tool {
             reply.accept("{\"error\":\"Missing required parameter 'block_type'.\"}");
             return;
         }
-        var blockId = net.minecraft.resources.ResourceLocation.tryParse(blockType);
-        if (blockId == null
-                || !net.minecraft.core.registries.BuiltInRegistries.BLOCK.containsKey(blockId)) {
-            reply.accept(ToolArgs.errorJson("Unknown block type: " + blockType));
+        if (!ToolArgs.has(args, "count")) {
+            reply.accept("{\"error\":\"Missing required parameter 'count'.\"}");
             return;
         }
-        Integer requestedCount = ToolArgs.getIntOrNull(args, "count");
-        if (requestedCount == null) {
-            reply.accept("{\"error\":\"count must be a valid integer.\"}");
+        boolean tagQuery = blockType.startsWith("#");
+        ResourceLocation blockId = ResourceLocation.tryParse(
+                tagQuery ? blockType.substring(1) : blockType);
+        if (blockId == null || (!tagQuery && !BuiltInRegistries.BLOCK.containsKey(blockId))) {
+            reply.accept(ToolArgs.errorJson("Unknown block or invalid block tag: " + blockType));
             return;
         }
-        if (requestedCount < 1 || requestedCount > 64) {
-            reply.accept("{\"error\":\"count must be between 1 and 64.\"}");
+        if (tagQuery) {
+            TagKey<net.minecraft.world.level.block.Block> tag =
+                    TagKey.create(Registries.BLOCK, blockId);
+            // An empty tag can never produce a target. Checking it here avoids
+            // launching an expensive radius scan that is guaranteed to fail.
+            if (BuiltInRegistries.BLOCK.getTag(tag).isEmpty()) {
+                reply.accept(ToolArgs.errorJson("Unknown or empty block tag: #" + blockId));
+                return;
+            }
+            blockType = "#" + blockId;
+        } else {
+            blockType = blockId.toString();
+        }
+
+        Integer count = ToolArgs.getIntOrNull(args, "count");
+        if (count == null || count < 1 || count > 64) {
+            reply.accept(ToolArgs.errorJson("'count' must be an integer from 1 to 64."));
             return;
         }
-        int count = requestedCount;
-        Integer parsedRadius = ToolArgs.has(args, "radius")
+        Integer radius = ToolArgs.has(args, "radius")
                 ? ToolArgs.getIntOrNull(args, "radius") : 16;
-        if (parsedRadius == null || parsedRadius < 1 || parsedRadius > 32) {
-            reply.accept("{\"error\":\"radius must be an integer between 1 and 32.\"}");
+        if (radius == null || radius < 1 || radius > 32) {
+            reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to 32."));
             return;
         }
-        int radius = parsedRadius;
 
         var record = new MineBlockTaskRecord(toolCallId, blockType, count, radius);
         TaskDispatch.dispatchAsync(player, record, reply);

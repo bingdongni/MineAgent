@@ -9,26 +9,17 @@ import com.mineagent.engine.entity.CompanionEntity;
 import com.mineagent.engine.task.TaskContext;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Consumer;
 
-/**
- * Move items between inventory slots or an open container.
- *
- * <p>All validation is completed before either slot is mutated. This matters
- * for fake players because a rejected partial swap or illegal armor placement
- * must not leave one side changed without the other.
- */
+/** Moves real item stacks between player and open-container slots. */
 public class TransferItemsTool implements Tool {
-
-    private static final Set<String> LOCATIONS = Set.of("player", "container");
 
     @Override
     public String name() { return "transfer_items"; }
@@ -37,238 +28,191 @@ public class TransferItemsTool implements Tool {
     public String description() {
         return """
             Move items between inventory slots or between player inventory and
-            an open container. Specify source slot, destination slot, and count.
-            Player slots are 0-35 inventory, 36-39 armor, and 40 off-hand.
-            Container slots use the indices returned by inspect_gui.
+            an open container. Player slots are 0-40. Container indices are
+            the indices reported by inspect_gui for the currently open menu.
             """;
     }
 
     @Override
     public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .integer("from_slot", "Source slot index", 0, 89)
-                .integer("to_slot", "Destination slot index", 0, 89)
-                .optionalInteger("count", "Number to move; omitted means all", 1, 64)
-                .optionalString("source", "player or container")
-                .optionalString("destination", "player or container")
+                .integer("from_slot", "Source slot index", 0, 255)
+                .integer("to_slot", "Destination slot index", 0, 255)
+                .optionalInteger("count", "Items to move; default is the full source stack", 1, 64)
+                .optionalString("source", "Source: player or container (default player)")
+                .optionalString("destination", "Destination: player or container (default player)")
                 .build();
     }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                              Consumer<String> reply) {
-        Integer fromSlotValue = ToolArgs.getIntOrNull(args, "from_slot");
-        Integer toSlotValue = ToolArgs.getIntOrNull(args, "to_slot");
-        if (fromSlotValue == null || toSlotValue == null) {
-            reply.accept("{\"error\":\"from_slot and to_slot must be valid integers.\"}");
+        Integer fromIndex = ToolArgs.getIntOrNull(args, "from_slot");
+        Integer toIndex = ToolArgs.getIntOrNull(args, "to_slot");
+        if (fromIndex == null) {
+            reply.accept(ToolArgs.errorJson("from_slot must be an integer"));
+            return;
+        }
+        if (toIndex == null) {
+            reply.accept(ToolArgs.errorJson("to_slot must be an integer"));
             return;
         }
 
-        int fromSlot = fromSlotValue;
-        int toSlot = toSlotValue;
         Integer requestedCount = ToolArgs.getIntOrNull(args, "count");
-        if (ToolArgs.has(args, "count") && requestedCount == null) {
-            // A malformed optional count previously looked like omission and
-            // unexpectedly moved the entire source stack.
-            reply.accept("{\"error\":\"count must be a valid integer when supplied.\"}");
+        if (ToolArgs.has(args, "count")
+                && (requestedCount == null || requestedCount < 1 || requestedCount > 64)) {
+            reply.accept(ToolArgs.errorJson("count must be an integer from 1 to 64"));
             return;
         }
-        String source = ToolArgs.getString(args, "source", "player");
-        String destination = ToolArgs.getString(args, "destination", "player");
-        if (!LOCATIONS.contains(source) || !LOCATIONS.contains(destination)) {
-            reply.accept("{\"error\":\"source and destination must be 'player' or 'container'.\"}");
-            return;
-        }
-        if (requestedCount != null && (requestedCount <= 0 || requestedCount > 64)) {
-            reply.accept("{\"error\":\"count must be between 1 and 64.\"}");
+
+        String sourceType = normalizedEndpoint(args, "source", "player");
+        String destinationType = normalizedEndpoint(args, "destination", "player");
+        if (!validEndpoint(sourceType) || !validEndpoint(destinationType)) {
+            reply.accept(ToolArgs.errorJson("source and destination must be 'player' or 'container'"));
             return;
         }
 
         ServerPlayer sp = ((CompanionEntity) player).serverPlayer();
-        Inventory inventory = sp.getInventory();
-        AbstractContainerMenu menu = sp.containerMenu;
-        if ((source.equals("container") || destination.equals("container"))
-                && (menu == null || menu == sp.inventoryMenu)) {
-            reply.accept("{\"error\":\"No container GUI is currently open.\"}");
+        AbstractContainerMenu openMenu = sp.containerMenu;
+        if (("container".equals(sourceType) || "container".equals(destinationType))
+                && (openMenu == null || openMenu == sp.inventoryMenu)) {
+            reply.accept(ToolArgs.errorJson("No container GUI is currently open"));
             return;
         }
 
-        SlotRef from = resolveSlot(sp, menu, source, fromSlot);
-        SlotRef to = resolveSlot(sp, menu, destination, toSlot);
-        if (from == null || to == null) {
-            reply.accept("{\"error\":\"Slot index is out of range for its selected location.\"}");
+        Slot source = resolveSlot(sp, sourceType, fromIndex);
+        Slot destination = resolveSlot(sp, destinationType, toIndex);
+        if (source == null) {
+            reply.accept(ToolArgs.errorJson("Source slot " + fromIndex + " is out of range"));
+            return;
+        }
+        if (destination == null) {
+            reply.accept(ToolArgs.errorJson("Destination slot " + toIndex + " is out of range"));
+            return;
+        }
+        if (sameBackingSlot(source, destination)) {
+            reply.accept(ToolArgs.errorJson("Source and destination refer to the same inventory slot"));
+            return;
+        }
+        if (!source.isActive() || !source.mayPickup(sp)) {
+            reply.accept(ToolArgs.errorJson("Source slot cannot be taken from"));
             return;
         }
 
-        ItemStack sourceStack = from.get();
-        ItemStack destStack = to.get();
+        ItemStack sourceStack = source.getItem();
+        ItemStack destinationStack = destination.getItem();
         if (sourceStack.isEmpty()) {
-            reply.accept("{\"error\":\"Source slot is empty.\"}");
+            reply.accept(ToolArgs.errorJson("Source slot " + fromIndex + " is empty"));
             return;
         }
-        if (!from.mayExtractDirectly()) {
-            // Crafting/furnace result slots apply ingredient consumption,
-            // recipe accounting, and achievements from Slot#onTake. Directly
-            // splitting or replacing such a slot bypasses that callback and
-            // can duplicate outputs, so this low-level transfer tool rejects
-            // them instead of pretending to emulate a vanilla menu click.
-            reply.accept("{\"error\":\"Special output slots cannot be transferred directly.\"}");
-            return;
-        }
-        // Menu player-inventory slots and direct player indices can alias the
-        // same physical stack. Object identity catches that alias before split.
-        if (sourceStack == destStack || from.samePhysicalSlot(to)) {
-            reply.accept("{\"error\":\"Source and destination are the same physical slot.\"}");
+        if (!destination.isActive() || !destination.mayPlace(sourceStack)) {
+            reply.accept(ToolArgs.errorJson("Destination slot does not accept this item"));
             return;
         }
 
-        String itemId = BuiltInRegistries.ITEM.getKey(sourceStack.getItem()).toString();
-        int requested = requestedCount != null
-                ? Math.min(requestedCount, sourceStack.getCount())
-                : sourceStack.getCount();
-        int actual;
+        int requested = requestedCount == null
+                ? sourceStack.getCount() : Math.min(requestedCount, sourceStack.getCount());
+        int moved;
         String action;
 
-        if (!destStack.isEmpty()
-                && !ItemStack.isSameItemSameComponents(sourceStack, destStack)) {
-            // A partial transfer cannot be represented as a swap without
-            // silently moving more than requested.
+        if (!destinationStack.isEmpty()
+                && !ItemStack.isSameItemSameComponents(sourceStack, destinationStack)) {
+            // A partial swap has no unambiguous inventory meaning. The old
+            // implementation ignored count and exchanged both complete stacks.
             if (requested != sourceStack.getCount()) {
-                reply.accept("{\"error\":\"A different occupied destination requires an all-item swap.\"}");
+                reply.accept(ToolArgs.errorJson(
+                        "A destination containing a different item requires moving the full source stack"));
                 return;
             }
-            if (!to.mayPlace(sourceStack) || !from.mayPlace(destStack)) {
-                reply.accept("{\"error\":\"One of the destination slots rejects the swapped item.\"}");
-                return;
-            }
-            from.set(destStack);
-            to.set(sourceStack);
-            actual = sourceStack.getCount();
-            action = "swap";
-        } else {
-            if (!to.mayPlace(sourceStack)) {
-                reply.accept("{\"error\":\"Destination slot rejects this item.\"}");
-                return;
-            }
-            int destinationLimit = Math.min(
-                    sourceStack.getMaxStackSize(), to.maxStackSize(sourceStack));
-            int space = destStack.isEmpty()
-                    ? destinationLimit
-                    : destinationLimit - destStack.getCount();
-            actual = Math.min(requested, Math.max(0, space));
-            if (actual <= 0) {
-                reply.accept("{\"error\":\"Destination slot is full.\"}");
+            if (!source.mayPlace(destinationStack)
+                    || sourceStack.getCount() > destination.getMaxStackSize(sourceStack)
+                    || destinationStack.getCount() > source.getMaxStackSize(destinationStack)) {
+                reply.accept(ToolArgs.errorJson("The two slots cannot accept each other's stacks"));
                 return;
             }
 
-            if (destStack.isEmpty()) {
-                to.set(sourceStack.split(actual));
-            } else {
-                destStack.grow(actual);
-                sourceStack.shrink(actual);
-                to.changed();
+            source.setByPlayer(destinationStack);
+            destination.setByPlayer(sourceStack);
+            source.setChanged();
+            destination.setChanged();
+            moved = requested;
+            action = "swap";
+        } else {
+            int capacity = destinationStack.isEmpty()
+                    ? destination.getMaxStackSize(sourceStack)
+                    : Math.min(destination.getMaxStackSize(sourceStack),
+                            destinationStack.getMaxStackSize()) - destinationStack.getCount();
+            moved = Math.min(requested, Math.max(0, capacity));
+            if (moved <= 0) {
+                reply.accept(ToolArgs.errorJson("Destination slot is full"));
+                return;
             }
-            if (sourceStack.isEmpty()) {
-                from.set(ItemStack.EMPTY);
-            } else {
-                from.changed();
+
+            // safeTake enforces source-slot behavior such as crafting-result
+            // consumption. Capacity is checked first so no taken stack is ever
+            // stranded or duplicated during a failed insertion.
+            ItemStack taken = source.safeTake(moved, moved, sp);
+            if (taken.isEmpty()) {
+                reply.accept(ToolArgs.errorJson("Source slot refused the transfer"));
+                return;
             }
+            moved = taken.getCount();
+            if (destinationStack.isEmpty()) {
+                destination.setByPlayer(taken);
+            } else {
+                destinationStack.grow(moved);
+                destination.setChanged();
+            }
+            source.setChanged();
             action = "transfer";
         }
 
-        // Every success path converges here. The previous swap return skipped
-        // this synchronization and left clients showing stale inventory.
-        from.changed();
-        to.changed();
-        if (from.playerInventory || to.playerInventory) {
-            TaskContext.syncInventory(sp);
-        }
-        if (menu != null) {
-            menu.broadcastChanges();
-        }
+        TaskContext.syncInventory(sp);
+        if (openMenu != null) openMenu.broadcastChanges();
 
         JsonObject result = new JsonObject();
         result.addProperty("success", true);
         result.addProperty("action", action);
-        result.addProperty("item", itemId);
-        result.addProperty("from_slot", fromSlot);
-        result.addProperty("to_slot", toSlot);
-        result.addProperty("count", actual);
+        result.addProperty("item", BuiltInRegistries.ITEM.getKey(sourceStack.getItem()).toString());
+        result.addProperty("from_slot", fromIndex);
+        result.addProperty("to_slot", toIndex);
+        result.addProperty("count", moved);
         reply.accept(result.toString());
     }
 
-    private static SlotRef resolveSlot(ServerPlayer sp, AbstractContainerMenu menu,
-                                       String location, int index) {
-        if ("container".equals(location)) {
-            if (menu == null || index < 0 || index >= menu.slots.size()) return null;
-            Slot slot = menu.getSlot(index);
-            return new SlotRef(sp, slot, -1, slot.container == sp.getInventory());
-        }
-        if (index < 0 || index >= sp.getInventory().getContainerSize()) return null;
-        return new SlotRef(sp, null, index, true);
+    private static String normalizedEndpoint(JsonObject args, String key, String fallback) {
+        String value = ToolArgs.getString(args, key, fallback);
+        return value == null ? fallback : value.trim().toLowerCase(Locale.ROOT);
     }
 
-    private static final class SlotRef {
-        private final ServerPlayer player;
-        private final Slot menuSlot;
-        private final int inventoryIndex;
-        private final boolean playerInventory;
+    private static boolean validEndpoint(String value) {
+        return "player".equals(value) || "container".equals(value);
+    }
 
-        private SlotRef(ServerPlayer player, Slot menuSlot, int inventoryIndex,
-                        boolean playerInventory) {
-            this.player = player;
-            this.menuSlot = menuSlot;
-            this.inventoryIndex = inventoryIndex;
-            this.playerInventory = playerInventory;
+    private static Slot resolveSlot(ServerPlayer sp, String endpoint, int index) {
+        if (index < 0) return null;
+        if ("container".equals(endpoint)) {
+            AbstractContainerMenu menu = sp.containerMenu;
+            return menu != null && index < menu.slots.size() ? menu.getSlot(index) : null;
         }
 
-        ItemStack get() {
-            return menuSlot != null
-                    ? menuSlot.getItem()
-                    : player.getInventory().getItem(inventoryIndex);
+        Inventory inventory = sp.getInventory();
+        if (index >= inventory.getContainerSize()) return null;
+        AbstractContainerMenu menu = sp.containerMenu == null
+                ? sp.inventoryMenu : sp.containerMenu;
+        for (Slot slot : menu.slots) {
+            if (slot.container == inventory && slot.getContainerSlot() == index) return slot;
         }
+        // The inventory menu always maps all 41 player slots, but use it as a
+        // defensive fallback for modded menus that omit an offhand/armor slot.
+        for (Slot slot : sp.inventoryMenu.slots) {
+            if (slot.container == inventory && slot.getContainerSlot() == index) return slot;
+        }
+        return null;
+    }
 
-        void set(ItemStack stack) {
-            if (menuSlot != null) menuSlot.set(stack);
-            else player.getInventory().setItem(inventoryIndex, stack);
-        }
-
-        void changed() {
-            if (menuSlot != null) menuSlot.setChanged();
-            else player.getInventory().setChanged();
-        }
-
-        boolean mayPlace(ItemStack stack) {
-            if (menuSlot != null) return menuSlot.mayPlace(stack);
-            EquipmentSlot expected = switch (inventoryIndex) {
-                case 36 -> EquipmentSlot.FEET;
-                case 37 -> EquipmentSlot.LEGS;
-                case 38 -> EquipmentSlot.CHEST;
-                case 39 -> EquipmentSlot.HEAD;
-                default -> null;
-            };
-            return expected == null || player.getEquipmentSlotForItem(stack) == expected;
-        }
-
-        boolean mayExtractDirectly() {
-            // Ordinary storage/input slots accept their current stack back.
-            // Result slots intentionally return false from mayPlace, which is
-            // the reliable menu-level signal that extraction needs onTake.
-            return menuSlot == null
-                    || (menuSlot.mayPickup(player) && menuSlot.mayPlace(menuSlot.getItem()));
-        }
-
-        int maxStackSize(ItemStack stack) {
-            if (menuSlot != null) return menuSlot.getMaxStackSize(stack);
-            return inventoryIndex >= 36 && inventoryIndex <= 39
-                    ? 1 : stack.getMaxStackSize();
-        }
-
-        boolean samePhysicalSlot(SlotRef other) {
-            if (this.menuSlot == null && other.menuSlot == null) {
-                return this.inventoryIndex == other.inventoryIndex;
-            }
-            return false;
-        }
+    private static boolean sameBackingSlot(Slot a, Slot b) {
+        return a == b || (a.container == b.container
+                && a.getContainerSlot() == b.getContainerSlot());
     }
 }

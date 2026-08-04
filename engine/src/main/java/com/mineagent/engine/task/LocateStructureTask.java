@@ -5,126 +5,93 @@ import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
 import com.mineagent.tools.LocateStructureTool;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.levelgen.structure.Structure;
 
-import java.util.Optional;
+/** Performs one bounded vanilla structure lookup for an ID or explicit tag. */
+public final class LocateStructureTask
+        extends CompanionTask<LocateStructureTool.LocateStructureTaskRecord> {
 
-/**
- * Executes a structure location task using vanilla's placement-aware bounded
- * query and returns its coordinates.
- */
-public class LocateStructureTask extends CompanionTask<LocateStructureTool.LocateStructureTaskRecord> {
-
-    private enum Phase { SEARCHING, DONE }
-
-    private Phase phase;
+    private static final int SEARCH_RADIUS_CHUNKS = 100;
+    private boolean searched;
     private BlockPos foundPos;
     private String failReason;
 
-    private int searchTicks;
-
-    public LocateStructureTask(AgentPlayer player, LocateStructureTool.LocateStructureTaskRecord record) {
+    public LocateStructureTask(AgentPlayer player,
+                               LocateStructureTool.LocateStructureTaskRecord record) {
         super(player, record);
     }
 
     @Override
     protected void onStart() {
-        phase = Phase.SEARCHING;
-        searchTicks = 0;
+        searched = false;
         foundPos = null;
         failReason = null;
     }
 
     @Override
     protected TaskState onTick() {
-        // Timeout check
-        long gameTime = TaskContext.serverPlayer(player).level().getGameTime();
-        if (gameTime >= record.deadline()) {
+        var sp = TaskContext.serverPlayer(player);
+        if (sp.level().getGameTime() >= record.deadline()) return TaskState.FAILED;
+        if (searched) return foundPos != null ? TaskState.SUCCESS : TaskState.FAILED;
+        searched = true;
+
+        String requested = record.structureType == null
+                ? "" : record.structureType.trim();
+        boolean tagRequest = requested.startsWith("#");
+        ResourceLocation id = ResourceLocation.tryParse(
+                tagRequest ? requested.substring(1) : requested);
+        if (id == null) {
+            failReason = "Invalid structure ID: " + requested;
             return TaskState.FAILED;
         }
 
-        switch (phase) {
-            case SEARCHING -> tickSearch();
-            case DONE -> {}
+        var level = sp.serverLevel();
+        var registry = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
+        HolderSet<Structure> candidates;
+        if (tagRequest) {
+            candidates = registry.getTag(TagKey.create(Registries.STRUCTURE, id))
+                    .map(set -> (HolderSet<Structure>) set).orElse(null);
+        } else {
+            candidates = registry.getHolder(ResourceKey.create(Registries.STRUCTURE, id))
+                    .map(HolderSet::direct).orElse(null);
+        }
+        if (candidates == null || candidates.size() == 0) {
+            failReason = "Structure " + requested + " is not registered in this world";
+            return TaskState.FAILED;
         }
 
-        if (phase == Phase.DONE && foundPos != null) return TaskState.SUCCESS;
-        if (phase == Phase.DONE && failReason != null) return TaskState.FAILED;
-        return TaskState.RUNNING;
-    }
-
-    private void tickSearch() {
-        if (searchTicks++ > 0) return;
-
-        var sp = TaskContext.serverPlayer(player);
-        ServerLevel level = sp.serverLevel();
-        var pos = sp.blockPosition();
-
-        // Parse structure type
-        ResourceLocation structLoc = ResourceLocation.tryParse(record.structureType);
-        if (structLoc == null) {
-            failReason = "Invalid structure type: " + record.structureType;
-            phase = Phase.DONE;
-            return;
+        // The old task created a TagKey from every structure ID, so direct
+        // IDs never matched. ChunkGenerator accepts an explicit HolderSet and
+        // preserves vanilla placement/seed semantics for both forms.
+        var match = level.getChunkSource().getGenerator().findNearestMapStructure(
+                level, candidates, sp.blockPosition(), SEARCH_RADIUS_CHUNKS, false);
+        if (match == null) {
+            failReason = "Structure " + requested + " was not found within "
+                    + SEARCH_RADIUS_CHUNKS + " chunks";
+            return TaskState.FAILED;
         }
-
-        ResourceKey<Structure> structKey = ResourceKey.create(
-                net.minecraft.core.registries.Registries.STRUCTURE, structLoc);
-
-        var registry = level.registryAccess()
-                .registryOrThrow(net.minecraft.core.registries.Registries.STRUCTURE);
-        Optional<Holder.Reference<Structure>> holder = registry.getHolder(structKey);
-
-        if (holder.isEmpty()) {
-            failReason = "Structure type '" + record.structureType + "' not found in this world";
-            phase = Phase.DONE;
-            return;
-        }
-
-        // Keep the placement-aware lookup on the server thread. Moving world
-        // generation access to a generic worker would race chunk and structure
-        // manager state; the radius below bounds the synchronous query.
-        var structureHolder = holder.get();
-
-        // A registry ID is not a tag ID. The previous code validated an exact
-        // holder and then created a same-named TagKey, which usually resolves
-        // to an empty tag. Query the chunk generator with that exact holder.
-        int searchRadius = 100;
-        var foundResult = level.getChunkSource().getGenerator()
-                .findNearestMapStructure(level, HolderSet.direct(structureHolder),
-                        pos, searchRadius, false);
-        BlockPos found = foundResult != null ? foundResult.getFirst() : null;
-
-        if (found != null) {
-            foundPos = found;
-            phase = Phase.DONE;
-            return;
-        }
-
-        failReason = "Structure '" + record.structureType
-                + "' not found within " + searchRadius + " chunks";
-        phase = Phase.DONE;
+        foundPos = match.getFirst();
+        return TaskState.SUCCESS;
     }
 
     @Override
     protected void onInterrupt() {
-        // Nothing to cancel — server-side search is read-only
+        // The bounded vanilla lookup completes inside one server-thread call.
     }
 
     @Override
     protected String successMessage() {
-        if (foundPos != null) {
-            var companionPos = TaskContext.serverPlayer(player).blockPosition();
-            double dist = companionPos.distSqr(foundPos);
-            return "Found structure at (" + foundPos.getX() + ", " + foundPos.getY()
-                    + ", " + foundPos.getZ() + ") distance=" + String.format("%.1f", Math.sqrt(dist));
-        }
-        return "Structure found";
+        if (foundPos == null) return "Structure found";
+        BlockPos from = TaskContext.serverPlayer(player).blockPosition();
+        double distance = Math.sqrt(from.distSqr(foundPos));
+        return "Found structure at (" + foundPos.getX() + ", " + foundPos.getY()
+                + ", " + foundPos.getZ() + ") distance="
+                + String.format(java.util.Locale.ROOT, "%.1f", distance);
     }
 
     @Override
@@ -134,7 +101,7 @@ public class LocateStructureTask extends CompanionTask<LocateStructureTool.Locat
 
     @Override
     protected String failureMessage() {
-        if (failReason != null) return failReason;
-        return "Structure search failed for '" + record.structureType + "'";
+        return failReason != null ? failReason
+                : "Structure search failed for '" + record.structureType + "'";
     }
 }

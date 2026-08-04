@@ -80,17 +80,21 @@ public final class UnstuckChain implements TaskChain {
 
     private enum Phase { IDLE, WIGGLE, BREAK, BACK_AWAY, GIVE_UP }
     private Phase phase = Phase.IDLE;
+    private int stuckTicks = 0;
     private int actionTicks = 0;
     private Vec3 lastPosition = null;
     /** The direction we were trying to move when stuck (for BACK_AWAY). */
     private Direction stuckFacing = Direction.NORTH;
-    private float stuckYaw = 0.0f;
+    private float escapeYaw;
     private BlockPos activeBreakTarget;
+    private int activeBreakTimeout;
+    private int activeBreakTicks;
 
     /**
      * Last recorded movement input state — used to feed the stuck detector.
      * Updated in getPriority() each tick.
      */
+    private boolean lastTryingToMove = false;
 
     /**
      * Monotonic tick counter, incremented once per {@link #getPriority}
@@ -115,8 +119,6 @@ public final class UnstuckChain implements TaskChain {
         this.companion = companion;
         this.config = config;
         this.bodyLog = SurvivalBuiltin.bodyLog(companion);
-        // The configured threshold used to be ignored by a fixed 40-tick
-        // detector, making UI/config changes behaviorally inert.
         this.stuckDetector = new UnstuckDetector(config.stuckTimeTicks());
     }
 
@@ -128,7 +130,6 @@ public final class UnstuckChain implements TaskChain {
     @Override
     public float getPriority(AgentPlayer companion) {
         try {
-            currentTick++;
             // If actively escaping, maintain priority. This check MUST come
             // before the cooldown check below, otherwise an in-progress
             // escape sequence (WIGGLE/BREAK/BACK_AWAY/GIVE_UP) would be
@@ -137,6 +138,8 @@ public final class UnstuckChain implements TaskChain {
                     || phase == Phase.BACK_AWAY || phase == Phase.GIVE_UP) {
                 return PRIORITY;
             }
+
+            currentTick++;
 
             // Cooldown after a recent trigger or after GIVE_UP. This is the
             // fix for problems 1 & 2:
@@ -172,6 +175,7 @@ public final class UnstuckChain implements TaskChain {
             boolean tryingToMove = sp.zza != 0.0f
                     || sp.xxa != 0.0f
                     || isJumping(sp);
+            lastTryingToMove = tryingToMove;
 
             // Feed the rolling-window stuck detector.
             // The detector only counts ticks where tryingToMove == true,
@@ -206,21 +210,12 @@ public final class UnstuckChain implements TaskChain {
                     // Record which direction we're facing when stuck —
                     // we'll try breaking that way first, then back away.
                     stuckFacing = sp.getDirection();
-                    stuckYaw = sp.getYRot();
                     bodyLog.report("stuck in place, trying to wiggle free");
                     phase = Phase.WIGGLE;
                     actionTicks = 0;
                 }
                 case WIGGLE -> {
                     actionTicks++;
-
-                    // InputDriver retains values until explicitly replaced.
-                    // Reset every axis at the start of the phase tick so the
-                    // previous wiggle direction cannot leak into BREAK or
-                    // BACK_AWAY and turn an escape into another wall impact.
-                    input.setForward(0.0f);
-                    input.setStrafe(0.0f);
-                    input.setSprinting(false);
 
                     // Human-like wiggle: try jumping + moving in different
                     // directions to unstick from minor obstacles.
@@ -265,9 +260,16 @@ public final class UnstuckChain implements TaskChain {
                 case BREAK -> {
                     actionTicks++;
 
-                    input.setForward(0.0f);
-                    input.setStrafe(0.0f);
-                    input.setSprinting(false);
+                    if (activeBreakTarget != null) {
+                        activeBreakTicks++;
+                        if (!isBlocking(sp.level().getBlockState(activeBreakTarget))) {
+                            activeBreakTarget = null;
+                            activeBreakTicks = 0;
+                            activeBreakTimeout = 0;
+                        } else if (activeBreakTicks > activeBreakTimeout) {
+                            abortActiveBreak(sp);
+                        }
+                    }
 
                     // Break blocks that are blocking us, like a real player
                     // would when stuck in terrain. Try head, front, then feet.
@@ -281,31 +283,18 @@ public final class UnstuckChain implements TaskChain {
                     BlockState feetState = sp.level().getBlockState(feetPos);
 
                     // Determine which block to break (priority: head > front > feet)
-                    BlockPos breakTarget = null;
                     if (isBlocking(headState)) {
                         // Look at the head block and break it
                         sp.setXRot(-90);  // look straight up
-                        breakTarget = headPos;
+                        startOrContinueBreak(sp, headPos);
                     } else if (isBlocking(frontState)) {
                         // Look at the front block and break it
                         sp.setXRot(0);    // look straight ahead
-                        breakTarget = frontPos;
+                        startOrContinueBreak(sp, frontPos);
                     } else if (isBlocking(feetState)) {
                         // Break the block at feet level (cobweb, etc.)
                         sp.setXRot(90);   // look straight down
-                        breakTarget = feetPos;
-                    }
-
-                    // Progressive mining owns one target at a time. Repeated
-                    // START calls or switching targets without ABORT leaves
-                    // ServerPlayerGameMode in an inconsistent destroy state.
-                    if (breakTarget == null) {
-                        abortActiveBreak(sp);
-                    } else if (!breakTarget.equals(activeBreakTarget)) {
-                        abortActiveBreak(sp);
-                        if (BlockDigger.startBreaking(sp, breakTarget)) {
-                            activeBreakTarget = breakTarget;
-                        }
+                        startOrContinueBreak(sp, feetPos);
                     }
 
                     // Try jumping while breaking (real players do this)
@@ -326,28 +315,22 @@ public final class UnstuckChain implements TaskChain {
                     }
 
                     // After 40 ticks of breaking, try backing away
-                    if (actionTicks > 40) {
+                    if (actionTicks > Math.max(80, activeBreakTimeout)) {
                         abortActiveBreak(sp);
                         phase = Phase.BACK_AWAY;
                         actionTicks = 0;
+                        escapeYaw = stuckFacing.getOpposite().toYRot();
                         bodyLog.report("can't break free, backing up to try another way");
                     }
                 }
                 case BACK_AWAY -> {
                     actionTicks++;
 
-                    // BREAK may have left a strafe value from WIGGLE. A real
-                    // backward escape must be pure reverse motion relative to
-                    // stuckYaw, otherwise it keeps scraping the obstacle.
-                    input.setStrafe(0.0f);
-                    input.setSprinting(false);
-
-                    // Keep facing the original obstacle and press backward.
-                    // Adding 180 degrees to the current yaw every tick made
-                    // the heading alternate and, combined with a negative
-                    // forward input, often moved toward the obstacle.
-                    sp.setYRot(stuckYaw);
-                    input.setForward(-0.8f);  // walk backward (away from obstacle)
+                    // Back away from the stuck direction — like a player
+                    // backing out of a dead end to try a different path.
+                    // Turn around and walk backward.
+                    sp.setYRot(escapeYaw);
+                    input.setForward(0.8f);
                     input.setJumping(false);
 
                     // Check if we've moved HORIZONTALLY
@@ -403,21 +386,42 @@ public final class UnstuckChain implements TaskChain {
 
     private void reset() {
         try {
-            abortActiveBreak(((CompanionEntity) companion).serverPlayer());
-            inputDriver(companion).clear();
+            ServerPlayer sp = ((CompanionEntity) companion).serverPlayer();
+            abortActiveBreak(sp);
+            ((CompanionEntity) companion).inputDriver().clear();
         } catch (Exception ignored) {
+            // Cleanup can race entity teardown during despawn.
         }
         phase = Phase.IDLE;
+        stuckTicks = 0;
         actionTicks = 0;
         stuckDetector.reset();
         // Keep lastPosition for next detection cycle
     }
 
+    private void startOrContinueBreak(ServerPlayer sp, BlockPos target) {
+        if (target == null || !isBlocking(sp.level().getBlockState(target))) return;
+        if (target.equals(activeBreakTarget)) return;
+        abortActiveBreak(sp);
+        int expected = BlockDigger.expectedBreakTicks(sp, target);
+        if (expected == Integer.MAX_VALUE) return;
+        // Unstuck is a short recovery policy, not an authorization to spend
+        // minutes mining a hard valuable block. Higher-level planning can
+        // choose a deliberate route if this bounded attempt fails.
+        activeBreakTimeout = Math.min(240, Math.max(40, expected));
+        if (BlockDigger.startBreaking(sp, target)) {
+            activeBreakTarget = target.immutable();
+            activeBreakTicks = 0;
+        }
+    }
+
     private void abortActiveBreak(ServerPlayer sp) {
         if (activeBreakTarget != null) {
             BlockDigger.abortBreaking(sp, activeBreakTarget);
-            activeBreakTarget = null;
         }
+        activeBreakTarget = null;
+        activeBreakTicks = 0;
+        activeBreakTimeout = 0;
     }
 
     // ── Helpers ────────────────────────────────────────────────────

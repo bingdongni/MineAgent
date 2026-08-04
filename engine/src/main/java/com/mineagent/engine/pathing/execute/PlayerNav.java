@@ -22,8 +22,9 @@ import com.mineagent.engine.task.TaskContext;
  */
 public class PlayerNav {
 
-    private final PathingCore core;
+    private PathingCore core;
     private final AgentPlayer player;
+    private net.minecraft.server.level.ServerLevel coreLevel;
 
     /** Listener for path events. */
     public interface NavListener {
@@ -40,6 +41,7 @@ public class PlayerNav {
 
     public PlayerNav(AgentPlayer player, PathCaches caches) {
         this.player = player;
+        this.coreLevel = caches.level();
         this.core = new PathingCore(player, caches,
                 com.mineagent.engine.MineAgentEngine.getConfig().pathfinding());
     }
@@ -48,6 +50,7 @@ public class PlayerNav {
      * Navigate to an exact block position.
      */
     public void navigateTo(int x, int y, int z) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalBlock(x, y, z));
     }
 
@@ -55,6 +58,7 @@ public class PlayerNav {
      * Navigate to be adjacent to a block.
      */
     public void navigateToBlock(int x, int y, int z) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalGetToBlock(x, y, z));
     }
 
@@ -65,6 +69,7 @@ public class PlayerNav {
      * fake player's body.
      */
     public void navigateForPlacement(int x, int y, int z) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalPlaceBlock(x, y, z));
     }
 
@@ -72,6 +77,7 @@ public class PlayerNav {
      * Navigate to an XZ coordinate at any Y level.
      */
     public void navigateToXZ(int x, int z) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalXZ(x, z));
     }
 
@@ -79,6 +85,7 @@ public class PlayerNav {
      * Navigate to a specific Y altitude.
      */
     public void navigateToYLevel(int y) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalYLevel(y));
     }
 
@@ -86,6 +93,7 @@ public class PlayerNav {
      * Navigate to be within a radius of a position.
      */
     public void navigateNear(int x, int y, int z, int radius) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalNear(x, y, z, radius));
     }
 
@@ -93,6 +101,7 @@ public class PlayerNav {
      * Run away from a position.
      */
     public void runAway(int x, int y, int z, double distance) {
+        ensureCurrentLevel(false);
         core.setGoal(new GoalRunAway(x, y, z, distance));
     }
 
@@ -100,6 +109,7 @@ public class PlayerNav {
      * Navigate to a custom goal.
      */
     public void navigateToGoal(Goal goal) {
+        ensureCurrentLevel(false);
         core.setGoal(goal);
     }
 
@@ -114,6 +124,7 @@ public class PlayerNav {
      * Tick the navigation system. Call this every server tick.
      */
     public void tick() {
+        if (!ensureCurrentLevel(true)) return;
         PathingCore.State prevState = core.state();
         core.tick();
         PathingCore.State newState = core.state();
@@ -175,6 +186,23 @@ public class PlayerNav {
     /** Get the companion player. */
     public AgentPlayer player() {
         return player;
+    }
+
+    /** Rebind world-owned path state after a dimension transition. */
+    private boolean ensureCurrentLevel(boolean notifyActiveFailure) {
+        var currentLevel = TaskContext.serverPlayer(player).serverLevel();
+        if (coreLevel == currentLevel) return true;
+        boolean wasActive = core != null && core.isActive();
+        if (core != null) core.cancel();
+        coreLevel = currentLevel;
+        core = new PathingCore(player, TaskContext.navCaches(player),
+                com.mineagent.engine.MineAgentEngine.getConfig().pathfinding());
+        if (notifyActiveFailure && wasActive && listener != null) {
+            // Coordinates do not imply the same target in another dimension.
+            // Report a deterministic failure instead of silently reusing them.
+            listener.onNavigationFailed("DIMENSION_CHANGED");
+        }
+        return !notifyActiveFailure || !wasActive;
     }
 
     /** Push a bounded path snapshot to the owner at most four times/second. */

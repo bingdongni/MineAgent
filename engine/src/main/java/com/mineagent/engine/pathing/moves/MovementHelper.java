@@ -159,7 +159,10 @@ public final class MovementHelper {
      * must be solid ground at targetY-1.
      */
     public static boolean canFallThrough(CalculationContext ctx, int x, int y, int z, int targetY) {
-        for (int cy = targetY + 1; cy <= y; cy++) {
+        // The union of a standing player's swept volume spans landing feet at
+        // targetY through head height y+1 while stepping into the fall column.
+        // Omitting y+1 planned drops whose entry was blocked at head height.
+        for (int cy = targetY; cy <= y + 1; cy++) {
             BlockState state = ctx.getBlockState(x, cy, z);
             if (state == null) return false;
             if (!BlockHelper.isPassable(state)) return false;

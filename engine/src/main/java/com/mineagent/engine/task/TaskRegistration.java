@@ -10,6 +10,7 @@ import com.mineagent.tools.block.BuildTool;
 import com.mineagent.tools.combat.MeleeAttackTool;
 import com.mineagent.tools.combat.RangedAttackTool;
 import com.mineagent.tools.inventory.CollectItemsTool;
+import com.mineagent.tools.inventory.EatItemTool;
 import com.mineagent.tools.movement.MoveToTool;
 
 /**
@@ -62,6 +63,12 @@ public final class TaskRegistration {
         CompanionTaskFactory.register(
                 CollectItemsTool.CollectItemsTaskRecord.class,
                 CollectItemsTask::new
+        );
+
+        // Timed food use
+        CompanionTaskFactory.register(
+                EatItemTool.EatItemTaskRecord.class,
+                EatItemTask::new
         );
 
         // Block interaction

@@ -70,16 +70,18 @@ public class RecallMemoryTool implements Tool {
         }
 
         var cmap = loopOpt.cognitiveMap();
-        var sp = com.mineagent.engine.task.TaskContext.serverPlayer(player);
-        String dimension = sp.level().dimension().location().toString();
         List<com.mineagent.engine.memory.CognitiveMap.PointOfInterest> results;
 
         if (category.isBlank()) {
             // All nearby (within 64 blocks of current position)
+            var sp = com.mineagent.engine.task.TaskContext.serverPlayer(player);
             results = cmap.findNearby(sp.blockPosition().getX(),
-                    sp.blockPosition().getZ(), 64, dimension);
+                    sp.blockPosition().getZ(), 64,
+                    sp.level().dimension().location().toString());
         } else {
-            results = cmap.findByCategory(category.toLowerCase(java.util.Locale.ROOT), dimension);
+            var sp = com.mineagent.engine.task.TaskContext.serverPlayer(player);
+            results = cmap.findByCategory(category.toLowerCase(),
+                    sp.level().dimension().location().toString());
         }
 
         if (results.isEmpty()) {

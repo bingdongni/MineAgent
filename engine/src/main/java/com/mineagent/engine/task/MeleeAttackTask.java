@@ -8,8 +8,8 @@ import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.tools.combat.MeleeAttackTool;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import java.util.Locale;
 
 /**
  * Executes a melee attack task — tracks the target entity, navigates
@@ -22,16 +22,15 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
 
     /** Maximum melee attack range in blocks. */
     private static final double MELEE_RANGE = 3.0;
-    /** Ticks between attack attempts (attack cooldown). */
-    private static final int ATTACK_COOLDOWN = 20;
     /** Minimum companion health to keep fighting. */
     private static final float MIN_HEALTH = 5.0f;
 
     private PlayerNav nav;
     private Phase phase;
     private Entity target;
-    private int attackCooldown;
-    private int attackHoldRemaining;
+    private int aimTicks;
+    private int repathTicks;
+    private net.minecraft.core.BlockPos lastNavTarget;
     private String failReason;
 
     public MeleeAttackTask(AgentPlayer player, MeleeAttackTool.MeleeAttackTaskRecord record) {
@@ -41,8 +40,9 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
     @Override
     protected void onStart() {
         phase = Phase.NAVIGATE;
-        attackCooldown = 0;
-        attackHoldRemaining = 0;
+        aimTicks = 0;
+        repathTicks = 0;
+        lastNavTarget = null;
 
         // Resolve target entity
         ServerLevel level = TaskContext.serverPlayer(player).serverLevel();
@@ -52,10 +52,9 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
             phase = Phase.DONE;
             return;
         }
-        if (target == TaskContext.serverPlayer(player) || !target.isAttackable()) {
-            failReason = "Target entity " + record.entityId + " cannot be attacked";
+        if (target.level() != TaskContext.serverPlayer(player).level()) {
+            failReason = "Target moved to another dimension";
             phase = Phase.DONE;
-            return;
         }
 
         PathCaches caches = TaskContext.navCaches(player);
@@ -88,7 +87,8 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
 
         // Check companion health — retreat if dying
         if (player.health() < MIN_HEALTH && player.isAlive()) {
-            failReason = "Companion health critical (" + String.format("%.1f", player.health()) + "), retreating";
+            failReason = "Companion health critical ("
+                    + String.format(Locale.ROOT, "%.1f", player.health()) + "), retreating";
             phase = Phase.DONE;
         }
 
@@ -118,12 +118,19 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
     private void tickNavigate() {
         // Re-navigate to target's current position periodically
         nav.tick();
+        repathTicks++;
 
         // Check if we're already in range
         double dist = distanceToTarget();
         if (dist <= MELEE_RANGE) {
             nav.cancel();
+            TaskContext.inputDriver(player).clear();
             phase = Phase.ATTACK;
+            aimTicks = 0;
+        } else if (repathTicks >= 20
+                && (lastNavTarget == null
+                    || lastNavTarget.distManhattan(target.blockPosition()) >= 2)) {
+            navigateToTarget();
         }
     }
 
@@ -136,56 +143,25 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
             return;
         }
 
-        // A non-zero hold_ticks models keeping the attack input pressed after
-        // the initial strike. The parameter used to be parsed and persisted
-        // but never read by this task, making the public tool contract inert.
-        if (attackHoldRemaining > 0) {
-            lookAtTarget();
-            var sp = TaskContext.serverPlayer(player);
-            // A held mouse button does not send a full attack every tick.
-            // Doing so resets vanilla's attack ticker continuously, leaving
-            // every strike after the first at negligible damage.
-            if (sp.getAttackStrengthScale(0.0f) >= 0.9f) {
-                if (!Interaction.attackEntity(sp, target)) {
-                    navigateToTarget();
-                    attackHoldRemaining = 0;
-                    return;
-                }
-                sp.swing(InteractionHand.MAIN_HAND);
-            }
-            attackHoldRemaining--;
-            if (attackHoldRemaining == 0) attackCooldown = ATTACK_COOLDOWN;
-            return;
-        }
-
-        // Wait for attack cooldown
-        if (attackCooldown > 0) {
-            attackCooldown--;
-            return;
-        }
-
         // Look at target
         lookAtTarget();
 
-        // Attack the resolved entity directly. A generic view ray can hit an
-        // intervening block or miss the entity bounding box even after aiming,
-        // which made the state machine report attacks that never occurred.
-        var sp = TaskContext.serverPlayer(player);
-        if (sp.getAttackStrengthScale(0.0f) < 0.9f) return;
-        if (!sp.hasLineOfSight(target)) {
-            // Calling ServerPlayer.attack directly bypasses the packet
-            // handler's visibility checks. Without this guard the companion
-            // can damage an entity through a wall from an otherwise valid
-            // three-block center distance.
+        if (!TaskContext.serverPlayer(player).hasLineOfSight(target)) {
             navigateToTarget();
             return;
         }
-        if (Interaction.attackEntity(sp, target)) {
-            sp.swing(InteractionHand.MAIN_HAND);
-            attackHoldRemaining = record.holdTicks;
-            if (attackHoldRemaining == 0) attackCooldown = ATTACK_COOLDOWN;
-        } else {
-            navigateToTarget();
+
+        // hold_ticks now has explicit semantics: extra stable aim time before
+        // each swing. Java melee has no continuous "held attack" packet.
+        if (aimTicks++ < record.holdTicks) return;
+
+        var sp = TaskContext.serverPlayer(player);
+        if (sp.getAttackStrengthScale(0.5f) >= 0.9f) {
+            if (!Interaction.attackEntity(sp, target)) {
+                navigateToTarget();
+                return;
+            }
+            aimTicks = 0;
         }
     }
 
@@ -197,6 +173,8 @@ public class MeleeAttackTask extends CompanionTask<MeleeAttackTool.MeleeAttackTa
                 target.blockPosition().getZ(),
                 2 // arrive within 2 blocks
         );
+        lastNavTarget = target.blockPosition().immutable();
+        repathTicks = 0;
         phase = Phase.NAVIGATE;
     }
 

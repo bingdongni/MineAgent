@@ -8,6 +8,7 @@ import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 
 import java.util.Map;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 import net.minecraft.core.BlockPos;
@@ -67,13 +68,12 @@ public class LookAroundTool implements Tool {
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
-        Integer parsedRadius = ToolArgs.has(args, "radius")
+        Integer radius = ToolArgs.has(args, "radius")
                 ? ToolArgs.getIntOrNull(args, "radius") : 8;
-        if (parsedRadius == null || parsedRadius < 4 || parsedRadius > 16) {
-            reply.accept("{\"error\":\"radius must be an integer between 4 and 16.\"}");
+        if (radius == null || radius < 4 || radius > 16) {
+            reply.accept(ToolArgs.errorJson("'radius' must be an integer from 4 to 16."));
             return;
         }
-        int radius = parsedRadius;
 
         String result = generatePerception(player, radius);
         reply.accept(result);
@@ -235,13 +235,13 @@ public class LookAroundTool implements Tool {
             double dz = entity.getZ() - sp.getZ();
             String direction = getDirection(dx, dz);
 
-            sb.append(String.format("- %s at (%.0f, %.0f, %.0f) %s, dist=%.1f",
+            sb.append(String.format(Locale.ROOT, "- %s at (%.0f, %.0f, %.0f) %s, dist=%.1f",
                     cleanName, entity.getX(), entity.getY(), entity.getZ(),
                     direction, dist));
 
             // Health
             if (entity instanceof LivingEntity living) {
-                sb.append(String.format(" HP=%.0f/%.0f", living.getHealth(), living.getMaxHealth()));
+                sb.append(String.format(Locale.ROOT, " HP=%.0f/%.0f", living.getHealth(), living.getMaxHealth()));
             }
 
             // What is this entity doing?
@@ -261,7 +261,7 @@ public class LookAroundTool implements Tool {
                     }
                     sb.append(" >> TARGETING: ").append(targetName);
                     if (target instanceof Player p) {
-                        sb.append(String.format(" (HP=%.0f/%.0f)", p.getHealth(), p.getMaxHealth()));
+                        sb.append(String.format(Locale.ROOT, " (HP=%.0f/%.0f)", p.getHealth(), p.getMaxHealth()));
                     }
                 }
             }
@@ -285,7 +285,7 @@ public class LookAroundTool implements Tool {
 
         // ── Layer 3: Self Status Summary ──
         sb.append("\n=== SELF STATUS ===\n");
-        sb.append(String.format("Position: (%d, %d, %d) | Health: %.1f/%.1f | Food: %d | Facing: %s\n",
+        sb.append(String.format(Locale.ROOT, "Position: (%d, %d, %d) | Health: %.1f/%.1f | Food: %d | Facing: %s\n",
                 selfX, selfY, selfZ,
                 sp.getHealth(), sp.getMaxHealth(),
                 sp.getFoodData().getFoodLevel(),

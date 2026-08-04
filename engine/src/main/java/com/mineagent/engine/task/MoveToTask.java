@@ -38,10 +38,6 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
     /** Last recorded position — used to detect progress. */
     private Vec3 lastProgressPos = null;
 
-    /** Near-retry: if navigation fails, retry once with a relaxed goal. */
-    private boolean hasRetried = false;
-    private static final int NEAR_RETRY_RADIUS = 3;
-
     public MoveToTask(AgentPlayer player, MoveToTool.MoveToTaskRecord record) {
         super(player, record);
     }
@@ -92,28 +88,9 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
     @Override
     public TaskState onTick() {
         if (navFailed) {
-            // Near-retry: if we haven't retried yet, retry with a relaxed goal
-            if (!hasRetried) {
-                hasRetried = true;
-                navFailed = false;
-                failReason = null;
-                goalReached = false;
-
-                // Retry with a relaxed goal (within NEAR_RETRY_RADIUS blocks).
-                // Use the same safe-default logic as onStart() for null y/z
-                // (xz mode has y=null; retrying with null would NPE in GoalNear).
-                ServerPlayer sp = TaskContext.serverPlayer(player);
-                startRetry(sp);
-
-                System.out.println("[MineAgent] MoveTo retrying with relaxed goal "
-                        + "(radius=" + NEAR_RETRY_RADIUS + ")");
-
-                // Reset lease for the retry
-                long gameTime = sp.level().getGameTime();
-                lease.start(gameTime);
-                lastProgressPos = sp.position();
-                return TaskState.RUNNING;
-            }
+            // PathingCore already performs bounded replanning. Relaxing an
+            // exact xzy/block goal to a three-block radius here reported
+            // success at a position that did not satisfy the tool request.
             return TaskState.FAILED;
         }
         if (goalReached) return TaskState.SUCCESS;
@@ -124,18 +101,6 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
         // Re-check after tick (listener may have fired)
         if (goalReached) return TaskState.SUCCESS;
         if (navFailed) {
-            // Same retry logic as above
-            if (!hasRetried) {
-                hasRetried = true;
-                navFailed = false;
-                failReason = null;
-                ServerPlayer sp = TaskContext.serverPlayer(player);
-                startRetry(sp);
-                long gameTime = sp.level().getGameTime();
-                lease.start(gameTime);
-                lastProgressPos = sp.position();
-                return TaskState.RUNNING;
-            }
             return TaskState.FAILED;
         }
 
@@ -143,9 +108,7 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
         ServerPlayer sp = TaskContext.serverPlayer(player);
         long gameTime = sp.level().getGameTime();
 
-        // Detect progress in 3D. Horizontal-only distance made goal_mode=y
-        // climbs look permanently stuck even while the companion was moving
-        // upward/downward along a valid path, so their lease never renewed.
+        // Vertical-only goals must renew while climbing as well as walking.
         Vec3 currentPos = sp.position();
         if (lastProgressPos != null && currentPos.distanceTo(lastProgressPos) > 1.0) {
             lease.onProgress(gameTime);
@@ -161,27 +124,11 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
             System.out.println("[MineAgent] MoveTo lease expired: " + reason);
             nav.cancel();
             TaskContext.inputDriver(player).clear();
+            failReason = "Navigation lease expired: " + reason;
             return TaskState.FAILED;
         }
 
         return TaskState.RUNNING;
-    }
-
-    private void startRetry(ServerPlayer sp) {
-        int retryY = record.y != null ? record.y : sp.blockPosition().getY();
-        int retryZ = record.z != null ? record.z : sp.blockPosition().getZ();
-        switch (record.goalMode) {
-            case "xz" -> nav.navigateToGoal(
-                    new com.mineagent.engine.pathing.goals.GoalNearXZ(
-                            record.x, retryZ, NEAR_RETRY_RADIUS));
-            case "y" -> nav.navigateToYLevel(retryY);
-            case "xzy", "block" -> nav.navigateNear(
-                    record.x, retryY, retryZ, NEAR_RETRY_RADIUS);
-            default -> {
-                navFailed = true;
-                failReason = "Invalid goal_mode: " + record.goalMode;
-            }
-        }
     }
 
     @Override
@@ -220,6 +167,6 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord> {
                     + " target=(" + record.x + ", " + yStr + ", " + zStr + "))";
         }
         return "Navigation failed (mode=" + record.goalMode
-                + " target=(" + record.x + ", " + yStr + ", " + zStr + "))";
+                + " target=(" + record.x + ", " + yStr + ", " + zStr + ")";
     }
 }

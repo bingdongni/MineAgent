@@ -52,33 +52,43 @@ public class InteractEntityTool implements Tool {
             reply.accept("{\"error\":\"Missing required parameter 'button'.\"}");
             return;
         }
+        if (!ToolArgs.has(args, "entity_id")) {
+            reply.accept("{\"error\":\"Missing required parameter 'entity_id'.\"}");
+            return;
+        }
         Integer entityId = ToolArgs.getIntOrNull(args, "entity_id");
-        if (entityId == null || entityId <= 0) {
-            reply.accept("{\"error\":\"entity_id must be a positive integer.\"}");
+        if (entityId == null || entityId < 0) {
+            reply.accept(ToolArgs.errorJson("'entity_id' must be a non-negative integer."));
             return;
         }
-        Integer parsedHold = ToolArgs.has(args, "hold_ticks")
+        Integer holdTicks = ToolArgs.has(args, "hold_ticks")
                 ? ToolArgs.getIntOrNull(args, "hold_ticks") : 0;
-        if (parsedHold == null || parsedHold < 0 || parsedHold > 40) {
-            reply.accept("{\"error\":\"hold_ticks must be an integer between 0 and 40.\"}");
+        if (holdTicks == null || holdTicks < 0 || holdTicks > 40) {
+            reply.accept(ToolArgs.errorJson("'hold_ticks' must be an integer from 0 to 40."));
             return;
         }
-        int holdTicks = parsedHold;
         String itemId = ToolArgs.getString(args, "item_id");
-        if (itemId != null) {
-            var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
-            if (id == null
-                    || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
-                reply.accept(ToolArgs.errorJson("Unknown held item: " + itemId));
-                return;
-            }
-        }
 
         // Validate button
         if (!java.util.Set.of("use", "attack", "use_offhand").contains(button)) {
             reply.accept(ToolArgs.errorJson("Invalid button: " + button
                     + ". Use 'use', 'attack', or 'use_offhand'."));
             return;
+        }
+
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var target = sp.serverLevel().getEntity(entityId);
+        if (target == null || !target.isAlive() || target == sp) {
+            reply.accept(ToolArgs.errorJson("Entity " + entityId + " was not found or cannot be targeted."));
+            return;
+        }
+        if (itemId != null) {
+            var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
+            if (id == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
+                reply.accept(ToolArgs.errorJson("Unknown item: " + itemId));
+                return;
+            }
+            itemId = id.toString();
         }
 
         var record = new InteractEntityTaskRecord(toolCallId, button, entityId, holdTicks, itemId);

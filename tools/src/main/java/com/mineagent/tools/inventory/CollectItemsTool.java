@@ -52,26 +52,24 @@ public class CollectItemsTool implements Tool {
         String itemId = ToolArgs.getString(args, "item_id");
         if (itemId != null) {
             var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
-            if (id == null
-                    || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
+            if (id == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
                 reply.accept(ToolArgs.errorJson("Unknown item: " + itemId));
                 return;
             }
+            itemId = id.toString();
         }
-        Integer parsedRadius = ToolArgs.has(args, "radius")
+        Integer radius = ToolArgs.has(args, "radius")
                 ? ToolArgs.getIntOrNull(args, "radius") : DEFAULT_RADIUS;
-        Integer parsedCount = ToolArgs.has(args, "count")
+        if (radius == null || radius < 1 || radius > MAX_RADIUS) {
+            reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to " + MAX_RADIUS + "."));
+            return;
+        }
+        Integer count = ToolArgs.has(args, "count")
                 ? ToolArgs.getIntOrNull(args, "count") : 16;
-        if (parsedRadius == null || parsedRadius < 1 || parsedRadius > MAX_RADIUS) {
-            reply.accept("{\"error\":\"radius must be an integer between 1 and 32.\"}");
+        if (count == null || count < 1 || count > 64) {
+            reply.accept(ToolArgs.errorJson("'count' must be an integer from 1 to 64."));
             return;
         }
-        if (parsedCount == null || parsedCount < 1 || parsedCount > 64) {
-            reply.accept("{\"error\":\"count must be an integer between 1 and 64.\"}");
-            return;
-        }
-        int radius = parsedRadius;
-        int count = parsedCount;
 
         var record = new CollectItemsTaskRecord(toolCallId, itemId, radius, count);
         TaskDispatch.dispatchAsync(player, record, reply);

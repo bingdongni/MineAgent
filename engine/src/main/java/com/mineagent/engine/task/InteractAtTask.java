@@ -3,30 +3,22 @@ package com.mineagent.engine.task;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.task.CompanionTask;
 import com.mineagent.api.task.TaskState;
-import com.mineagent.engine.pathing.cache.PathCaches;
-import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.act.Interaction;
+import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.tools.InteractAtTool;
 import net.minecraft.core.BlockPos;
 
-/**
- * Executes a block interaction task — navigates adjacent to the target
- * block position and performs the specified interaction (use, attack,
- * or use_offhand).
- */
+/** Navigates to and verifies a block use or progressive block attack. */
 public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskRecord> {
-
     private enum Phase { NAVIGATE, INTERACT, DONE }
 
+    private static final int MAX_HOLD_TICKS = 40;
     private PlayerNav nav;
     private Phase phase;
     private int interactTicks;
+    private int breakTimeoutTicks;
     private String failReason;
     private boolean breakStarted;
-
-    /** Non-mining hold interactions are bounded by the public tool schema. */
-    private static final int MAX_HOLD_TICKS = 40;
-    private int breakTimeoutTicks;
 
     public InteractAtTask(AgentPlayer player, InteractAtTool.InteractAtTaskRecord record) {
         super(player, record);
@@ -36,68 +28,53 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
     protected void onStart() {
         phase = Phase.NAVIGATE;
         interactTicks = 0;
+        breakTimeoutTicks = Integer.MAX_VALUE;
         failReason = null;
         breakStarted = false;
-        breakTimeoutTicks = Integer.MAX_VALUE;
-
-        PathCaches caches = TaskContext.navCaches(player);
-        nav = new PlayerNav(player, caches);
+        nav = new PlayerNav(player, TaskContext.navCaches(player));
         nav.setListener(new PlayerNav.NavListener() {
-            @Override
-            public void onGoalReached() {
+            @Override public void onGoalReached() {
                 if (phase == Phase.NAVIGATE) phase = Phase.INTERACT;
             }
-
-            @Override
-            public void onNavigationFailed(String reason) {
+            @Override public void onNavigationFailed(String reason) {
                 failReason = "Navigation to block failed: " + reason;
                 phase = Phase.DONE;
             }
         });
-
-        // Navigate adjacent to the target block
         nav.navigateToBlock(record.x, record.y, record.z);
     }
 
     @Override
     protected TaskState onTick() {
-        // Timeout check
-        long gameTime = TaskContext.serverPlayer(player).level().getGameTime();
-        if (gameTime >= record.deadline()) {
+        long now = TaskContext.serverPlayer(player).level().getGameTime();
+        if (record.deadline() > 0L && now >= record.deadline()) {
             cancelNav();
             return TaskState.FAILED;
         }
-
         switch (phase) {
             case NAVIGATE -> nav.tick();
             case INTERACT -> tickInteract();
-            case DONE -> {}
+            case DONE -> { }
         }
-
         if (phase == Phase.DONE && failReason != null) return TaskState.FAILED;
-        if (phase == Phase.DONE) return TaskState.SUCCESS;
-        return TaskState.RUNNING;
+        return phase == Phase.DONE ? TaskState.SUCCESS : TaskState.RUNNING;
     }
 
     private void tickInteract() {
         var sp = TaskContext.serverPlayer(player);
-        var inputDriver = TaskContext.inputDriver(player);
-
-        // Look at the target block
         lookAtTarget();
-
-        // Hold specified item if needed
-        if (record.itemId != null && !TaskContext.selectInventoryItem(player, record.itemId)) {
+        var hand = "use_offhand".equals(record.button)
+                ? net.minecraft.world.InteractionHand.OFF_HAND
+                : net.minecraft.world.InteractionHand.MAIN_HAND;
+        if (record.itemId != null
+                && !TaskContext.selectInventoryItemForHand(player, record.itemId, hand)) {
             failReason = "Required item '" + record.itemId + "' is not in inventory";
             phase = Phase.DONE;
             return;
         }
 
-        // Block attack is completion-based, not hold-duration-based. The old
-        // code reported success after one tick even when a survival-speed
-        // block was still intact, and direct destroyBlock bypassed hardness.
+        BlockPos target = new BlockPos(record.x, record.y, record.z);
         if ("attack".equals(record.button)) {
-            BlockPos target = new BlockPos(record.x, record.y, record.z);
             if (sp.level().getBlockState(target).isAir()) {
                 breakStarted = false;
                 phase = Phase.DONE;
@@ -112,8 +89,7 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
                 }
                 breakStarted = true;
             }
-            interactTicks++;
-            if (interactTicks > breakTimeoutTicks) {
+            if (++interactTicks > breakTimeoutTicks) {
                 BlockDigger.abortBreaking(sp, target);
                 breakStarted = false;
                 failReason = "Block did not break before interaction timeout";
@@ -122,66 +98,40 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
             return;
         }
 
-        if (interactTicks > 0) {
-            interactTicks++;
-            int requiredTicks = Math.max(1, Math.min(record.holdTicks, MAX_HOLD_TICKS));
-            if (interactTicks >= requiredTicks) {
-                inputDriver.clear();
-                sp.stopUsingItem();
-                phase = Phase.DONE;
-            }
-            return;
-        }
-
-        // Reaching the block is not evidence that the requested interaction
-        // happened. Vanilla returns PASS/FAIL for air, out-of-reach targets,
-        // and blocks/items that reject use; treating those results as success
-        // makes the LLM continue from a world state that never existed.
-        boolean accepted = switch (record.button) {
-            case "use" -> Interaction.interactBlock(sp,
-                    new BlockPos(record.x, record.y, record.z),
-                    net.minecraft.world.InteractionHand.MAIN_HAND).consumesAction();
-            case "attack" -> throw new IllegalStateException("attack handled above");
-            case "use_offhand" -> Interaction.interactBlock(sp,
-                    new BlockPos(record.x, record.y, record.z),
-                    net.minecraft.world.InteractionHand.OFF_HAND).consumesAction();
-            default -> false;
-        };
-        if (!accepted) {
-            failReason = "Block rejected the requested interaction";
-            phase = Phase.DONE;
-            return;
-        }
-
-        interactTicks++;
-
-        // For hold interactions, keep pressing until hold_ticks reached
         int requiredTicks = Math.max(1, Math.min(record.holdTicks, MAX_HOLD_TICKS));
-        if (interactTicks < requiredTicks) {
-            return; // keep holding
+        if (interactTicks == 0) {
+            boolean accepted = switch (record.button) {
+                case "use" -> Interaction.interactBlock(sp, target,
+                        net.minecraft.world.InteractionHand.MAIN_HAND).consumesAction();
+                case "use_offhand" -> Interaction.interactBlock(sp, target,
+                        net.minecraft.world.InteractionHand.OFF_HAND).consumesAction();
+                default -> false;
+            };
+            if (!accepted) {
+                failReason = "Block rejected the requested interaction";
+                phase = Phase.DONE;
+                return;
+            }
         }
 
-        // Interaction done
-        inputDriver.clear();
-        sp.stopUsingItem();
-        phase = Phase.DONE;
+        if (++interactTicks >= requiredTicks) {
+            TaskContext.inputDriver(player).clear();
+            // Releasing charged items invokes their vanilla releaseUsing
+            // behavior; stopUsingItem merely cancels and could never fire a
+            // bow/trident after a requested hold duration.
+            if (sp.isUsingItem()) sp.releaseUsingItem();
+            phase = Phase.DONE;
+        }
     }
 
     private void lookAtTarget() {
         var sp = TaskContext.serverPlayer(player);
-        // Direction from companion eye to target block center
-        double targetX = record.x + 0.5;
-        double targetY = record.y + 0.5;
-        double targetZ = record.z + 0.5;
-        var eyePos = sp.getEyePosition();
-        double dx = targetX - eyePos.x;
-        double dy = targetY - eyePos.y;
-        double dz = targetZ - eyePos.z;
-        double dist = Math.sqrt(dx * dx + dz * dz);
-        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        float pitch = (float) Math.toDegrees(Math.atan2(-dy, dist));
-        sp.setYRot(yaw);
-        sp.setXRot(pitch);
+        var eye = sp.getEyePosition();
+        double dx = record.x + 0.5 - eye.x;
+        double dy = record.y + 0.5 - eye.y;
+        double dz = record.z + 0.5 - eye.z;
+        sp.setYRot((float) Math.toDegrees(Math.atan2(-dx, dz)));
+        sp.setXRot((float) Math.toDegrees(Math.atan2(-dy, Math.sqrt(dx * dx + dz * dz))));
     }
 
     private void cancelNav() {
@@ -192,28 +142,19 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
             breakStarted = false;
         }
         TaskContext.inputDriver(player).clear();
-    }
-
-    @Override
-    protected void onInterrupt() {
-        cancelNav();
         TaskContext.serverPlayer(player).stopUsingItem();
     }
 
-    @Override
-    protected String successMessage() {
+    @Override protected void onInterrupt() { cancelNav(); }
+    @Override protected String successMessage() {
         return "Interacted at (" + record.x + ", " + record.y + ", " + record.z
                 + ") with button=" + record.button;
     }
-
-    @Override
-    protected String timeoutMessage() {
+    @Override protected String timeoutMessage() {
         return "Interaction timed out at (" + record.x + ", " + record.y + ", " + record.z + ")";
     }
-
-    @Override
-    protected String failureMessage() {
-        if (failReason != null) return failReason;
-        return "Interaction failed at (" + record.x + ", " + record.y + ", " + record.z + ")";
+    @Override protected String failureMessage() {
+        return failReason != null ? failReason : "Interaction failed at ("
+                + record.x + ", " + record.y + ", " + record.z + ")";
     }
 }

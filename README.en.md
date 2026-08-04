@@ -15,7 +15,7 @@ MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a s
 | Loader | Status | Notes |
 | --- | --- | --- |
 | Fabric | Supported | Built and run in-game; includes the complete client menu, chat, status HUD, and debug views. |
-| NeoForge | Experimental | Built and shipped for testing. Core server and command paths are available, but client UI, networking parity, and in-game validation do not yet match Fabric. |
+| NeoForge | Experimental | Built and shipped for testing with the shared complete menu, chat, HUD, debug views, and networking; in-game validation coverage is still lower than Fabric. |
 
 Both loader-specific JARs are attached to each GitHub release. Install only the JAR matching your loader; never install both in one game instance.
 
@@ -52,7 +52,7 @@ The first launch creates `config/mineagent.json`. Set the LLM provider, model, a
 /mineagent quick
 ```
 
-Fabric users can also press `M` to configure and create companions. Useful commands include:
+Fabric and NeoForge users can press `M` to configure and create companions. Useful commands include:
 
 ```text
 /mineagent help
@@ -65,7 +65,7 @@ Fabric users can also press `M` to configure and create companions. Useful comma
 /mineagent reload
 ```
 
-Default Fabric key bindings:
+Default key bindings on Fabric and NeoForge:
 
 | Key | Action |
 | --- | --- |
@@ -101,8 +101,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.1.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.1.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.1.1.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.1.1.jar`
 
 ## Modules
 
@@ -111,8 +111,8 @@ Outputs:
 | `api` | Loader-independent tool, task, configuration, LLM, and network contracts |
 | `engine` | Agent loop, fake player, pathfinding, survival chains, tasks, and memory |
 | `tools` | LLM-callable tools and built-in skill documents |
-| `fabric` | Fabric bootstrap, networking, mixins, and complete client UI |
-| `neoforge` | Experimental NeoForge bootstrap, events, and platform adapter |
+| `fabric` | Fabric bootstrap, networking, mixins, and shared client UI integration |
+| `neoforge` | Experimental NeoForge bootstrap, lifecycle, networking, and shared client UI integration |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 

@@ -4,6 +4,9 @@ import com.google.gson.*;
 import com.mojang.authlib.properties.Property;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
@@ -48,7 +51,8 @@ public final class CompanionStore {
             String reasoningEffort,
             String skinName,
             String skinValue,
-            String skinSignature
+            String skinSignature,
+            String bodyData
     ) {}
 
     /**
@@ -57,7 +61,8 @@ public final class CompanionStore {
      * @param worldDataDir the world's data directory (e.g. world/data/)
      * @param companions   the companions to save
      */
-    public static synchronized void saveAll(Path worldDataDir, Collection<SavedCompanion> companions) {
+    public static synchronized void saveAll(
+            Path worldDataDir, Collection<SavedCompanion> companions) {
         try {
             Files.createDirectories(worldDataDir);
             Path file = worldDataDir.resolve(FILE_NAME);
@@ -79,28 +84,12 @@ public final class CompanionStore {
                 obj.addProperty("skinName", c.skinName() != null ? c.skinName() : "");
                 obj.addProperty("skinValue", c.skinValue() != null ? c.skinValue() : "");
                 obj.addProperty("skinSignature", c.skinSignature() != null ? c.skinSignature() : "");
+                obj.addProperty("bodyData", c.bodyData() != null ? c.bodyData() : "");
                 arr.add(obj);
             }
             root.add("companions", arr);
 
-            // Write-then-replace prevents a crash during serialization from
-            // destroying the last valid companion list.
-            Path temp = file.resolveSibling(file.getFileName() + ".tmp");
-            try {
-                try (Writer writer = Files.newBufferedWriter(temp)) {
-                    GSON.toJson(root, writer);
-                }
-                try {
-                    Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE,
-                            StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException unsupported) {
-                    Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                // Serialization or replacement failure must not leave a
-                // truncated temporary file indefinitely in world/data.
-                Files.deleteIfExists(temp);
-            }
+            writeAtomic(file, GSON.toJson(root));
             System.out.println("[MineAgent] Saved " + companions.size() + " companion(s) to " + file);
         } catch (Exception e) {
             System.err.println("[MineAgent] Failed to save companions: " + e.getMessage());
@@ -120,45 +109,34 @@ public final class CompanionStore {
             return Collections.emptyList();
         }
 
-        try (Reader reader = Files.newBufferedReader(file)) {
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
             if (!root.has("companions") || !root.get("companions").isJsonArray()) {
-                return Collections.emptyList();
+                throw new JsonParseException("missing companions array");
             }
 
-            List<SavedCompanion> result = new ArrayList<>();
+            Map<String, SavedCompanion> valid = new LinkedHashMap<>();
+            int skipped = 0;
             for (var elem : root.getAsJsonArray("companions")) {
-                // One damaged entry should not erase every other companion.
                 try {
-                    if (!elem.isJsonObject()) continue;
-                    JsonObject obj = elem.getAsJsonObject();
-                    String ownerUuid = requiredString(obj, "ownerUuid");
-                    UUID.fromString(ownerUuid);
-                    String companionName = requiredString(obj, "companionName");
-                    String providerId = requiredString(obj, "providerId");
-                    String apiKey = requiredString(obj, "apiKey");
-                    String model = requiredString(obj, "model");
-                    double temperature = optionalDouble(obj, "temperature", 0.7);
-                    if (!Double.isFinite(temperature)) temperature = 0.7;
-                    result.add(new SavedCompanion(
-                            ownerUuid,
-                            optionalString(obj, "ownerName", ""),
-                            companionName, providerId, apiKey, model,
-                            optionalString(obj, "baseUrl", ""), temperature,
-                            optionalString(obj, "reasoningEffort", null),
-                            optionalString(obj, "skinName", ""),
-                            optionalString(obj, "skinValue", null),
-                            optionalString(obj, "skinSignature", null)
-                    ));
-                } catch (RuntimeException badEntry) {
-                    System.err.println("[MineAgent] Skipping invalid saved companion: "
-                            + badEntry.getMessage());
+                    SavedCompanion companion = parseEntry(elem);
+                    String key = companion.ownerUuid().toLowerCase(Locale.ROOT) + "\n"
+                            + companion.companionName().toLowerCase(Locale.ROOT);
+                    valid.put(key, companion);
+                } catch (RuntimeException invalidEntry) {
+                    skipped++;
                 }
+            }
+            List<SavedCompanion> result = new ArrayList<>(valid.values());
+            if (skipped > 0) {
+                System.err.println("[MineAgent] Skipped " + skipped
+                        + " invalid saved companion record(s)");
             }
             System.out.println("[MineAgent] Loaded " + result.size() + " saved companion(s)");
             return result;
         } catch (Exception e) {
             System.err.println("[MineAgent] Failed to load companions: " + e.getMessage());
+            quarantine(file);
             return Collections.emptyList();
         }
     }
@@ -170,7 +148,8 @@ public final class CompanionStore {
      * @param ownerUuid     the owner's UUID string
      * @param companionName the companion's name (null to remove all of owner's)
      */
-    public static synchronized void remove(Path worldDataDir, String ownerUuid, String companionName) {
+    public static synchronized void remove(
+            Path worldDataDir, String ownerUuid, String companionName) {
         List<SavedCompanion> all = loadAll(worldDataDir);
         List<SavedCompanion> filtered = new ArrayList<>();
         for (var c : all) {
@@ -218,27 +197,86 @@ public final class CompanionStore {
         saveAll(worldDataDir, Collections.emptyList());
     }
 
-    private static String requiredString(JsonObject object, String key) {
-        String value = optionalString(object, key, null);
+    private static SavedCompanion parseEntry(JsonElement element) {
+        if (!element.isJsonObject()) throw new JsonParseException("entry is not an object");
+        JsonObject obj = element.getAsJsonObject();
+        String ownerUuid = requiredString(obj, "ownerUuid");
+        UUID.fromString(ownerUuid);
+        String companionName = requiredString(obj, "companionName");
+        String providerId = requiredString(obj, "providerId");
+        String apiKey = requiredString(obj, "apiKey");
+        String model = requiredString(obj, "model");
+        double temperature = obj.has("temperature")
+                ? obj.get("temperature").getAsDouble() : 0.7;
+        if (!Double.isFinite(temperature) || temperature < 0.0 || temperature > 2.0) {
+            throw new JsonParseException("invalid temperature");
+        }
+        return new SavedCompanion(
+                ownerUuid,
+                optionalString(obj, "ownerName", ""),
+                companionName,
+                providerId,
+                apiKey,
+                model,
+                optionalString(obj, "baseUrl", ""),
+                temperature,
+                emptyToNull(optionalString(obj, "reasoningEffort", null)),
+                optionalString(obj, "skinName", ""),
+                emptyToNull(optionalString(obj, "skinValue", null)),
+                emptyToNull(optionalString(obj, "skinSignature", null)),
+                emptyToNull(optionalString(obj, "bodyData", null)));
+    }
+
+    private static String requiredString(JsonObject object, String name) {
+        String value = optionalString(object, name, null);
         if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException("missing " + key);
+            throw new JsonParseException("missing " + name);
         }
         return value;
     }
 
-    private static String optionalString(JsonObject object, String key, String fallback) {
-        if (!object.has(key) || object.get(key).isJsonNull()
-                || !object.get(key).isJsonPrimitive()) return fallback;
-        return object.get(key).getAsString();
+    private static String optionalString(JsonObject object, String name, String fallback) {
+        if (!object.has(name) || object.get(name).isJsonNull()) return fallback;
+        return object.get(name).getAsString();
     }
 
-    private static double optionalDouble(JsonObject object, String key, double fallback) {
-        if (!object.has(key) || object.get(key).isJsonNull()
-                || !object.get(key).isJsonPrimitive()) return fallback;
+    private static String emptyToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static void writeAtomic(Path target, String json) throws IOException {
+        Files.createDirectories(target.getParent());
+        Path temp = Files.createTempFile(target.getParent(),
+                target.getFileName() + ".", ".tmp");
         try {
-            return object.get(key).getAsDouble();
-        } catch (NumberFormatException e) {
-            return fallback;
+            byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+            try (FileChannel channel = FileChannel.open(temp,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                ByteBuffer buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) channel.write(buffer);
+                channel.force(true);
+            }
+            try {
+                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private static void quarantine(Path file) {
+        if (!Files.exists(file)) return;
+        Path backup = file.resolveSibling(file.getFileName()
+                + ".corrupt-" + System.currentTimeMillis());
+        try {
+            Files.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
+            System.err.println("[MineAgent] Preserved invalid companion store as " + backup);
+        } catch (IOException moveFailure) {
+            System.err.println("[MineAgent] Could not preserve invalid companion store: "
+                    + moveFailure.getMessage());
         }
     }
 }
