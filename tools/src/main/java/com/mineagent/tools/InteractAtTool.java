@@ -22,6 +22,8 @@ public class InteractAtTool implements Tool {
     @Override
     public String name() { return "interact_at"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

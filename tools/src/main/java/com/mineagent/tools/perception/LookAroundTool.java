@@ -9,11 +9,14 @@ import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.WorldAssetObserver;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
@@ -23,6 +26,7 @@ import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -31,7 +35,8 @@ import java.util.function.Consumer;
 public final class LookAroundTool implements Tool {
     private static final Gson GSON = new Gson();
     private static final int MAX_ENTITY_DETAILS = 12;
-    private static final int MAX_NOTABLE_BLOCKS = 20;
+    private static final int MAX_NOTABLE_BLOCKS = 32;
+    private static final int MAX_FACILITIES = 16;
 
     @Override public String name() { return "look_around"; }
 
@@ -116,16 +121,81 @@ public final class LookAroundTool implements Tool {
         root.add("entities", entities);
         root.addProperty("omitted_entity_count", omittedEntities);
 
+        // Dropped stacks are actionable assets, not living entities. The old
+        // living-only scan hid nearby materials from both the LLM and memory,
+        // which encouraged needless crafting even while the required item was
+        // lying on the ground.
+        List<ItemEntity> droppedEntities = level.getEntitiesOfClass(
+                ItemEntity.class, scanArea, entity -> !entity.getItem().isEmpty())
+                .stream().sorted(Comparator.comparingDouble(player::distanceToSqr))
+                .limit(24).toList();
+        JsonArray droppedItems = new JsonArray();
+        for (ItemEntity entity : droppedEntities) {
+            var stack = entity.getItem();
+            JsonObject item = new JsonObject();
+            item.addProperty("uuid", entity.getUUID().toString());
+            item.addProperty("item", BuiltInRegistries.ITEM
+                    .getKey(stack.getItem()).toString());
+            item.addProperty("count", stack.getCount());
+            item.add("position", positionJson(entity.blockPosition()));
+            item.addProperty("distance", round(Math.sqrt(entity.distanceToSqr(player))));
+            droppedItems.add(item);
+        }
+        root.add("dropped_items", droppedItems);
+
         List<NotableBlock> notable = scanNotableBlocks(level, origin, radius);
         JsonArray notableJson = new JsonArray();
         int limit = Math.min(MAX_NOTABLE_BLOCKS, notable.size());
         for (int i = 0; i < limit; i++) notableJson.add(notable.get(i).toJson());
         root.add("notable_blocks", notableJson);
         root.addProperty("omitted_notable_block_count", Math.max(0, notable.size() - limit));
+        JsonArray facilities = new JsonArray();
+        notable.stream().filter(NotableBlock::isFacility).limit(MAX_FACILITIES)
+                .forEach(block -> facilities.add(block.toJson()));
+        root.add("nearby_facilities", facilities);
         root.add("local_map", localMapJson(level, origin, Math.min(radius, 8)));
 
         var loop = TaskContext.agentLoop(agent);
         if (loop != null) {
+            WorldAssetIndex.Position center = new WorldAssetIndex.Position(
+                    level.dimension().location().toString(), origin.getX(),
+                    origin.getY(), origin.getZ());
+            List<WorldAssetIndex.WorldObservation> worldAssets = notable.stream()
+                    .map(block -> {
+                        LinkedHashSet<String> capabilities = new LinkedHashSet<>();
+                        if (block.affordances != null) capabilities.addAll(block.affordances);
+                        capabilities.add("world:" + block.kind);
+                        if (block.kind.equals("ore") || block.kind.equals("log")) {
+                            capabilities.add("harvest_resource");
+                        }
+                        return new WorldAssetIndex.WorldObservation(
+                                block.block + "@" + block.position.toShortString(),
+                                "minecraft:air".equals(block.item)
+                                        ? block.block : block.item,
+                                block.kind,
+                                new WorldAssetIndex.Position(center.dimension(),
+                                        block.position.getX(), block.position.getY(),
+                                        block.position.getZ()),
+                                1, 0, 0, capabilities, 0.0, 0.98);
+                    }).toList();
+            loop.worldAssetIndex().reconcileWorldObjects(center, radius,
+                    -4, 6, worldAssets, tick);
+
+            List<WorldAssetIndex.WorldObservation> droppedAssets = droppedEntities.stream()
+                    .map(entity -> {
+                        var observed = WorldAssetObserver.item(-1, entity.getItem());
+                        var pos = entity.blockPosition();
+                        return new WorldAssetIndex.WorldObservation(
+                                entity.getUUID().toString(), observed.resourceId(),
+                                "dropped_item", new WorldAssetIndex.Position(
+                                center.dimension(), pos.getX(), pos.getY(), pos.getZ()),
+                                observed.count(), observed.durability(),
+                                observed.maxDurability(), observed.capabilities(),
+                                observed.quality(), 1.0);
+                    }).toList();
+            loop.worldAssetIndex().reconcileDroppedItems(center, radius,
+                    droppedAssets, tick);
+
             loop.beliefState().observeFact("self", "last_observed_position",
                     level.dimension().location() + ":" + origin.toShortString(),
                     1.0, "look_around", tick);
@@ -133,6 +203,16 @@ public final class LookAroundTool implements Tool {
                     Integer.toString(threats.size()), 0.95, "look_around", tick);
             loop.beliefState().observeFact("local_area", "notable_blocks",
                     Integer.toString(notable.size()), 0.9, "look_around", tick);
+            // Facilities are durable, reusable affordances. Store each one by
+            // identity and position so planning can reuse a known table/chest
+            // instead of treating every task as a fresh survival start.
+            notable.stream().filter(NotableBlock::isFacility).limit(MAX_FACILITIES)
+                    .forEach(block -> loop.beliefState().observeFact(
+                            "facility:" + block.block + "@"
+                                    + level.dimension().location() + ":"
+                                    + block.position.toShortString(),
+                            "affordances", String.join(",", block.affordances),
+                            0.98, "look_around", tick));
         }
         return GSON.toJson(root);
     }
@@ -190,17 +270,37 @@ public final class LookAroundTool implements Tool {
         return detail;
     }
 
-    private record NotableBlock(BlockPos position, String kind,
-                                String block, double distance) {
+    private record NotableBlock(BlockPos position, String kind, String block,
+                                String item,
+                                double distance, List<String> affordances,
+                                String blockEntityType) {
         JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("kind", kind);
             result.addProperty("block", block);
+            if (!"minecraft:air".equals(item)) result.addProperty("item_form", item);
             result.add("position", positionJson(position));
             result.addProperty("distance", round(distance));
+            if (affordances != null && !affordances.isEmpty()) {
+                JsonArray values = new JsonArray();
+                affordances.forEach(values::add);
+                result.add("affordances", values);
+            }
+            if (blockEntityType != null) {
+                result.addProperty("block_entity_type", blockEntityType);
+            }
             return result;
         }
+
+        boolean isFacility() {
+            return kind.startsWith("station_") || kind.equals("storage")
+                    || kind.equals("bed") || kind.equals("portal")
+                    || kind.equals("block_entity");
+        }
     }
+
+    private record Facility(String kind, List<String> affordances,
+                            String blockEntityType) {}
 
     private static List<NotableBlock> scanNotableBlocks(Level level, BlockPos origin, int radius) {
         List<NotableBlock> result = new ArrayList<>();
@@ -211,19 +311,99 @@ public final class LookAroundTool implements Tool {
                     if (!level.hasChunkAt(pos)) continue;
                     BlockState state = level.getBlockState(pos);
                     String kind = null;
-                    if (isDanger(state)) kind = "hazard";
+                    List<String> affordances = List.of();
+                    String blockEntityType = null;
+                    Facility facility = facility(level, pos, state);
+                    if (facility != null) {
+                        kind = facility.kind();
+                        affordances = facility.affordances();
+                        blockEntityType = facility.blockEntityType();
+                    } else if (isDanger(state)) kind = "hazard";
                     else if (isOre(state)) kind = "ore";
                     else if (state.is(BlockTags.LOGS)) kind = "log";
                     else if (state.is(Blocks.WATER) && Math.abs(dy) <= 1) kind = "water";
                     if (kind != null) {
                         result.add(new NotableBlock(pos.immutable(), kind, blockId(state),
-                                Math.sqrt(pos.distSqr(origin))));
+                                itemId(state),
+                                Math.sqrt(pos.distSqr(origin)), affordances,
+                                blockEntityType));
                     }
                 }
             }
         }
-        result.sort(Comparator.comparingDouble(NotableBlock::distance));
+        // Keep reusable facilities visible even in a forest or ore vein where
+        // distance-only truncation previously hid a nearby crafting table.
+        result.sort(Comparator.comparingInt(LookAroundTool::notablePriority)
+                .thenComparingDouble(NotableBlock::distance));
         return result;
+    }
+
+    private static int notablePriority(NotableBlock block) {
+        if (block.isFacility()) return 0;
+        if (block.kind().equals("hazard")) return 1;
+        return 2;
+    }
+
+    /** Discover vanilla and modded world affordances from live block state. */
+    private static Facility facility(Level level, BlockPos pos, BlockState state) {
+        if (state.is(Blocks.CRAFTING_TABLE)) {
+            return new Facility("station_crafting", List.of("craft_3x3"), null);
+        }
+        if (state.is(Blocks.FURNACE) || state.is(Blocks.BLAST_FURNACE)
+                || state.is(Blocks.SMOKER)) {
+            return new Facility("station_smelting",
+                    List.of("smelt", "cook", "fuel_inventory"), blockEntityType(level, pos));
+        }
+        var blockEntity = state.hasBlockEntity() ? level.getBlockEntity(pos) : null;
+        if (blockEntity instanceof net.minecraft.world.Container) {
+            return new Facility("storage", List.of("store_items", "retrieve_items"),
+                    blockEntityType(level, pos));
+        }
+        if (state.is(Blocks.ENDER_CHEST)) {
+            return new Facility("storage", List.of("personal_storage"),
+                    blockEntityType(level, pos));
+        }
+        if (state.is(BlockTags.BEDS)) {
+            return new Facility("bed", List.of("sleep", "set_spawn"), null);
+        }
+        if (state.is(Blocks.ENCHANTING_TABLE)) {
+            return new Facility("station_enchanting", List.of("enchant"),
+                    blockEntityType(level, pos));
+        }
+        if (state.is(Blocks.BREWING_STAND)) {
+            return new Facility("station_brewing", List.of("brew"),
+                    blockEntityType(level, pos));
+        }
+        if (state.is(Blocks.ANVIL) || state.is(Blocks.CHIPPED_ANVIL)
+                || state.is(Blocks.DAMAGED_ANVIL) || state.is(Blocks.GRINDSTONE)) {
+            return new Facility("station_repair", List.of("repair", "combine_or_modify"), null);
+        }
+        if (state.is(Blocks.SMITHING_TABLE) || state.is(Blocks.STONECUTTER)
+                || state.is(Blocks.LOOM) || state.is(Blocks.CARTOGRAPHY_TABLE)
+                || state.is(Blocks.FLETCHING_TABLE) || state.is(Blocks.CRAFTER)) {
+            return new Facility("station_processing", List.of("process_items"),
+                    blockEntityType(level, pos));
+        }
+        if (state.is(Blocks.NETHER_PORTAL) || state.is(Blocks.END_PORTAL)
+                || state.is(Blocks.END_GATEWAY)) {
+            return new Facility("portal", List.of("dimension_travel"),
+                    blockEntityType(level, pos));
+        }
+        if (blockEntity != null) {
+            // Modded machines commonly expose capabilities rather than the
+            // vanilla Container interface. Their registered IDs and presence
+            // are still actionable evidence the LLM can inspect or approach.
+            return new Facility("block_entity", List.of("inspect", "interact"),
+                    blockEntityType(level, pos));
+        }
+        return null;
+    }
+
+    private static String blockEntityType(Level level, BlockPos pos) {
+        var blockEntity = level.getBlockEntity(pos);
+        if (blockEntity == null) return null;
+        var id = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(blockEntity.getType());
+        return id == null ? null : id.toString();
     }
 
     private static JsonObject localMapJson(Level level, BlockPos origin, int radius) {
@@ -334,6 +514,12 @@ public final class LookAroundTool implements Tool {
 
     private static String blockId(BlockState state) {
         return BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+    }
+
+    private static String itemId(BlockState state) {
+        var item = state.getBlock().asItem();
+        return item == net.minecraft.world.item.Items.AIR ? "minecraft:air"
+                : BuiltInRegistries.ITEM.getKey(item).toString();
     }
 
     private static boolean isDanger(BlockState state) {

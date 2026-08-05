@@ -166,7 +166,19 @@ public class AnthropicProvider implements LLMProvider {
             }
 
             if (systemPrompt.length() > 0) {
-                body.addProperty("system", systemPrompt.toString());
+                // Native Anthropic prompt caching is opt-in. Mark the stable
+                // instruction/summary prefix as an ephemeral cache breakpoint;
+                // volatile MineAgent state is a final user message and is not
+                // included here, so it cannot invalidate this block each turn.
+                JsonArray systemBlocks = new JsonArray();
+                JsonObject systemBlock = new JsonObject();
+                systemBlock.addProperty("type", "text");
+                systemBlock.addProperty("text", systemPrompt.toString());
+                JsonObject cacheControl = new JsonObject();
+                cacheControl.addProperty("type", "ephemeral");
+                systemBlock.add("cache_control", cacheControl);
+                systemBlocks.add(systemBlock);
+                body.add("system", systemBlocks);
             }
             body.add("messages", msgsArr);
 
@@ -396,10 +408,18 @@ public class AnthropicProvider implements LLMProvider {
         LLMResponse.Usage usage = null;
         if (root.has("usage") && root.get("usage").isJsonObject()) {
             JsonObject usageObj = root.getAsJsonObject("usage");
+            int uncached = usageObj.has("input_tokens")
+                    ? usageObj.get("input_tokens").getAsInt() : 0;
+            int cacheRead = usageObj.has("cache_read_input_tokens")
+                    ? usageObj.get("cache_read_input_tokens").getAsInt() : 0;
+            int cacheCreation = usageObj.has("cache_creation_input_tokens")
+                    ? usageObj.get("cache_creation_input_tokens").getAsInt() : 0;
+            int output = usageObj.has("output_tokens")
+                    ? usageObj.get("output_tokens").getAsInt() : 0;
+            int totalInput = uncached + cacheRead + cacheCreation;
             usage = new LLMResponse.Usage(
-                    usageObj.has("input_tokens") ? usageObj.get("input_tokens").getAsInt() : 0,
-                    usageObj.has("output_tokens") ? usageObj.get("output_tokens").getAsInt() : 0,
-                    0
+                    totalInput, output, totalInput + output,
+                    cacheRead, cacheCreation
             );
         }
 

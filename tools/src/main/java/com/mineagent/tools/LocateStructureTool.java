@@ -23,6 +23,8 @@ public class LocateStructureTool implements Tool {
     @Override
     public String name() { return "locate_structure"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

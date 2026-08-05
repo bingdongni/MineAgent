@@ -38,6 +38,9 @@ public abstract class Movement {
     private IntentContract.CleanupMode supportCleanupMode =
             IntentContract.CleanupMode.CONTEXTUAL;
 
+    /** Navigation should route around an obstacle rather than mine it for minutes. */
+    private static final int MAX_NAVIGATION_BREAK_TICKS = 30 * 20;
+
     protected Movement(int srcX, int srcY, int srcZ, int dstX, int dstY, int dstZ) {
         this.srcX = srcX;
         this.srcY = srcY;
@@ -158,8 +161,17 @@ public abstract class Movement {
 
     /** Hard blocks receive a bounded timeout derived from vanilla break speed. */
     public final int executionTimeoutTicks() {
-        return activeBreakTarget == null ? 200 : Math.max(200, activeBreakTimeoutTicks);
+        return activeBreakTarget == null ? 200
+                : Math.min(MAX_NAVIGATION_BREAK_TICKS,
+                Math.max(200, activeBreakTimeoutTicks));
     }
+
+    /**
+     * Physical position can legitimately remain unchanged while vanilla is
+     * accumulating block hardness. PathExecutor uses this signal to avoid
+     * misclassifying a real progressive break as a walking stall.
+     */
+    public final boolean hasActiveWorldAction() { return activeBreakTarget != null; }
 
     protected final void markProgress() { progressVersion++; }
 

@@ -21,7 +21,7 @@ public class QueryExtraToolsTool implements Tool {
 
     /** Set of tool names that are included in the default prompt. */
     private static final Set<String> DEFAULT_TOOLS = Set.of(
-            "goto", "look_around", "scan_blocks", "get_self_status",
+            "goto", "look_around", "scan_blocks", "get_self_status", "resolve_need",
             "auto_mine", "build", "inspect_block", "inspect_block_storage",
             "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items", "transfer_items",

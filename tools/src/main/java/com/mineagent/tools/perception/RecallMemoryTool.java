@@ -33,9 +33,9 @@ public class RecallMemoryTool implements Tool {
     public String description() {
         return """
                 Recall places you've discovered. Query by category:
-                - "resource:iron_ore" — where you saw iron ore
-                - "resource:coal_ore" — where you saw coal
-                - "resource:diamond_ore" — where you saw diamonds
+                - "block:minecraft:iron_ore" — exact observed block ID
+                - "block:modid:block_id" — any observed modded block ID
+                - "block" — all remembered block observations
                 - "structure:village" — villages you've found
                 - "structure:furnace" — furnaces (yours or found)
                 - "hazard:creeper" — where you saw creepers
@@ -53,8 +53,8 @@ public class RecallMemoryTool implements Tool {
     public Map<String, Object> parameterSchema() {
         return Schema.object()
                 .string("category",
-                        "Category prefix to search (e.g. 'resource:iron_ore', "
-                        + "'structure:village', 'hazard:lava'). Empty = all nearby.")
+                        "Category prefix to search (e.g. 'block:minecraft:iron_ore', "
+                        + "'block', 'structure:village', 'hazard:lava'). Empty = all nearby.")
                 .build();
     }
 

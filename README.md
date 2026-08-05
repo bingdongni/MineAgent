@@ -25,6 +25,8 @@ MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服�
 - 假玩家移动、路径规划、清障、搭桥、挖掘、放置和战斗
 - 饥饿、呼吸、落地水桶、怪物防御、拾取、跟随和解卡等生存链
 - 认知地图、位置事件、重要性学习和反思记忆
+- 统一世界资产索引：追踪背包、装备、已检查容器、掉落物和已知设施，并按物品或能力决定复用、取回或制造
+- 基于游戏实时注册表的配方发现与模组物品兼容，不依赖固定的原版物品清单
 - 多伴游管理、皮肤、状态 HUD、路径与视觉调试
 - OpenAI、DeepSeek、Qwen、GLM、Moonshot、Grok、MiniMax、Anthropic 和 Gemini
 
@@ -109,8 +111,8 @@ Linux/macOS：
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.1.1.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.1.1.jar`
+- `fabric/build/libs/mineagent-fabric-0.1.4.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.1.4.jar`
 
 ## 项目结构
 

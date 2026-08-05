@@ -1,5 +1,6 @@
 package com.mineagent.tools.crafting;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mineagent.api.agent.tool.Schema;
 import com.mineagent.api.agent.tool.Tool;
@@ -7,6 +8,8 @@ import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.WorldAssetObserver;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
@@ -30,6 +33,7 @@ public class CraftTool implements Tool {
 
     private static final int MAX_BATCHES = 64;
     private static final int CRAFTING_TABLE_RADIUS = 4;
+    private static final int CRAFTING_TABLE_DISCOVERY_RADIUS = 16;
 
     @Override
     public String name() { return "craft"; }
@@ -49,6 +53,9 @@ public class CraftTool implements Tool {
                 .string("recipe_id", "Registered crafting recipe ID (e.g. 'minecraft:stone_pickaxe')")
                 .integer("count", "Number of recipe batches to craft (1-64)", 1, 64)
                 .optionalString("use_table", "Crafting station: 'auto', 'table', or 'inventory' (default: 'auto')")
+                .optionalInteger("desired_total", "Desired total count after crafting. Defaults to count multiplied by recipe output; existing inventory reduces work.", 1, 4096)
+                .optionalString("purpose", "Why this item is needed; state the capability or explicit request for an additional copy")
+                .optionalBoolean("bypass_reuse_check", "Use only after a returned reuse candidate was verified unavailable, unsafe, too costly, or the owner explicitly requested an additional copy")
                 .build();
     }
 
@@ -88,23 +95,134 @@ public class CraftTool implements Tool {
             return;
         }
 
+        ItemStack preview = recipe.getResultItem(sp.level().registryAccess());
+        String outputItemId = preview.isEmpty() ? null
+                : net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .getKey(preview.getItem()).toString();
+        int previewCount = preview.isEmpty() ? 0 : Math.max(1, preview.getCount());
+        Integer desiredArgument = ToolArgs.has(args, "desired_total")
+                ? ToolArgs.getIntOrNull(args, "desired_total") : null;
+        if (ToolArgs.has(args, "desired_total")
+                && (desiredArgument == null || desiredArgument < 1 || desiredArgument > 4096)) {
+            reply.accept(ToolArgs.errorJson("'desired_total' must be an integer from 1 to 4096."));
+            return;
+        }
+        int desiredTotal = desiredArgument == null
+                ? Math.max(1, requestedBatches * Math.max(1, previewCount))
+                : desiredArgument;
+        boolean bypassReuse = ToolArgs.getBool(args, "bypass_reuse_check", false);
+
+        WorldAssetIndex.ReuseAssessment reuse = null;
+        if (outputItemId != null) {
+            var loop = TaskContext.agentLoop(player);
+            if (loop != null) {
+                WorldAssetIndex.Position current = WorldAssetObserver.position(sp);
+                loop.worldAssetIndex().observeInventory(current,
+                        WorldAssetObserver.inventory(sp), sp.level().getGameTime());
+                reuse = loop.worldAssetIndex().assessAcquisition(
+                        outputItemId, desiredTotal,
+                        WorldAssetObserver.substitutionCapabilities(preview),
+                        WorldAssetObserver.quality(preview), current,
+                        sp.level().getGameTime());
+
+                if (reuse.carriedExactCount() >= desiredTotal) {
+                    JsonObject result = new JsonObject();
+                    result.addProperty("success", true);
+                    result.addProperty("action", "reuse_inventory");
+                    result.addProperty("recipe", recipeId.toString());
+                    result.addProperty("item", outputItemId);
+                    result.addProperty("desired_total", desiredTotal);
+                    result.addProperty("carried_count", reuse.carriedExactCount());
+                    result.addProperty("crafted_batches", 0);
+                    result.addProperty("crafted_items", 0);
+                    result.addProperty("reason",
+                            "The requested total is already present; no ingredients were consumed.");
+                    reply.accept(result.toString());
+                    return;
+                }
+
+                int unresolved = desiredTotal - reuse.carriedExactCount();
+                boolean enoughStoredExact = reuse.knownStoredExactCount() >= unresolved;
+                boolean capableStoredSubstitute = desiredTotal == 1
+                        && !reuse.storedSubstitutes().isEmpty();
+                boolean reusableWorldObject = !reuse.worldExact().isEmpty();
+                if (!bypassReuse && (enoughStoredExact || capableStoredSubstitute
+                        || reusableWorldObject)) {
+                    // Do not silently choose a universal cost formula here.
+                    // Return grounded alternatives and require the deliberative
+                    // layer to compare retrieval risk/time against production.
+                    JsonObject decision = new JsonObject();
+                    decision.addProperty("success", false);
+                    decision.addProperty("status", "reuse_decision_required");
+                    decision.addProperty("recipe", recipeId.toString());
+                    decision.addProperty("item", outputItemId);
+                    decision.addProperty("desired_total", desiredTotal);
+                    decision.addProperty("carried_count", reuse.carriedExactCount());
+                    decision.addProperty("unresolved_count", unresolved);
+                    decision.addProperty("purpose",
+                            ToolArgs.getString(args, "purpose", "unspecified"));
+                    JsonArray candidates = new JsonArray();
+                    reuse.storedExact().forEach(value -> candidates.add(reuseJson(value)));
+                    reuse.storedSubstitutes().forEach(value -> candidates.add(reuseJson(value)));
+                    reuse.worldExact().forEach(value -> candidates.add(reuseJson(value)));
+                    decision.add("reuse_candidates", candidates);
+                    decision.addProperty("required_next_step",
+                            "Compare live safety, reachability, time and owner intent. Verify stored contents with goto + inspect_block_storage/open GUI before transfer. Retry with bypass_reuse_check=true only with a concrete reason or explicit extra-copy requirement.");
+                    reply.accept(decision.toString());
+                    return;
+                }
+            }
+        }
+
         boolean fitsInventory = recipe.canCraftInDimensions(2, 2);
         boolean requireTable = mode.equals("table") || (!fitsInventory && mode.equals("auto"));
         if (mode.equals("inventory") && !fitsInventory) {
             reply.accept(ToolArgs.errorJson("Recipe '" + recipeId + "' does not fit the 2x2 inventory grid."));
             return;
         }
-        if (requireTable && !hasNearbyCraftingTable(sp)) {
-            reply.accept(ToolArgs.errorJson("No crafting table is within "
-                    + CRAFTING_TABLE_RADIUS + " blocks for recipe '" + recipeId + "'."));
-            return;
+        if (requireTable) {
+            BlockPos nearestTable = findNearestCraftingTable(
+                    sp, CRAFTING_TABLE_DISCOVERY_RADIUS);
+            if (nearestTable == null) {
+                reply.accept(ToolArgs.errorJson("No crafting table was found within "
+                        + CRAFTING_TABLE_DISCOVERY_RADIUS + " blocks for recipe '"
+                        + recipeId + "'. Observe or obtain a table before retrying."));
+                return;
+            }
+            double tableDistance = Math.sqrt(nearestTable.distToCenterSqr(sp.position()));
+            if (tableDistance > CRAFTING_TABLE_RADIUS) {
+                // Returning the known station coordinate turns a failed
+                // prerequisite into an executable navigation step. The old
+                // generic error made the model craft another table even when
+                // its own table was visible only a few blocks farther away.
+                JsonObject error = new JsonObject();
+                error.addProperty("success", false);
+                error.addProperty("code", "crafting_table_out_of_reach");
+                error.addProperty("error", "A crafting table exists nearby but is outside crafting range.");
+                JsonObject table = new JsonObject();
+                table.addProperty("x", nearestTable.getX());
+                table.addProperty("y", nearestTable.getY());
+                table.addProperty("z", nearestTable.getZ());
+                table.addProperty("distance", Math.round(tableDistance * 10.0) / 10.0);
+                error.add("nearest_table", table);
+                error.addProperty("required_range", CRAFTING_TABLE_RADIUS);
+                error.addProperty("suggested_action", "Use goto with goal_mode=block and the nearest_table coordinates, then retry craft.");
+                reply.accept(error.toString());
+                return;
+            }
         }
 
         int gridSize = requireTable ? 3 : 2;
+        int batchesToCraft = requestedBatches;
+        if (previewCount > 0 && reuse != null) {
+            int deficit = Math.max(0, desiredTotal - reuse.carriedExactCount());
+            batchesToCraft = Math.min(requestedBatches,
+                    Math.max(1, (deficit + previewCount - 1) / previewCount));
+        }
         int craftedBatches = 0;
         int craftedItems = 0;
         String stopReason = null;
-        for (int batch = 0; batch < requestedBatches; batch++) {
+        for (int batch = 0; batch < batchesToCraft; batch++) {
             CraftPlan plan = createPlan(sp.getInventory(), recipe, gridSize, sp.level());
             if (plan == null) {
                 stopReason = "Missing ingredients that form a valid recipe input.";
@@ -157,10 +275,38 @@ public class CraftTool implements Tool {
         result.addProperty("recipe", recipeId.toString());
         result.addProperty("crafted_batches", craftedBatches);
         result.addProperty("crafted_items", craftedItems);
-        if (craftedBatches < requestedBatches && stopReason != null) {
+        result.addProperty("desired_total", desiredTotal);
+        result.addProperty("carried_before", reuse == null ? 0 : reuse.carriedExactCount());
+        if (craftedBatches < batchesToCraft && stopReason != null) {
             result.addProperty("stopped_reason", stopReason);
         }
         reply.accept(result.toString());
+    }
+
+    private static JsonObject reuseJson(WorldAssetIndex.Candidate candidate) {
+        JsonObject value = new JsonObject();
+        var asset = candidate.asset();
+        value.addProperty("action", candidate.action());
+        value.addProperty("scope", asset.scope().name().toLowerCase(Locale.ROOT));
+        value.addProperty("resource_id", asset.resourceId());
+        value.addProperty("count", asset.count());
+        if (asset.containerId() != null) value.addProperty("container_id", asset.containerId());
+        if (asset.position() != null) {
+            value.addProperty("dimension", asset.position().dimension());
+            value.addProperty("x", asset.position().x());
+            value.addProperty("y", asset.position().y());
+            value.addProperty("z", asset.position().z());
+        }
+        if (Double.isFinite(candidate.distance())) {
+            value.addProperty("distance", Math.round(candidate.distance() * 10.0) / 10.0);
+        }
+        value.addProperty("age_ticks", candidate.ageTicks());
+        if (!asset.capabilities().isEmpty()) {
+            JsonArray capabilities = new JsonArray();
+            asset.capabilities().stream().sorted().forEach(capabilities::add);
+            value.add("capabilities", capabilities);
+        }
+        return value;
     }
 
     private static CraftPlan createPlan(Inventory inventory, CraftingRecipe recipe,
@@ -297,18 +443,22 @@ public class CraftTool implements Tool {
         if (!stack.isEmpty()) sp.drop(stack, false, true);
     }
 
-    private static boolean hasNearbyCraftingTable(net.minecraft.server.level.ServerPlayer sp) {
+    private static BlockPos findNearestCraftingTable(
+            net.minecraft.server.level.ServerPlayer sp, int radius) {
         BlockPos center = sp.blockPosition();
+        BlockPos nearest = null;
+        double nearestDistanceSq = Double.POSITIVE_INFINITY;
         for (BlockPos pos : BlockPos.betweenClosed(
-                center.offset(-CRAFTING_TABLE_RADIUS, -2, -CRAFTING_TABLE_RADIUS),
-                center.offset(CRAFTING_TABLE_RADIUS, 2, CRAFTING_TABLE_RADIUS))) {
-            if (sp.level().getBlockState(pos).is(Blocks.CRAFTING_TABLE)
-                    && pos.distToCenterSqr(sp.position())
-                    <= CRAFTING_TABLE_RADIUS * CRAFTING_TABLE_RADIUS) {
-                return true;
-            }
+                center.offset(-radius, -6, -radius),
+                center.offset(radius, 6, radius))) {
+            if (!sp.level().hasChunkAt(pos)
+                    || !sp.level().getBlockState(pos).is(Blocks.CRAFTING_TABLE)) continue;
+            double distanceSq = pos.distToCenterSqr(sp.position());
+            if (distanceSq > (double) radius * radius || distanceSq >= nearestDistanceSq) continue;
+            nearest = pos.immutable();
+            nearestDistanceSq = distanceSq;
         }
-        return false;
+        return nearest;
     }
 
     private record CraftPlan(CraftingInput input, int[] inventorySlots) {}

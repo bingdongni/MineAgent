@@ -7,7 +7,11 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
+import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.WorldAssetObserver;
 
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -65,12 +69,18 @@ public class InspectBlockStorageTool implements Tool {
         }
 
         JsonObject result = new JsonObject();
-        result.addProperty("block_id", net.minecraft.core.registries.BuiltInRegistries.BLOCK
-                .getKey(state.getBlock()).toString());
+        String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(state.getBlock()).toString();
+        result.addProperty("block_id", blockId);
+        result.addProperty("x", x);
+        result.addProperty("y", y);
+        result.addProperty("z", z);
         JsonArray slots = new JsonArray();
+        var observations = new ArrayList<WorldAssetIndex.ItemObservation>();
         for (int i = 0; i < container.getContainerSize(); i++) {
             var stack = container.getItem(i);
             if (stack.isEmpty()) continue;
+            observations.add(WorldAssetObserver.item(i, stack));
             JsonObject slot = new JsonObject();
             slot.addProperty("slot", i);
             slot.addProperty("item", net.minecraft.core.registries.BuiltInRegistries.ITEM
@@ -85,6 +95,18 @@ public class InspectBlockStorageTool implements Tool {
         }
         result.add("slots", slots);
         result.addProperty("total_slots", container.getContainerSize());
+        String containerId = level.dimension().location() + ":" + pos.toShortString();
+        result.addProperty("container_id", containerId);
+
+        var loop = TaskContext.agentLoop(player);
+        if (loop != null) {
+            // This is a real, in-reach block inspection, so its coordinates
+            // are durable evidence. Re-observing an empty container clears
+            // previously remembered contents instead of leaving phantom gear.
+            loop.worldAssetIndex().observeContainer(containerId,
+                    new WorldAssetIndex.Position(level.dimension().location().toString(),
+                            x, y, z), observations, true, level.getGameTime());
+        }
         reply.accept(result.toString());
     }
 }

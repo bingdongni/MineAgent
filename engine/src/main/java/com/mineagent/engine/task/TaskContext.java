@@ -152,6 +152,12 @@ public final class TaskContext {
     /** Remove caches for a companion (on disconnect). */
     public static void removeCaches(AgentPlayer player) {
         NAV_CACHES.remove(player);
+        try {
+            com.mineagent.engine.world.WorldAssetObserver.forgetPlayer(
+                    serverPlayer(player));
+        } catch (RuntimeException ignored) {
+            // Teardown may run after the underlying body has already detached.
+        }
         var ledger = TEMPORARY_BLOCKS.remove(player);
         if (ledger != null) ledger.close();
     }

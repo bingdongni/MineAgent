@@ -11,6 +11,7 @@ import com.mineagent.tools.block.BuildTool;
 import com.mineagent.engine.util.McCompat;
 import com.mineagent.engine.planning.IntentAwareTask;
 import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.world.WorldAssetIndex;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 
@@ -149,6 +150,7 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
             if (!state.isAir() && !state.canBeReplaced()) {
                 if (McCompat.isBlock(state, record.blockType)) {
                     // Idempotent retry: the requested block already exists.
+                    recordPlacedAsset(target, state);
                     advancePosition();
                 } else {
                     failReason = "Position already contains a different block at ("
@@ -160,6 +162,13 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
 
             // Check if we have the block in inventory
             var inventory = sp.getInventory();
+            var desiredBlockId = net.minecraft.resources.ResourceLocation.tryParse(
+                    record.blockType);
+            var desiredBlock = desiredBlockId == null ? null
+                    : net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .get(desiredBlockId);
+            var desiredItem = desiredBlock == null
+                    ? net.minecraft.world.item.Items.AIR : desiredBlock.asItem();
             int foundSlot = -1;
             for (int i = 0; i < inventory.getContainerSize(); i++) {
                 // Inventory exposes armor as slots 36-39. Never swap equipped
@@ -168,7 +177,11 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
                 // carried inventory and is safe to swap normally.
                 if (i >= 36 && i <= 39) continue;
                 var stack = inventory.getItem(i);
-                if (!stack.isEmpty() && McCompat.isItem(stack, record.blockType)) {
+                // A placeable block's item form is not required to share the
+                // block registry ID. Comparing against Block#asItem keeps
+                // modded blocks with distinct item IDs usable by BuildTask.
+                if (!stack.isEmpty() && desiredItem != net.minecraft.world.item.Items.AIR
+                        && stack.is(desiredItem)) {
                     foundSlot = i;
                     break;
                 }
@@ -209,6 +222,7 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
                 // lack a real client packet loop, so explicitly publish the
                 // consumed block count after a confirmed placement.
                 TaskContext.syncInventory(sp);
+                recordPlacedAsset(target, newState);
                 advancePosition();
             } else if (actTicks > MAX_PLACE_TICKS) {
                 failReason = "Failed to place block at (" + pos[0] + ","
@@ -224,6 +238,7 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
             var state = level.getBlockState(target);
             if (state.isAir()) {
                 activeBreakTarget = null;
+                invalidateWorldAsset(target);
                 advancePosition();
                 return;
             }
@@ -232,18 +247,22 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
             // break. Direct destroyBlock() made every clear instantaneous and
             // ignored the configured survival mining behavior.
             if (activeBreakTarget == null) {
-                actTimeoutTicks = BlockDigger.expectedBreakTicks(sp, target);
-                if (!BlockDigger.startBreaking(sp, target)) {
+                BlockDigger.BreakAssessment assessment =
+                        BlockDigger.startBreakingDetailed(sp, target);
+                if (!assessment.allowed()) {
                     failReason = "Target block cannot be cleared at ("
-                            + pos[0] + "," + pos[1] + "," + pos[2] + ")";
+                            + pos[0] + "," + pos[1] + "," + pos[2] + "); "
+                            + assessment.diagnostic();
                     phase = Phase.DONE;
                     return;
                 }
+                actTimeoutTicks = BlockDigger.expectedBreakTicks(sp, target);
                 activeBreakTarget = target;
             }
             actTicks++;
             if (level.getBlockState(target).isAir()) {
                 activeBreakTarget = null;
+                invalidateWorldAsset(target);
                 advancePosition();
             } else if (actTicks > actTimeoutTicks) {
                 BlockDigger.abortBreaking(sp, target);
@@ -252,6 +271,45 @@ public class BuildTask extends CompanionTask<BuildTool.BuildTaskRecord>
                 phase = Phase.DONE;
             }
         }
+    }
+
+    /** Publish the executor-verified world postcondition immediately. */
+    private void recordPlacedAsset(BlockPos target,
+                                   net.minecraft.world.level.block.state.BlockState state) {
+        var loop = TaskContext.agentLoop(player);
+        if (loop == null) return;
+        var sp = TaskContext.serverPlayer(player);
+        String dimension = sp.level().dimension().location().toString();
+        String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(state.getBlock()).toString();
+        var item = state.getBlock().asItem();
+        String itemId = item == net.minecraft.world.item.Items.AIR ? blockId
+                : net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .getKey(item).toString();
+        java.util.LinkedHashSet<String> capabilities = new java.util.LinkedHashSet<>();
+        capabilities.add("world:placed");
+        capabilities.add("interact");
+        if (state.hasBlockEntity()) capabilities.add("inspect");
+        if (sp.level().getBlockEntity(target) instanceof net.minecraft.world.Container) {
+            capabilities.add("store_items");
+            capabilities.add("retrieve_items");
+        }
+        loop.worldAssetIndex().observeWorldObject(
+                new WorldAssetIndex.WorldObservation(blockId,
+                        itemId, "placed_block",
+                        new WorldAssetIndex.Position(dimension, target.getX(),
+                                target.getY(), target.getZ()),
+                        1, 0, 0, capabilities, 0.0, 1.0),
+                sp.level().getGameTime());
+    }
+
+    private void invalidateWorldAsset(BlockPos target) {
+        var loop = TaskContext.agentLoop(player);
+        if (loop == null) return;
+        var sp = TaskContext.serverPlayer(player);
+        loop.worldAssetIndex().invalidatePosition(new WorldAssetIndex.Position(
+                sp.level().dimension().location().toString(), target.getX(),
+                target.getY(), target.getZ()));
     }
 
     private void advancePosition() {

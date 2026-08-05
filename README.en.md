@@ -25,6 +25,8 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 - Fake-player movement, pathfinding, obstacle clearing, bridging, mining, placement, and combat
 - Survival chains for food, air, MLG water, defense, item pickup, following, and unsticking
 - Cognitive maps, place/event memory, learned importance, and reflection
+- A unified world-asset index for inventory, equipment, inspected storage, drops, and known facilities, supporting reuse/retrieve/produce decisions by item or capability
+- Live registry-backed recipe discovery for vanilla and modded items instead of a fixed vanilla item list
 - Multi-companion management, skins, status HUD, and path/vision debugging
 - OpenAI, DeepSeek, Qwen, GLM, Moonshot, Grok, MiniMax, Anthropic, and Gemini providers
 
@@ -101,8 +103,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.1.1.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.1.1.jar`
+- `fabric/build/libs/mineagent-fabric-0.1.4.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.1.4.jar`
 
 ## Modules
 

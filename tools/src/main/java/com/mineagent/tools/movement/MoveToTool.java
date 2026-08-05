@@ -24,6 +24,8 @@ public class MoveToTool implements Tool {
     @Override
     public String name() { return "goto"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

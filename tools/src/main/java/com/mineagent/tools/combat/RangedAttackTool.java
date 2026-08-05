@@ -23,6 +23,8 @@ public class RangedAttackTool implements Tool {
     @Override
     public String name() { return "ranged_attack"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

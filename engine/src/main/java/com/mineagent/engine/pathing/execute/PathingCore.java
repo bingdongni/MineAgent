@@ -11,6 +11,9 @@ import com.mineagent.api.config.MineAgentConfig;
 import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.engine.pathing.util.BlockHelper;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * Core state machine for the pathing system. Manages the lifecycle:
  * SEARCH → EXECUTE → (SEGMENT) → SEARCH → ...
@@ -76,13 +79,18 @@ public class PathingCore {
      */
     private boolean searchInitialized;
 
-    /** Maximum number of re-path attempts before giving up. */
-    private static final int MAX_REPATH_ATTEMPTS = 5;
+    /** One alternate route distinguishes a failed edge from a failed goal. */
+    private static final int MAX_EXECUTION_FAILURES = 2;
 
-    private int repathAttempts;
+    /** Cutoff segments are successful progress and use a separate guard. */
+    private static final int MAX_PATH_SEGMENTS = 128;
+
+    private int executionFailures;
+    private int pathSegments;
     private boolean bridgeDisabledForCurrentGoal;
     private boolean digDisabledForCurrentGoal;
     private String lastFailureDetail;
+    private final Set<CalculationContext.ExcludedEdge> excludedEdges = new HashSet<>();
 
     public PathingCore(AgentPlayer player, PathCaches caches) {
         this(player, caches, MineAgentConfig.PathfindingConfig.DEFAULTS,
@@ -118,7 +126,8 @@ public class PathingCore {
         if (executor != null) executor.stop();
         if (state == State.SEARCH) finder.cancel();
         this.currentGoal = goal;
-        this.repathAttempts = 0;
+        this.executionFailures = 0;
+        this.pathSegments = 0;
         this.state = State.SEARCH;
         this.executor = null;
         this.lastResult = null;
@@ -126,6 +135,7 @@ public class PathingCore {
         this.bridgeDisabledForCurrentGoal = false;
         this.digDisabledForCurrentGoal = false;
         this.lastFailureDetail = null;
+        this.excludedEdges.clear();
     }
 
     /**
@@ -145,6 +155,7 @@ public class PathingCore {
         bridgeDisabledForCurrentGoal = false;
         digDisabledForCurrentGoal = false;
         lastFailureDetail = null;
+        excludedEdges.clear();
     }
 
     /**
@@ -183,7 +194,7 @@ public class PathingCore {
                             && com.mineagent.engine.act.Placement.hasSupportBlock(
                                     TaskContext.serverPlayer(player)),
                     pathConfig.allowParkour() && terrainPolicy.allowParkour(),
-                    pos.getY(), terrainPolicy.maxUpwardDeviation());
+                    pos.getY(), terrainPolicy.maxUpwardDeviation(), excludedEdges);
 
             boolean needsContinue = finder.initializeSearch(
                     pos.getX(), pos.getY(), pos.getZ(),
@@ -296,11 +307,25 @@ public class PathingCore {
                     return;
                 }
             }
+            lastFailureDetail = "PATH_ENDED_OUTSIDE_GOAL player="
+                    + TaskContext.serverPlayer(player).blockPosition().toShortString();
             state = State.IDLE;
         } else if (executor.isFailed()) {
             // Movement failed — try re-pathing
-            repathAttempts++;
-            if (repathAttempts < MAX_REPATH_ATTEMPTS) {
+            PathExecutor.Failure failure = executor.failure();
+            executionFailures++;
+            if (failure != null) {
+                // An unchanged A* search otherwise returns this same edge and
+                // repeats the same failed physical action several times.
+                lastFailureDetail = failure.describe();
+                excludedEdges.add(new CalculationContext.ExcludedEdge(
+                        failure.source().getX(), failure.source().getY(), failure.source().getZ(),
+                        failure.destination().getX(), failure.destination().getY(),
+                        failure.destination().getZ()));
+            } else {
+                lastFailureDetail = "EXECUTION_FAILED_WITHOUT_DETAIL";
+            }
+            if (executionFailures < MAX_EXECUTION_FAILURES) {
                 state = State.SEARCH;
                 executor = null;
                 searchInitialized = false;
@@ -312,12 +337,13 @@ public class PathingCore {
 
     private void tickSegment() {
         // Re-path from current position to the same goal
-        repathAttempts++;
-        if (repathAttempts < MAX_REPATH_ATTEMPTS) {
+        pathSegments++;
+        if (pathSegments < MAX_PATH_SEGMENTS) {
             state = State.SEARCH;
             executor = null;
             searchInitialized = false;
         } else {
+            lastFailureDetail = "PATH_SEGMENT_LIMIT_REACHED segments=" + pathSegments;
             state = State.IDLE;
         }
     }

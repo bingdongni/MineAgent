@@ -1,5 +1,6 @@
 package com.mineagent.engine.entity.fakeplayer;
 
+import com.mineagent.engine.act.BlockTargeting;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -57,6 +58,8 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
     private BlockPos automaticDestroyPos;
     private Direction automaticDestroyDirection = Direction.UP;
     private Block automaticDestroyBlock;
+    /** Visible surface point selected at START; centre-only aim can be occluded. */
+    private Vec3 automaticDestroyAim;
     private int automaticDestroyTicks;
     private boolean automaticStopSent;
 
@@ -105,8 +108,14 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
             return;
         }
 
-        player.lookAt(EntityAnchorArgument.Anchor.EYES,
-                Vec3.atCenterOf(automaticDestroyPos));
+        Vec3 aim = automaticDestroyAim;
+        if (aim == null) {
+            aim = BlockTargeting.findVisibleHit(player, automaticDestroyPos,
+                    getReachDistance()).map(net.minecraft.world.phys.BlockHitResult::getLocation)
+                    .orElse(Vec3.atCenterOf(automaticDestroyPos));
+            automaticDestroyAim = aim;
+        }
+        player.lookAt(EntityAnchorArgument.Anchor.EYES, aim);
         if (automaticDestroyTicks % MINING_SWING_INTERVAL_TICKS == 0) {
             player.swing(InteractionHand.MAIN_HAND);
         }
@@ -252,9 +261,12 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
             automaticDestroyPos = pos.immutable();
             automaticDestroyDirection = direction == null ? Direction.UP : direction;
             automaticDestroyBlock = level.getBlockState(pos).getBlock();
+            automaticDestroyAim = BlockTargeting.findVisibleHit(player, pos,
+                    getReachDistance()).map(net.minecraft.world.phys.BlockHitResult::getLocation)
+                    .orElse(Vec3.atCenterOf(pos));
             automaticDestroyTicks = 0;
             automaticStopSent = false;
-            player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(pos));
+            player.lookAt(EntityAnchorArgument.Anchor.EYES, automaticDestroyAim);
             player.swing(InteractionHand.MAIN_HAND);
             return;
         }
@@ -288,6 +300,11 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
                 && !level.getBlockState(pos).isAir();
     }
 
+    /** Exposes whether START entered the fake client's progressive state. */
+    public boolean isAutomaticallyDestroying(BlockPos pos) {
+        return pos != null && pos.equals(automaticDestroyPos);
+    }
+
     private void abortAutomaticDestroy() {
         BlockPos target = automaticDestroyPos;
         clearAutomaticDestroy();
@@ -302,6 +319,7 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
         automaticDestroyPos = null;
         automaticDestroyDirection = Direction.UP;
         automaticDestroyBlock = null;
+        automaticDestroyAim = null;
         automaticDestroyTicks = 0;
         automaticStopSent = false;
     }

@@ -8,6 +8,8 @@ import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.pathing.execute.PlayerNav;
 import com.mineagent.engine.planning.IntentAwareTask;
 import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.WorldAssetObserver;
 import com.mineagent.tools.InteractAtTool;
 import net.minecraft.core.BlockPos;
 
@@ -82,16 +84,23 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
         if ("attack".equals(record.button)) {
             if (sp.level().getBlockState(target).isAir()) {
                 breakStarted = false;
+                invalidateWorldAsset(target);
                 phase = Phase.DONE;
                 return;
             }
             if (!breakStarted) {
-                breakTimeoutTicks = BlockDigger.expectedBreakTicks(sp, target);
-                if (!BlockDigger.startBreaking(sp, target)) {
-                    failReason = "Target block cannot be broken";
+                BlockDigger.BreakAssessment assessment =
+                        BlockDigger.startBreakingDetailed(sp, target);
+                if (!assessment.allowed()) {
+                    // Preserve the executor's exact evidence. The old generic
+                    // message caused the model to invent protection regions
+                    // for ordinary reach and line-of-sight failures.
+                    failReason = "Could not start block attack: "
+                            + assessment.diagnostic();
                     phase = Phase.DONE;
                     return;
                 }
+                breakTimeoutTicks = BlockDigger.expectedBreakTicks(sp, target);
                 breakStarted = true;
             }
             if (++interactTicks > breakTimeoutTicks) {
@@ -117,6 +126,7 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
                 phase = Phase.DONE;
                 return;
             }
+            recordInteractionEvidence(target);
         }
 
         if (++interactTicks >= requiredTicks) {
@@ -127,6 +137,54 @@ public class InteractAtTask extends CompanionTask<InteractAtTool.InteractAtTaskR
             if (sp.isUsingItem()) sp.releaseUsingItem();
             phase = Phase.DONE;
         }
+    }
+
+    /**
+     * Learn generic affordances from an interaction that vanilla accepted.
+     * This is especially important for modded block entities: the agent need
+     * not know their class in advance to remember that the object opens a menu
+     * and which items were actually visible there.
+     */
+    private void recordInteractionEvidence(BlockPos target) {
+        var loop = TaskContext.agentLoop(player);
+        if (loop == null) return;
+        var sp = TaskContext.serverPlayer(player);
+        WorldAssetObserver.rememberInteractionTarget(sp, target);
+        var state = sp.level().getBlockState(target);
+        if (!state.isAir()) {
+            String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(state.getBlock()).toString();
+            var blockItem = state.getBlock().asItem();
+            String itemId = blockItem == net.minecraft.world.item.Items.AIR ? blockId
+                    : net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(blockItem).toString();
+            java.util.LinkedHashSet<String> capabilities = new java.util.LinkedHashSet<>();
+            capabilities.add("interact");
+            if (state.hasBlockEntity()) capabilities.add("inspect");
+            if (sp.containerMenu != null && sp.containerMenu != sp.inventoryMenu) {
+                capabilities.add("open_menu");
+            }
+            loop.worldAssetIndex().observeWorldObject(
+                    new WorldAssetIndex.WorldObservation(blockId, itemId,
+                            "interacted_block", new WorldAssetIndex.Position(
+                            sp.level().dimension().location().toString(),
+                            target.getX(), target.getY(), target.getZ()),
+                            1, 0, 0, capabilities, 0.0, 1.0),
+                    sp.level().getGameTime());
+        }
+        if (sp.containerMenu != null && sp.containerMenu != sp.inventoryMenu) {
+            WorldAssetObserver.observeOpenMenu(loop.worldAssetIndex(), sp,
+                    sp.containerMenu);
+        }
+    }
+
+    private void invalidateWorldAsset(BlockPos target) {
+        var loop = TaskContext.agentLoop(player);
+        if (loop == null) return;
+        var sp = TaskContext.serverPlayer(player);
+        loop.worldAssetIndex().invalidatePosition(new WorldAssetIndex.Position(
+                sp.level().dimension().location().toString(), target.getX(),
+                target.getY(), target.getZ()));
     }
 
     private void lookAtTarget() {

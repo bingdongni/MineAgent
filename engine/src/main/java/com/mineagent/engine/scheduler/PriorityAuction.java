@@ -260,8 +260,11 @@ public class PriorityAuction {
                 currentTask.record().toolCallId(), describe(currentTask),
                 TaskState.PAUSED, reason, null,
                 Math.max(0L, taskPausedAtTick - taskStartGameTick), snapshot);
-        loop.onTaskProgress(currentTask.record().toolCallId(), snapshot,
-                reason, taskPausedAtTick);
+        loop.onTaskProgress(currentTask.record().toolCallId(), TaskState.PAUSED,
+                snapshot, reason, taskPausedAtTick);
+        System.out.println("[MineAgent] Body task "
+                + currentTask.record().toolCallId() + " paused for survival chain "
+                + safeChainName(winner));
         pushTaskUpdate(reason);
     }
 
@@ -302,8 +305,9 @@ public class PriorityAuction {
         TaskStatusTool.updateTaskInfo(companion.companionId(), task.record().toolCallId(),
                 describe(task), taskPaused ? TaskState.PAUSED : TaskState.RUNNING,
                 snapshot.summary(), null, elapsed, snapshot);
-        loop.onTaskProgress(task.record().toolCallId(), snapshot,
-                snapshot.summary(), now);
+        loop.onTaskProgress(task.record().toolCallId(),
+                taskPaused ? TaskState.PAUSED : TaskState.RUNNING,
+                snapshot, snapshot.summary(), now);
     }
 
     private static TaskSnapshot safeSnapshot(CompanionTask<?> task) {

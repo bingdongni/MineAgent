@@ -24,6 +24,7 @@ import com.mineagent.tools.perception.LookAroundTool;
 import com.mineagent.tools.perception.RecallMemoryTool;
 import com.mineagent.tools.perception.ScanBlocksTool;
 import com.mineagent.tools.perception.ScanNearbyEntitiesTool;
+import com.mineagent.tools.planning.ResolveNeedTool;
 import com.mineagent.tools.skill.LearnedSkillsTool;
 import com.mineagent.tools.skill.LoadSkillTool;
 
@@ -45,6 +46,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new GetSelfStatusTool());
         ToolRegistry.register(new ScanNearbyEntitiesTool());
         ToolRegistry.register(new RecallMemoryTool());
+        ToolRegistry.register(new ResolveNeedTool());
 
         // Block
         ToolRegistry.register(new AutoMineTool());

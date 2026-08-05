@@ -472,7 +472,10 @@ public class GeminiProvider implements LLMProvider {
             usage = new LLMResponse.Usage(
                     meta.has("promptTokenCount") ? meta.get("promptTokenCount").getAsInt() : 0,
                     meta.has("candidatesTokenCount") ? meta.get("candidatesTokenCount").getAsInt() : 0,
-                    meta.has("totalTokenCount") ? meta.get("totalTokenCount").getAsInt() : 0
+                    meta.has("totalTokenCount") ? meta.get("totalTokenCount").getAsInt() : 0,
+                    meta.has("cachedContentTokenCount")
+                            ? meta.get("cachedContentTokenCount").getAsInt() : 0,
+                    0
             );
         }
 

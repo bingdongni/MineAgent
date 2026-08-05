@@ -66,6 +66,13 @@ public final class Schema {
             return this;
         }
 
+        /** Add an optional boolean property. */
+        public Builder optionalBoolean(String name, String description) {
+            properties.put(name, Map.of("type", List.of("boolean", "null"),
+                    "description", description));
+            return this;
+        }
+
         /** Add a required number property. */
         public Builder number(String name, String description) {
             properties.put(name, Map.of("type", "number", "description", description));

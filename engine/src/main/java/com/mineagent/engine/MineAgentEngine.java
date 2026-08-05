@@ -973,6 +973,16 @@ public final class MineAgentEngine {
                         + t.getClass().getSimpleName() + " - " + t.getMessage());
             }
 
+            // Publish an immutable inventory/equipment snapshot after vanilla
+            // has advanced the fake player. The AgentLoop runs on another
+            // thread and must not inspect live Minecraft collections itself;
+            // this one-second, internally throttled feed keeps reasoning
+            // grounded after pickups, damage, consumption and other vanilla
+            // changes that did not originate from a MineAgent tool.
+            if (!state.lifecycle.isDead()) {
+                state.loop.onServerStateTick(sp.level().getGameTime());
+            }
+
             // Flush body log messages to the agent loop inbox (M10 fix)
             CompanionBodyLog bodyLog = SurvivalBuiltin.bodyLog(state.companion);
             if (bodyLog != null) {

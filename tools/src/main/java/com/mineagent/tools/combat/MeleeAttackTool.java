@@ -23,6 +23,8 @@ public class MeleeAttackTool implements Tool {
     @Override
     public String name() { return "melee_attack"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

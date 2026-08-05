@@ -498,6 +498,12 @@ public class AStarPathFinder {
         if (moveCost >= Double.POSITIVE_INFINITY) return;
         if (moveCost <= 0) return;
         if (currentCtx != null && !currentCtx.isWithinVerticalPolicy(y)) return;
+        // Re-running an unchanged A* search after an execution timeout used to
+        // return the identical path up to five times. Exclude only the exact
+        // directed edge that produced grounded failure evidence; every other
+        // route and the reverse direction remain available.
+        if (currentCtx != null && currentCtx.isEdgeExcluded(
+                parent.x, parent.y, parent.z, x, y, z)) return;
 
         long key = posKey(x, y, z);
         PathNode existing = visitedNodes.get(key);

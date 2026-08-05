@@ -740,10 +740,35 @@ public class OpenAICompatibleProvider implements LLMProvider {
         LLMResponse.Usage usage = null;
         if (root.has("usage") && root.get("usage").isJsonObject()) {
             JsonObject usageObj = root.getAsJsonObject("usage");
+            int promptTokens = usageObj.has("prompt_tokens")
+                    ? usageObj.get("prompt_tokens").getAsInt() : 0;
+            int cachedTokens = 0;
+            // OpenAI reports cached input inside prompt_tokens_details;
+            // DeepSeek-compatible APIs expose equivalent hit/miss counters
+            // at the usage root. Normalize both so runtime logs can measure
+            // the real provider cache rather than the local decision cache.
+            if (usageObj.has("prompt_tokens_details")
+                    && usageObj.get("prompt_tokens_details").isJsonObject()) {
+                JsonObject details = usageObj.getAsJsonObject("prompt_tokens_details");
+                if (details.has("cached_tokens")) {
+                    cachedTokens = details.get("cached_tokens").getAsInt();
+                }
+            }
+            if (usageObj.has("prompt_cache_hit_tokens")) {
+                cachedTokens = Math.max(cachedTokens,
+                        usageObj.get("prompt_cache_hit_tokens").getAsInt());
+                if (promptTokens == 0) {
+                    int misses = usageObj.has("prompt_cache_miss_tokens")
+                            ? usageObj.get("prompt_cache_miss_tokens").getAsInt() : 0;
+                    promptTokens = cachedTokens + misses;
+                }
+            }
             usage = new LLMResponse.Usage(
-                    usageObj.has("prompt_tokens") ? usageObj.get("prompt_tokens").getAsInt() : 0,
+                    promptTokens,
                     usageObj.has("completion_tokens") ? usageObj.get("completion_tokens").getAsInt() : 0,
-                    usageObj.has("total_tokens") ? usageObj.get("total_tokens").getAsInt() : 0
+                    usageObj.has("total_tokens") ? usageObj.get("total_tokens").getAsInt() : 0,
+                    cachedTokens,
+                    0
             );
         }
 

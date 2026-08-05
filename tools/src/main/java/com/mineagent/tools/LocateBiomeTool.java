@@ -23,6 +23,8 @@ public class LocateBiomeTool implements Tool {
     @Override
     public String name() { return "locate_biome"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

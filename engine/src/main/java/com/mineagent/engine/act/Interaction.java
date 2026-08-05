@@ -12,9 +12,6 @@ import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.entity.FurnaceBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.level.ClipContext;
 
 /**
  * Block and entity interaction — provides low-level Minecraft interaction
@@ -60,31 +57,18 @@ public final class Interaction {
             // Check reach distance
             if (!isWithinReach(player, pos)) return InteractionResult.FAIL;
 
-            // Create a hit result for the block
-            Vec3 hitVec = Vec3.atCenterOf(pos);
-            HitResult sight = level.clip(new ClipContext(player.getEyePosition(), hitVec,
-                    ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-            if (sight.getType() == HitResult.Type.BLOCK
-                    && !((BlockHitResult) sight).getBlockPos().equals(pos)) {
-                // Direct gameMode calls bypass the packet handler's ray
-                // validation. Refuse interactions through an intervening wall.
-                return InteractionResult.FAIL;
-            }
-            Vec3 towardPlayer = player.getEyePosition().subtract(hitVec);
-            net.minecraft.core.Direction hitFace =
-                    net.minecraft.core.Direction.getNearest(
-                            towardPlayer.x, towardPlayer.y, towardPlayer.z);
-            BlockHitResult hitResult = new BlockHitResult(
-                    hitVec,
-                    hitFace,
-                    pos,
-                    false
-            );
+            // A real client clicks a visible point on the block outline, not
+            // necessarily its centre. Centre-only rays reject lower blocks in
+            // a two-high wall because the ray crosses the upper block first.
+            // Share the same surface solver used by mining and placement.
+            BlockHitResult hitResult = BlockTargeting.findVisibleHit(
+                    player, pos, reachDistance(player)).orElse(null);
+            if (hitResult == null) return InteractionResult.FAIL;
 
             // Fake players have no client camera packet preceding the click.
             // Aim explicitly so nearby real clients see the action directed at
             // the same block that receives the server-side interaction.
-            player.lookAt(EntityAnchorArgument.Anchor.EYES, hitVec);
+            player.lookAt(EntityAnchorArgument.Anchor.EYES, hitResult.getLocation());
 
             // Use the game mode handler — this handles containers, items, etc.
             ItemStack heldItem = player.getItemInHand(hand);

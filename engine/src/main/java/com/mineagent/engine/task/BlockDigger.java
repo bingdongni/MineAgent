@@ -1,14 +1,51 @@
 package com.mineagent.engine.task;
 
+import com.mineagent.engine.act.BlockTargeting;
+import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+
+import java.util.Locale;
 
 /**
  * Executes vanilla block breaking and selects a suitable real inventory tool.
  */
 public final class BlockDigger {
+
+    /** Machine-readable reason for accepting or rejecting a break request. */
+    public enum BreakStatus {
+        READY,
+        INVALID_ARGUMENT,
+        OUT_OF_WORLD,
+        OUTSIDE_WORLD_BORDER,
+        AIR,
+        UNBREAKABLE,
+        OUT_OF_REACH,
+        OCCLUDED,
+        WORLD_INTERACTION_DENIED,
+        GAME_MODE_RESTRICTED,
+        VANILLA_START_REJECTED
+    }
+
+    /**
+     * Authoritative preflight evidence. Only the two explicit policy statuses
+     * indicate protection/restriction; geometry failures must never be
+     * described to the LLM as a protected region.
+     */
+    public record BreakAssessment(BreakStatus status, String detail,
+                                  BlockHitResult hit) {
+        public boolean allowed() { return status == BreakStatus.READY; }
+
+        public String diagnostic() {
+            String code = status.name().toLowerCase(Locale.ROOT);
+            return "break_status=" + code + (detail == null || detail.isBlank()
+                    ? "" : " detail=" + detail);
+        }
+    }
 
     private BlockDigger() {}
 
@@ -27,14 +64,34 @@ public final class BlockDigger {
      * durability and normal timing, which makes a fake player an instant miner.
      */
     public static boolean startBreaking(ServerPlayer player, BlockPos pos) {
-        if (player == null || pos == null || !canBreak(player, pos)) return false;
+        return startBreakingDetailed(player, pos).allowed();
+    }
+
+    /**
+     * Start a break and retain the exact rejection evidence for tasks and the
+     * LLM. This keeps low-level reach/visibility correction in the executor
+     * instead of asking the model to guess whether a region is protected.
+     */
+    public static BreakAssessment startBreakingDetailed(ServerPlayer player, BlockPos pos) {
+        BreakAssessment assessment = assessBreak(player, pos);
+        if (!assessment.allowed()) return assessment;
         BlockState state = player.level().getBlockState(pos);
         prepareBestTool(player, state);
+        BlockHitResult hit = assessment.hit();
+        player.lookAt(EntityAnchorArgument.Anchor.EYES, hit.getLocation());
         player.gameMode.handleBlockBreakAction(pos,
                 net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
-                net.minecraft.core.Direction.UP,
+                hit.getDirection(),
                 player.serverLevel().getMaxBuildHeight(), 0);
-        return true;
+
+        if (!player.level().getBlockState(pos).isAir()
+                && player.gameMode instanceof
+                com.mineagent.engine.entity.fakeplayer.FakePlayerGameMode fakeMode
+                && !fakeMode.isAutomaticallyDestroying(pos)) {
+            return new BreakAssessment(BreakStatus.VANILLA_START_REJECTED,
+                    "server game mode did not accept START_DESTROY_BLOCK", hit);
+        }
+        return assessment;
     }
 
     /** Abort a progressive break so cancellation cannot damage a stale target. */
@@ -109,7 +166,8 @@ public final class BlockDigger {
 
     /** Derive a bounded timeout from vanilla destroy progress. */
     public static int expectedBreakTicks(ServerPlayer player, BlockPos pos) {
-        if (player == null || pos == null || !canBreak(player, pos)) {
+        BreakAssessment assessment = assessBreak(player, pos);
+        if (!assessment.allowed()) {
             return Integer.MAX_VALUE;
         }
         BlockState state = player.level().getBlockState(pos);
@@ -123,24 +181,78 @@ public final class BlockDigger {
 
     /** Validate reach and line of sight before bypassing the packet listener. */
     public static boolean canBreak(ServerPlayer player, BlockPos pos) {
-        if (player == null || pos == null) return false;
-        BlockState state = player.level().getBlockState(pos);
-        if (state.isAir() || state.getDestroySpeed(player.level(), pos) < 0) return false;
+        return assessBreak(player, pos).allowed();
+    }
 
-        double reach = player.gameMode instanceof
-                com.mineagent.engine.entity.fakeplayer.FakePlayerGameMode fakeMode
-                ? fakeMode.getReachDistance() : player.blockInteractionRange();
+    /**
+     * Diagnose every independent break precondition in a stable order. The
+     * visible-point solver samples actual outline faces, matching where a
+     * human client can aim rather than requiring the block centre to be clear.
+     */
+    public static BreakAssessment assessBreak(ServerPlayer player, BlockPos pos) {
+        if (player == null || pos == null) {
+            return rejected(BreakStatus.INVALID_ARGUMENT, "player or target is null");
+        }
+        var level = player.serverLevel();
+        if (!level.isInWorldBounds(pos)) {
+            return rejected(BreakStatus.OUT_OF_WORLD,
+                    "target=" + pos.toShortString());
+        }
+        if (!level.getWorldBorder().isWithinBounds(pos)) {
+            return rejected(BreakStatus.OUTSIDE_WORLD_BORDER,
+                    "target=" + pos.toShortString());
+        }
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir()) {
+            return rejected(BreakStatus.AIR, "target already contains air");
+        }
+        float hardness = state.getDestroySpeed(level, pos);
+        if (!Float.isFinite(hardness) || hardness < 0.0f) {
+            return rejected(BreakStatus.UNBREAKABLE, "hardness=" + hardness);
+        }
+
+        double reach = BlockTargeting.interactionReach(player);
         double dx = pos.getX() + 0.5 - player.getX();
         double dy = pos.getY() + 0.5 - player.getEyeY();
         double dz = pos.getZ() + 0.5 - player.getZ();
-        if (dx * dx + dy * dy + dz * dz > reach * reach) return false;
+        double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // Match vanilla's one-block packet tolerance. The visible hit itself
+        // is still constrained to the configured reach by BlockTargeting.
+        if (!player.canInteractWithBlock(pos, 1.0) && distance > reach) {
+            return rejected(BreakStatus.OUT_OF_REACH,
+                    String.format(Locale.ROOT, "distance=%.2f reach=%.2f", distance, reach));
+        }
+        if (!level.mayInteract(player, pos)) {
+            return rejected(BreakStatus.WORLD_INTERACTION_DENIED,
+                    "server mayInteract denied target=" + pos.toShortString());
+        }
+        if (player.blockActionRestricted(level, pos,
+                player.gameMode.getGameModeForPlayer())) {
+            return rejected(BreakStatus.GAME_MODE_RESTRICTED,
+                    "game mode restricted target=" + pos.toShortString());
+        }
 
-        var hit = player.level().clip(new net.minecraft.world.level.ClipContext(
-                player.getEyePosition(), net.minecraft.world.phys.Vec3.atCenterOf(pos),
-                net.minecraft.world.level.ClipContext.Block.OUTLINE,
-                net.minecraft.world.level.ClipContext.Fluid.NONE, player));
-        return hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK
-                && ((net.minecraft.world.phys.BlockHitResult) hit).getBlockPos().equals(pos);
+        var hit = BlockTargeting.findVisibleHit(player, pos, reach);
+        if (hit.isEmpty()) {
+            BlockPos blocker = BlockTargeting.centreRayBlocker(player, pos);
+            String detail = blocker == null
+                    ? "no target outline face is visible within reach"
+                    : "no target outline face is visible; centre_ray_first_hit="
+                    + blocker.toShortString();
+            return rejected(BreakStatus.OCCLUDED, detail);
+        }
+        return new BreakAssessment(BreakStatus.READY,
+                "aim=" + format(hit.get().getLocation())
+                        + " face=" + hit.get().getDirection().getName(), hit.get());
+    }
+
+    private static BreakAssessment rejected(BreakStatus status, String detail) {
+        return new BreakAssessment(status, detail, null);
+    }
+
+    private static String format(net.minecraft.world.phys.Vec3 point) {
+        return String.format(Locale.ROOT, "%.3f,%.3f,%.3f",
+                point.x, point.y, point.z);
     }
 
     /** Empty hand is usable; only a nearly broken damageable tool is unsafe. */

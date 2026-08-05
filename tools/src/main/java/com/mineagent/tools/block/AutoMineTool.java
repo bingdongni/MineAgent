@@ -27,6 +27,8 @@ public class AutoMineTool implements Tool {
     @Override
     public String name() { return "auto_mine"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

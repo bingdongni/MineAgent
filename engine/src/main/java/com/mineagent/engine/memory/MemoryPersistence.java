@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mineagent.engine.planning.PlanGraph;
 import com.mineagent.engine.world.BeliefState;
+import com.mineagent.engine.world.WorldAssetIndex;
 import com.mineagent.engine.skill.SkillLibrary;
 import com.mineagent.api.llm.ChatMessage;
 
@@ -52,10 +53,11 @@ public class MemoryPersistence {
     private static final String REFLECTION_FILE = "reflections.json";
     private static final String PLAN_FILE = "plan_state.json";
     private static final String BELIEF_FILE = "belief_state.json";
+    private static final String ASSET_FILE = "world_assets.json";
     private static final String EXPERIENCE_FILE = "experiences.json";
     private static final String SKILL_FILE = "learned_skills.json";
     private static final String CONVERSATION_FILE = "conversation.json";
-    private static final int FORMAT_VERSION = 4;
+    private static final int FORMAT_VERSION = 5;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 
@@ -69,6 +71,7 @@ public class MemoryPersistence {
     private final ReflectionSystem reflectionSystem;
     private final PlanGraph planGraph;
     private final BeliefState beliefState;
+    private final WorldAssetIndex worldAssetIndex;
     private final ExperienceStore experienceStore;
     private final SkillLibrary skillLibrary;
     private final List<ChatMessage> conversationHistory;
@@ -86,6 +89,7 @@ public class MemoryPersistence {
                              ReflectionSystem reflectionSystem,
                              PlanGraph planGraph,
                              BeliefState beliefState,
+                             WorldAssetIndex worldAssetIndex,
                              ExperienceStore experienceStore,
                              SkillLibrary skillLibrary,
                              List<ChatMessage> conversationHistory) {
@@ -96,6 +100,7 @@ public class MemoryPersistence {
         this.reflectionSystem = reflectionSystem;
         this.planGraph = planGraph;
         this.beliefState = beliefState;
+        this.worldAssetIndex = worldAssetIndex;
         this.experienceStore = experienceStore;
         this.skillLibrary = skillLibrary;
         this.conversationHistory = conversationHistory;
@@ -128,6 +133,9 @@ public class MemoryPersistence {
         }
         try { saveBeliefs(); } catch (Exception e) {
             System.err.println("[MineAgent] Save beliefs failed: " + e.getMessage());
+        }
+        try { saveWorldAssets(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save world assets failed: " + e.getMessage());
         }
         try { saveExperiences(); } catch (Exception e) {
             System.err.println("[MineAgent] Save experiences failed: " + e.getMessage());
@@ -162,6 +170,7 @@ public class MemoryPersistence {
         loadWithQuarantine(REFLECTION_FILE, "reflections", this::loadReflections);
         loadWithQuarantine(PLAN_FILE, "plan state", this::loadPlan);
         loadWithQuarantine(BELIEF_FILE, "belief state", this::loadBeliefs);
+        loadWithQuarantine(ASSET_FILE, "world assets", this::loadWorldAssets);
         loadWithQuarantine(EXPERIENCE_FILE, "experiences", this::loadExperiences);
         loadWithQuarantine(SKILL_FILE, "learned skills", this::loadSkills);
         loadWithQuarantine(CONVERSATION_FILE, "conversation", this::loadConversation);
@@ -435,6 +444,35 @@ public class MemoryPersistence {
         }
     }
 
+    /**
+     * Persist only durable, observation-backed world assets. The index itself
+     * excludes carried inventory, open menus and dropped entities from its
+     * exported state because those must be rebuilt from live server state.
+     */
+    private void saveWorldAssets() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(worldAssetIndex.exportState()));
+        writeAtomic(memoryDir.resolve(ASSET_FILE), GSON.toJson(data));
+    }
+
+    private void loadWorldAssets() throws IOException {
+        Path file = memoryDir.resolve(ASSET_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("world asset state is missing");
+        }
+        try {
+            WorldAssetIndex.State state = GSON.fromJson(
+                    data.get("state"), WorldAssetIndex.State.class);
+            worldAssetIndex.importState(state);
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid world asset state", malformed);
+        }
+    }
+
     private void saveExperiences() throws IOException {
         JsonObject data = new JsonObject();
         data.addProperty("version", FORMAT_VERSION);
@@ -639,6 +677,7 @@ public class MemoryPersistence {
             Files.deleteIfExists(memoryDir.resolve(REFLECTION_FILE));
             Files.deleteIfExists(memoryDir.resolve(PLAN_FILE));
             Files.deleteIfExists(memoryDir.resolve(BELIEF_FILE));
+            Files.deleteIfExists(memoryDir.resolve(ASSET_FILE));
             Files.deleteIfExists(memoryDir.resolve(EXPERIENCE_FILE));
             Files.deleteIfExists(memoryDir.resolve(SKILL_FILE));
             Files.deleteIfExists(memoryDir.resolve(CONVERSATION_FILE));

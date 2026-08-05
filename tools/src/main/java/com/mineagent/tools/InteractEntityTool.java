@@ -22,6 +22,8 @@ public class InteractEntityTool implements Tool {
     @Override
     public String name() { return "interact_entity"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

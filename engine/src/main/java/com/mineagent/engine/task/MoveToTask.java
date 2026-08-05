@@ -153,21 +153,33 @@ public class MoveToTask extends CompanionTask<MoveToTool.MoveToTaskRecord>
         int total = -1;
         String stage = nav == null ? "initializing"
                 : nav.state().name().toLowerCase(java.util.Locale.ROOT);
+        StringBuilder evidence = new StringBuilder("player=")
+                .append(sp.blockPosition().toShortString());
+        long executorVersion = 0L;
         if (nav != null && nav.core().executor() != null) {
-            completed = nav.core().executor().currentMovementIndex();
-            total = nav.core().executor().path().length();
+            var executor = nav.core().executor();
+            completed = executor.currentMovementIndex();
+            total = executor.path().length();
+            executorVersion = executor.progressVersion();
+            evidence.append(" movement=").append(completed).append('/').append(total)
+                    .append(" movement_ticks=").append(executor.ticksOnCurrentMovement())
+                    .append(" movement_stagnant_ticks=")
+                    .append(executor.ticksWithoutProgress());
+        }
+        if (nav != null && nav.core().lastFailureDetail() != null) {
+            evidence.append(" last_path_failure=").append(nav.core().lastFailureDetail());
         }
         Integer targetY = "xz".equals(record.goalMode) ? null : record.y;
         Integer targetZ = "y".equals(record.goalMode) ? null : record.z;
         Integer targetX = "y".equals(record.goalMode) ? null : record.x;
         long version = ((long) Math.max(0, completed) << 32)
-                ^ (goalReached ? 2L : 0L) ^ (navFailed ? 1L : 0L);
+                ^ executorVersion ^ (goalReached ? 2L : 0L) ^ (navFailed ? 1L : 0L);
         return TaskSnapshot.progress(stage,
                 goalReached ? "Navigation goal reached"
                         : navFailed ? "Navigation failed" : "Navigating to requested goal",
                 completed, total, targetX, targetY, targetZ,
                 navFailed ? failReason : null,
-                "player=" + sp.blockPosition(), version);
+                evidence.toString(), version);
     }
 
     @Override

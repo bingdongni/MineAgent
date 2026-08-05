@@ -16,6 +16,8 @@ public class EatItemTool implements Tool {
     @Override
     public String name() { return "eat_item"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

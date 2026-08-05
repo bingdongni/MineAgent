@@ -25,6 +25,8 @@ public class CollectItemsTool implements Tool {
     @Override
     public String name() { return "collect_items"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """

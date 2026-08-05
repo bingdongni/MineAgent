@@ -7,6 +7,8 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
+import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetObserver;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -34,12 +36,28 @@ public class InspectGuiTool implements Tool {
 
         JsonObject result = new JsonObject();
         result.addProperty("container_type", menu.getClass().getSimpleName());
+        var loop = TaskContext.agentLoop(player);
+        String observedContainerId = loop == null ? null
+                : WorldAssetObserver.observeOpenMenu(
+                        loop.worldAssetIndex(), sp, menu);
+        if (observedContainerId != null) {
+            result.addProperty("container_id", observedContainerId);
+        }
         JsonArray slots = new JsonArray();
         for (int i = 0; i < menu.slots.size(); i++) {
-            var stack = menu.getSlot(i).getItem();
+            var menuSlot = menu.getSlot(i);
+            var stack = menuSlot.getItem();
             if (stack.isEmpty()) continue;
             JsonObject slot = new JsonObject();
             slot.addProperty("slot", i);
+            boolean playerInventory = menuSlot.container == sp.getInventory();
+            slot.addProperty("endpoint", playerInventory ? "player" : "container");
+            if (playerInventory) {
+                // transfer_items uses native player inventory indices for the
+                // player endpoint, not menu indices. Reporting both prevents
+                // the model from addressing the wrong backing slot.
+                slot.addProperty("inventory_slot", menuSlot.getContainerSlot());
+            }
             slot.addProperty("item", net.minecraft.core.registries.BuiltInRegistries.ITEM
                     .getKey(stack.getItem()).toString());
             slot.addProperty("count", stack.getCount());
@@ -51,6 +69,8 @@ public class InspectGuiTool implements Tool {
         }
         result.add("slots", slots);
         result.addProperty("total_slots", menu.slots.size());
+        result.addProperty("slot_addressing",
+                "Use 'slot' for endpoint=container and 'inventory_slot' for endpoint=player");
         reply.accept(result.toString());
     }
 }

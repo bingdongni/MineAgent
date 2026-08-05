@@ -13,7 +13,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.level.material.Fluids;
 
@@ -188,33 +187,18 @@ public final class Placement {
             }
 
             Direction face = fromTarget.getOpposite();
-            Vec3 faceCenter = Vec3.atCenterOf(support).add(
-                    face.getStepX() * 0.5,
-                    face.getStepY() * 0.5,
-                    face.getStepZ() * 0.5);
-
-            // A ray ending exactly on an AABB boundary may be reported as MISS
-            // because the endpoint is excluded by floating-point clipping.
-            // Trace a tiny distance into the support, while keeping the actual
-            // click location on its face as a real client packet would.
-            Vec3 rayEnd = faceCenter.subtract(
-                    face.getStepX() / 64.0,
-                    face.getStepY() / 64.0,
-                    face.getStepZ() / 64.0);
-            var sight = level.clip(new net.minecraft.world.level.ClipContext(
-                    player.getEyePosition(), rayEnd,
-                    net.minecraft.world.level.ClipContext.Block.OUTLINE,
-                    net.minecraft.world.level.ClipContext.Fluid.NONE, player));
-            if (sight.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK
-                    || !((net.minecraft.world.phys.BlockHitResult) sight)
-                            .getBlockPos().equals(support)) {
+            var visibleFace = BlockTargeting.findVisibleFace(player, support,
+                    face, BlockTargeting.interactionReach(player));
+            if (visibleFace.isEmpty()) {
                 lastFailure = "support face is occluded";
                 continue;
             }
 
-            player.lookAt(EntityAnchorArgument.Anchor.EYES, faceCenter);
-            var hit = new net.minecraft.world.phys.BlockHitResult(
-                    faceCenter, face, support, false);
+            // Use the actual visible outline point. A face-centre ray can be
+            // blocked while a lower corner remains clickable, especially in
+            // tunnels and against partial/modded block shapes.
+            var hit = visibleFace.get();
+            player.lookAt(EntityAnchorArgument.Anchor.EYES, hit.getLocation());
             boolean wasSneaking = player.isShiftKeyDown();
             InteractionResult result;
             player.setShiftKeyDown(true);
@@ -225,9 +209,14 @@ public final class Placement {
                 player.setShiftKeyDown(wasSneaking);
             }
 
+            // useItemOn may consume, damage or replace the held stack even if
+            // the requested postcondition is not reached (for example a
+            // modded partial action). Publish every attempted mutation so the
+            // visible hand and subsequent inventory reasoning stay truthful.
+            com.mineagent.engine.task.TaskContext.syncInventory(player);
+
             if (result.shouldSwing()) player.swing(hand);
             if (level.getBlockState(target).is(expectedBlock)) {
-                com.mineagent.engine.task.TaskContext.syncInventory(player);
                 return Attempt.success();
             }
 

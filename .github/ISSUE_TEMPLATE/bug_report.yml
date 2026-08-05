@@ -22,7 +22,7 @@ body:
     id: mineagent-version
     attributes:
       label: MineAgent version
-      placeholder: 0.1.1
+      placeholder: 0.1.4
     validations:
       required: true
 

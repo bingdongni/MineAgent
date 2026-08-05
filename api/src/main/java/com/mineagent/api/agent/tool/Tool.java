@@ -43,6 +43,16 @@ public interface Tool {
     Map<String, Object> parameterSchema();
 
     /**
+     * Whether this call reserves the companion body and completes later via a
+     * task event. AgentLoop uses this contract to prevent two physical tasks
+     * from being dispatched in the same model response, where the scheduler
+     * could only accept one and would cancel the other as "body busy".
+     */
+    default boolean dispatchesAsyncTask() {
+        return false;
+    }
+
+    /**
      * Execute this tool on the server thread.
      *
      * @param toolCallId the LLM-assigned ID for this tool call (for correlating

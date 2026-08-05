@@ -21,7 +21,10 @@ import com.mineagent.engine.theory.TheoryOfMind;
 import com.mineagent.engine.knowledge.MinecraftKnowledgeGraph;
 import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.engine.planning.PlanGraph;
+import com.mineagent.engine.task.TaskContext;
 import com.mineagent.engine.world.BeliefState;
+import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.WorldAssetObserver;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -79,6 +82,9 @@ public class AgentLoop {
      *  Messages older than this window get folded into a compact
      *  "[SUMMARY]" system message to save tokens. */
     private static final int RECENT_KEEP = 12;
+
+    /** Hard bound for the accumulated rolling summary. */
+    private static final int MAX_HISTORY_SUMMARY_CHARS = 2_400;
 
     /** Maximum consecutive tool-call rounds within a single turn. */
     private static final int MAX_TOOL_ROUNDS = 10;
@@ -151,6 +157,28 @@ public class AgentLoop {
     private final AtomicLong eventGeneration = new AtomicLong();
 
     /**
+     * Only populated while this loop thread is blocked inside a provider HTTP
+     * call. A newer owner command can interrupt that obsolete request instead
+     * of waiting up to the provider timeout before beginning the new turn.
+     */
+    private final AtomicReference<Thread> activeLLMCallThread = new AtomicReference<>();
+
+    /**
+     * Server-thread-published body state. The LLM executor must never query a
+     * live Minecraft level from its background thread, but it still needs
+     * authoritative progress to avoid interpreting RUNNING as "moving".
+     */
+    private record LiveBodyState(String taskId, String taskName, TaskState state,
+                                 TaskSnapshot snapshot, String message, long gameTick) {
+        static LiveBodyState idle() {
+            return new LiveBodyState(null, "idle", null, null, null, 0L);
+        }
+    }
+
+    private final AtomicReference<LiveBodyState> liveBodyState =
+            new AtomicReference<>(LiveBodyState.idle());
+
+    /**
      * Sparse Thinking (borrowed from Game-TARS).
      *
      * <p>Not every situation requires LLM reasoning. Routine actions
@@ -179,6 +207,12 @@ public class AgentLoop {
     private final ReflectionSystem reflection;
     private final ImportanceEvaluator importance;
     private final BeliefState beliefState;
+    /**
+     * Unified object permanence for carried items, known storage, facilities
+     * and dropped stacks. This is the common substrate behind reuse decisions;
+     * it replaces one-off "is there a crafting table?" memory patches.
+     */
+    private final WorldAssetIndex worldAssetIndex;
     private final ExperienceStore experienceStore;
     /** Spatial memory — records points of interest discovered while
      *  exploring (ores, structures, hazards, chests). Backs the
@@ -188,6 +222,11 @@ public class AgentLoop {
     /** 记忆持久化：游戏关闭时保存记忆，重启后恢复（解决"失忆"问题）。
      *  可为 null — 当 world data dir 尚未设置时（记忆不持久化，仅内存）。 */
     private final com.mineagent.engine.memory.MemoryPersistence persistence;
+    /** Published on the server thread; prompt construction never reads Level. */
+    private final AtomicReference<WorldAssetIndex.Position> liveAssetPosition =
+            new AtomicReference<>();
+    private final AtomicLong liveAssetGameTick = new AtomicLong();
+    private volatile long lastAssetSnapshotTick = Long.MIN_VALUE;
 
     public AgentLoop(AgentPlayer companion, String providerId, String apiKey,
                       String model, String baseUrl, double temperature, int maxTokens,
@@ -218,6 +257,7 @@ public class AgentLoop {
         this.reflection = new ReflectionSystem();
         this.importance = new ImportanceEvaluator();
         this.beliefState = new BeliefState();
+        this.worldAssetIndex = new WorldAssetIndex();
         this.experienceStore = new ExperienceStore();
         this.cognitiveMap = new com.mineagent.engine.memory.CognitiveMap();
         // The persistent loader appends validated dialogue after this system
@@ -242,13 +282,15 @@ public class AgentLoop {
                     .resolve(stableKey);
             p = new com.mineagent.engine.memory.MemoryPersistence(
                     memDir, cognitiveMap, placeMemory, importance, reflection,
-                    planner, beliefState, experienceStore, skillLib, history);
+                    planner, beliefState, worldAssetIndex, experienceStore,
+                    skillLib, history);
             p.loadAll();
         }
         this.persistence = p;
 
-        // Memory-loaded plans, beliefs and skills affect the dynamic tail.
-        history.set(0, ChatMessage.system(buildSystemPrompt()));
+        // The first message is deliberately immutable. Memory-loaded state is
+        // attached as a transient tail context per request so provider prompt
+        // caches can reuse the static instructions and conversation prefix.
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -280,6 +322,10 @@ public class AgentLoop {
             // Currently in a turn - add to inbox for batch processing
             synchronized (inboxLock) {
                 inbox.add(reason);
+            }
+            if ("owner_message".equals(reason)) {
+                Thread activeCall = activeLLMCallThread.get();
+                if (activeCall != null) activeCall.interrupt();
             }
             return;
         }
@@ -368,16 +414,30 @@ public class AgentLoop {
     public void onTaskAccepted(String taskId, String taskName,
                                IntentContract intent, TaskSnapshot snapshot,
                                long gameTick) {
+        liveBodyState.set(new LiveBodyState(taskId, taskName, TaskState.RUNNING,
+                snapshot, snapshot == null ? "Task accepted" : snapshot.summary(), gameTick));
         planner.bindTask(taskId, taskName, intent, gameTick);
         beliefState.observeFact("body", "current_task",
                 intent == null ? taskName : intent.goal(), 1.0,
                 "scheduler", gameTick);
         if (snapshot != null) planner.recordProgress(taskId, snapshot, gameTick);
+        publishWorldSnapshot(gameTick, true);
     }
 
     /** Publish live executor progress without waking the LLM every tick. */
-    public void onTaskProgress(String taskId, TaskSnapshot snapshot,
-                               String message, long gameTick) {
+    public void onTaskProgress(String taskId, TaskState state,
+                               TaskSnapshot snapshot, String message,
+                               long gameTick) {
+        LiveBodyState previous = liveBodyState.get();
+        String taskName = previous != null && Objects.equals(previous.taskId(), taskId)
+                ? previous.taskName() : "body_task";
+        // Paused survival preemption is materially different from an executor
+        // that is still RUNNING. Publishing every progress event as RUNNING
+        // made the model believe the old task still owned the body while a
+        // breath/combat chain was actually in control.
+        liveBodyState.set(new LiveBodyState(taskId, taskName,
+                state == null ? TaskState.RUNNING : state,
+                snapshot, message, gameTick));
         planner.recordProgress(taskId, snapshot, gameTick);
         if (snapshot != null && snapshot.hasTarget()) {
             beliefState.observeFact("body", "task_target",
@@ -385,6 +445,7 @@ public class AgentLoop {
                             + snapshot.targetY() + "," + snapshot.targetZ(),
                     1.0, "task:" + taskId, gameTick);
         }
+        publishWorldSnapshot(gameTick, false);
     }
 
     /**
@@ -396,6 +457,14 @@ public class AgentLoop {
                                IntentContract intent, TaskState state,
                                TaskSnapshot snapshot, String message,
                                long gameTick) {
+        // A terminal task no longer owns the body. Keep its outcome as compact
+        // evidence, but publish a null task id so the next decision sees an
+        // idle executor instead of treating SUCCESS/FAILED as body occupancy.
+        liveBodyState.set(new LiveBodyState(null, "idle", null, null,
+                "last_task=" + taskName + " state=" + state
+                        + (message == null || message.isBlank()
+                        ? "" : " message=" + truncateForLog(message, 180)),
+                gameTick));
         planner.recordOutcome(taskId, state, snapshot, message, gameTick);
         String goal = intent == null ? taskName : intent.goal();
         ExperienceStore.Experience experience = experienceStore.record(
@@ -406,6 +475,50 @@ public class AgentLoop {
                 experience.failureKind() + ": " + experience.evidence(), gameTick);
         beliefState.observeFact("body", "current_task", "idle", 1.0,
                 "scheduler", gameTick);
+        // Task completion often changes inventory through mining, pickup,
+        // crafting or placement. Capture the authoritative postcondition so
+        // the next plan cannot reason from a pre-task inventory snapshot.
+        publishWorldSnapshot(gameTick, true);
+    }
+
+    /**
+     * Publish live player assets from the server thread at a bounded cadence.
+     * The LLM thread consumes only immutable index records and never touches a
+     * Minecraft Level or Inventory directly.
+     */
+    public void onServerStateTick(long gameTick) {
+        publishWorldSnapshot(gameTick, false);
+    }
+
+    private void publishWorldSnapshot(long gameTick, boolean force) {
+        if (!force && lastAssetSnapshotTick != Long.MIN_VALUE
+                && gameTick - lastAssetSnapshotTick < 20L) return;
+        try {
+            var sp = TaskContext.serverPlayer(companion);
+            WorldAssetIndex.Position position = WorldAssetObserver.position(sp);
+            worldAssetIndex.observeInventory(position,
+                    WorldAssetObserver.inventory(sp), gameTick);
+            liveAssetPosition.set(position);
+            liveAssetGameTick.set(Math.max(0L, gameTick));
+            lastAssetSnapshotTick = gameTick;
+        } catch (Throwable failure) {
+            // Companion construction/teardown can race a final tick. Missing
+            // one snapshot is preferable to crashing the shared server loop.
+            System.err.println("[MineAgent] Asset snapshot failed for "
+                    + companion.companionName() + ": " + failure.getMessage());
+        }
+    }
+
+    /** Safe callback entry: argument evaluation cannot escape during teardown. */
+    private void publishWorldSnapshotNow(boolean force) {
+        long gameTick = liveAssetGameTick.get();
+        try {
+            gameTick = TaskContext.serverPlayer(companion).level().getGameTime();
+        } catch (Throwable ignored) {
+            // publishWorldSnapshot performs the guarded body lookup and emits
+            // one diagnostic if teardown has already detached the player.
+        }
+        publishWorldSnapshot(gameTick, force);
     }
 
     /**
@@ -508,6 +621,8 @@ public class AgentLoop {
         // entered vanilla code cannot be rolled back generically, but no stale
         // response is allowed to start new work after this point.
         eventGeneration.incrementAndGet();
+        Thread activeCall = activeLLMCallThread.get();
+        if (activeCall != null) activeCall.interrupt();
     }
 
     /** Suspend new turns while preserving events that arrive during the pause. */
@@ -549,6 +664,7 @@ public class AgentLoop {
     public PlanGraph planner() { return planner; }
     public PlanGraph planGraph() { return planner; }
     public BeliefState beliefState() { return beliefState; }
+    public WorldAssetIndex worldAssetIndex() { return worldAssetIndex; }
     public ExperienceStore experienceStore() { return experienceStore; }
     public ReflectionSystem reflection() { return reflection; }
     public PersonaProfile persona() { return persona; }
@@ -581,13 +697,18 @@ public class AgentLoop {
                         // draining here would either lose death events or start
                         // a tool-producing turn for a dead companion.
                         if (suspended) return;
-                        List<String> batch;
+                        boolean hasPendingEvents;
                         synchronized (inboxLock) {
-                            batch = new ArrayList<>(inbox);
-                            inbox.clear();
+                            hasPendingEvents = !inbox.isEmpty();
                         }
-                        if (!batch.isEmpty()) {
-                            startTurn("inbox_batch: " + String.join("; ", batch));
+                        if (hasPendingEvents) {
+                            // Do not drain here. executeTurn() is the sole
+                            // inbox consumer and converts the retained batch
+                            // into a user-role [EVENTS] message. The previous
+                            // code copied and cleared the queue before calling
+                            // startTurn(), so body observations arriving during
+                            // an LLM call were silently lost on the next turn.
+                            startTurn("inbox_batch");
                         }
                     }
                 }
@@ -633,10 +754,10 @@ public class AgentLoop {
         // 2. Tick emotion state (coarse-grained decay per turn)
         emotion.tick();
 
-        // 3. Refresh system prompt with dynamic cognitive context
-        //    (persona, emotion, memory, plan, reflection, ToM, etc.)
+        // 3. Reset per-turn remediation state. Dynamic cognition is appended
+        //    transiently at the end of the provider request; history[0] stays
+        //    byte-for-byte stable for prompt-cache reuse.
         if (roundNumber == 0) {
-            refreshSystemPrompt();
             // Reset remediation counter at the start of each turn
             remediationRoundCounter = 0;
         }
@@ -702,7 +823,7 @@ public class AgentLoop {
         consecutiveCacheHits = 0;
 
         // 3b. Call the LLM (with retry on transient errors)
-        VersionedResponse versioned = callLLMWithRetry(provider, toolDefs);
+        VersionedResponse versioned = callLLMWithRetry(provider, toolDefs, roundNumber);
         if (versioned == null) {
             // All retries exhausted - give up gracefully
             return;
@@ -818,7 +939,7 @@ public class AgentLoop {
                             + "你的回复没有调用任何工具，也没有显式标注 [NO_ACTION] 或 【无行动】。\n"
                             + "请立即做出选择：\n"
                             + "  A. 如果你刚才说要做某事（移动/挖掘/建造/攻击/采集/合成/放置等），"
-                            + "必须立即调用对应工具执行（goto/auto_mine/place_block/craft 等）。\n"
+                            + "必须立即调用对应工具执行（goto/auto_mine/build/craft 等）。\n"
                             + "  B. 如果确实不需要任何身体动作（只是聊天/汇报/确认），"
                             + "请在回复中添加 [NO_ACTION] 或 【无行动】 标记。\n"
                             + "记住：说话≠行动。身体动作必须通过工具调用执行，"
@@ -1160,12 +1281,38 @@ public class AgentLoop {
      */
     private record VersionedResponse(LLMResponse response, long generation) {}
 
+    /** Emit provider-side latency and cache metrics for evidence-based tuning. */
+    private void logUsage(LLMResponse response, long elapsedNanos, int attempt) {
+        long latencyMs = TimeUnit.NANOSECONDS.toMillis(Math.max(0L, elapsedNanos));
+        LLMResponse.Usage usage = response == null ? null : response.usage();
+        if (usage == null) {
+            System.out.println("[MineAgent] LLM usage unavailable latency_ms="
+                    + latencyMs + " attempt=" + (attempt + 1));
+            return;
+        }
+        System.out.println(String.format(Locale.ROOT,
+                "[MineAgent] LLM usage prompt=%d cached=%d cache_create=%d "
+                        + "cache_hit_rate=%.1f%% completion=%d total=%d latency_ms=%d attempt=%d",
+                usage.promptTokens(), usage.cachedPromptTokens(),
+                usage.cacheCreationPromptTokens(),
+                usage.promptCacheHitRate() * 100.0,
+                usage.completionTokens(), usage.totalTokens(), latencyMs, attempt + 1));
+    }
+
     private VersionedResponse callLLMWithRetry(LLMProvider provider,
-                                                List<Map<String, Object>> toolDefs) {
+                                                List<Map<String, Object>> toolDefs,
+                                                int roundNumber) {
         List<ChatMessage> messagesToSend;
         synchronized (history) {
-            messagesToSend = Collections.unmodifiableList(new ArrayList<>(history));
+            messagesToSend = new ArrayList<>(history);
         }
+        if (roundNumber == 0) {
+            // Keep volatile state at the final message. It is intentionally not
+            // persisted: on the next request the unchanged static prompt and
+            // prior dialogue remain a reusable provider-cache prefix.
+            messagesToSend.add(ChatMessage.user(buildLiveContext()));
+        }
+        messagesToSend = Collections.unmodifiableList(messagesToSend);
 
         // Use a monotonic counter rather than wall-clock time. Two owner events
         // can legitimately arrive in one millisecond, and a timestamp equality
@@ -1174,8 +1321,21 @@ public class AgentLoop {
 
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
             try {
-                LLMResponse response = provider.complete(baseUrl, apiKey, model,
-                        messagesToSend, toolDefs, temperature, maxTokens, reasoningEffort);
+                long requestStarted = System.nanoTime();
+                Thread requestThread = Thread.currentThread();
+                activeLLMCallThread.set(requestThread);
+                if (eventGeneration.get() != callGeneration) {
+                    activeLLMCallThread.compareAndSet(requestThread, null);
+                    return null;
+                }
+                LLMResponse response;
+                try {
+                    response = provider.complete(baseUrl, apiKey, model,
+                            messagesToSend, toolDefs, temperature, maxTokens, reasoningEffort);
+                } finally {
+                    activeLLMCallThread.compareAndSet(requestThread, null);
+                }
+                logUsage(response, System.nanoTime() - requestStarted, attempt);
 
                 // Stale Request check: if a significant event arrived during
                 // the LLM call, discard the response. The situation it was
@@ -1194,6 +1354,10 @@ public class AgentLoop {
 
                 // Check stale on retry too
                 if (eventGeneration.get() != callGeneration) {
+                    // HttpClient.send propagates interruption. Consume that
+                    // flag before this single-thread executor accepts the next,
+                    // current request; generation remains cancellation truth.
+                    Thread.interrupted();
                     System.out.println("[MineAgent] Stale request detected during retry — aborting");
                     return null;
                 }
@@ -1268,8 +1432,11 @@ public class AgentLoop {
             // Preserve the system prompt (index 0)
             ChatMessage systemPrompt = history.get(0);
 
-            // Keep only the most recent MAX_HISTORY messages (after system prompt)
-            int start = history.size() - MAX_HISTORY;
+            // Trim with hysteresis: trigger at MAX_HISTORY, then fall back to
+            // RECENT_KEEP. Trimming back to MAX_HISTORY caused the rolling
+            // summary near the front of the prompt to be rewritten after
+            // almost every tool round, defeating provider prefix caches.
+            int start = history.size() - RECENT_KEEP;
 
             // Adjust start forward if it lands on a "tool" message whose
             // corresponding assistant tool_calls message was cut.
@@ -1458,7 +1625,15 @@ public class AgentLoop {
                 }
             }
         }
-        return sb.toString();
+        String summary = sb.toString();
+        if (summary.length() <= MAX_HISTORY_SUMMARY_CHARS) return summary;
+        // Preserve both the original owner objective and the newest outcomes.
+        // Keeping only one end either forgets the task or forgets what just
+        // failed; a bounded head/tail ledger retains both without token drift.
+        int half = (MAX_HISTORY_SUMMARY_CHARS - 32) / 2;
+        return summary.substring(0, half)
+                + " ... [older details compacted] ... "
+                + summary.substring(summary.length() - half);
     }
 
     /**
@@ -1640,6 +1815,7 @@ public class AgentLoop {
         // in the original toolCalls order. This keeps analyzeToolResults (which
         // pairs toolCalls and toolResults by index) correct.
         Map<String, ChatMessage> resultsById = new LinkedHashMap<>();
+        boolean asyncBodyReserved = false;
 
         for (var tc : toolCalls) {
             Optional<Tool> toolOpt = ToolRegistry.get(tc.name());
@@ -1658,6 +1834,19 @@ public class AgentLoop {
                         errorJson("Invalid arguments: " + e.getMessage())));
                 continue;
             }
+
+            if (tool.dispatchesAsyncTask() && asyncBodyReserved) {
+                // One fake player has one body. Dispatching two asynchronous
+                // physical tasks from the same response only lets the auction
+                // accept one; the other becomes a misleading cancellation and
+                // triggers another expensive reasoning round.
+                resultsById.put(tc.id(), ChatMessage.toolResult(tc.id(),
+                        "{\"error\":\"Skipped because this response already dispatched "
+                                + "an asynchronous body task. Wait for task_finished before "
+                                + "starting another body action.\",\"code\":\"body_task_conflict\"}"));
+                continue;
+            }
+            if (tool.dispatchesAsyncTask()) asyncBodyReserved = true;
 
             // Each tool gets its own latch(1), result holder, and timeout (M3 fix)
             int timeout = Math.max(1, tool.defaultTimeoutSeconds());
@@ -1683,7 +1872,12 @@ public class AgentLoop {
                     return;
                 }
                 try {
+                    // Ground every tool decision in the latest carried state.
+                    // This server-thread read also catches inventory changes
+                    // made by vanilla between the one-second periodic samples.
+                    publishWorldSnapshotNow(true);
                     tool.onServerCall(tc.id(), args, companion, callbackResult -> {
+                        publishWorldSnapshotNow(true);
                         if (state.compareAndSet(
                                 ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
                             // Store before releasing the latch so the loop thread
@@ -1777,6 +1971,10 @@ public class AgentLoop {
         // look_around now emits ordered, bounded JSON. Keep the complete
         // object instead of repairing a cut in the entity or terrain arrays.
         if (lower.contains("look_around")) return 9000;
+        if (lower.contains("resolve_need")) return 7000;
+        if (lower.contains("inspect_gui") || lower.contains("inspect_block_storage")) {
+            return 5000;
+        }
         // 感知类：需要完整环境信息，给 1200 字符
         if (lower.contains("look") || lower.contains("scan")
                 || lower.contains("search") || lower.contains("find")) {
@@ -2071,23 +2269,7 @@ public class AgentLoop {
         return defs;
     }
 
-    /**
-     * Rebuild and replace the system prompt (history[0]) with fresh
-     * dynamic context from all cognitive subsystems. Called at the
-     * start of each turn so the LLM always sees current persona,
-     * emotion, memory, plan, and reflection state.
-     */
-    private void refreshSystemPrompt() {
-        String fresh = buildSystemPrompt();
-        synchronized (history) {
-            if (!history.isEmpty()) {
-                history.set(0, ChatMessage.system(fresh));
-            } else {
-                history.add(ChatMessage.system(fresh));
-            }
-        }
-    }
-
+    /** Build the immutable instruction prefix shared by every request. */
     private String buildSystemPrompt() {
         StringBuilder sb = new StringBuilder();
 
@@ -2122,6 +2304,14 @@ public class AgentLoop {
         sb.append("Food? A way back home? → Prepare ALL of this before entering.\n");
         sb.append("- ANY task → What's the prerequisite? → What's ITS prerequisite? ");
         sb.append("→ Recurse until you reach something you can do RIGHT NOW.\n\n");
+
+        sb.append("### Asset and Capability Reuse\n");
+        sb.append("Treat inventory, equipment, known container contents, dropped items, and placed facilities as one asset system. ");
+        sb.append("Before crafting, replacing equipment, or placing another workstation, resolve the actual need: an exact item, a quantity, or a capability. ");
+        sb.append("Prefer in order: reuse carried asset; verify and retrieve a known stored asset; reuse a reachable world facility; only then produce or acquire a replacement. ");
+        sb.append("A remembered container is evidence, not x-ray truth: approach and inspect it before transfer. ");
+        sb.append("Use registered IDs, recipe data, tags, capabilities, distance, risk and task delay; never assume that a cheaper newly crafted item is better than a known capable item. ");
+        sb.append("If the owner explicitly needs an additional copy or retrieval is unsafe, say why and produce the extra item with an explicit desired total.\n\n");
 
         sb.append("### Situational Judgment\n");
         sb.append("There is no fixed playbook. Read the situation and adapt:\n");
@@ -2165,12 +2355,13 @@ public class AgentLoop {
         sb.append("## Your Tools\n");
         sb.append("You perceive and act through tools. Key ones:\n");
         sb.append("- `get_self_status`: Check your health, hunger, inventory, equipment\n");
+        sb.append("- `resolve_need`: Query owned/stored/world assets and live recipes for an item or capability before producing a replacement\n");
         sb.append("- `look_around`: See terrain, blocks, entities, hazards around you\n");
         sb.append("- `scan_nearby_entities` / `scan_blocks`: Find specific things\n");
         sb.append("- `goto`: Move to a location (xz for horizontal, xzy for exact)\n");
         sb.append("- `auto_mine`: Dig blocks / `build`: Place blocks\n");
         sb.append("- `collect_items`: Pick up drops\n");
-        sb.append("- `equip_item`: Switch tools/armor in your hotbar\n");
+        sb.append("- `equip_item`: Reuse an existing tool, armor piece, hotbar item or offhand item\n");
         sb.append("- `craft`: Create items from recipes\n");
         sb.append("- `lookup_recipe`: Query crafting recipes by input/output. ");
         sb.append("USE THIS before crafting to know exact ingredients — don't guess.\n");
@@ -2180,6 +2371,13 @@ public class AgentLoop {
         sb.append("Reuse them instead of re-planning common tasks.\n");
         sb.append("Read tool results carefully. If a tool fails, think about WHY ");
         sb.append("and try a different approach.\n\n");
+
+        sb.append("## Executor Truth Rules\n");
+        sb.append("- RUNNING is only a scheduler state; it is never proof that your body is moving.\n");
+        sb.append("- Use executor evidence (player position, movement index, stagnant ticks, block changes) before claiming progress.\n");
+        sb.append("- If stagnant ticks increase or a path failure is present, report the obstruction honestly and change target or approach.\n");
+        sb.append("- Reuse assets reported by the world asset index or resolve_need. Distance alone is not absence; compare retrieval against production before replacing anything.\n");
+        sb.append("- Minimize LLM round trips: batch independent observations in one response, and let an async action task finish before polling it repeatedly.\n\n");
 
         // ── Critical: action requires tools ──
         sb.append("## CRITICAL: Action Requires Tools\n");
@@ -2225,7 +2423,10 @@ public class AgentLoop {
         sb.append("Your body has survival reflexes that fire automatically:\n");
         for (var reflex : com.mineagent.api.task.reflex.ReflexRegistry.all()) {
             sb.append("- ").append(reflex.id()).append(": ").append(reflex.description());
-            sb.append(" [").append(reflex.isEnabled(companion) ? "ON" : "OFF").append("]\n");
+            // Enabled state can change at runtime and therefore belongs in
+            // live context if it ever becomes decision-relevant. Keeping only
+            // stable registry metadata here preserves the cached prefix.
+            sb.append("\n");
         }
         sb.append("These don't cost tokens. When they fire, you'll see [BODY] events.\n");
         sb.append("Don't fight your instincts — work WITH them.\n\n");
@@ -2252,8 +2453,8 @@ public class AgentLoop {
         sb.append("## Using Containers (Chests, Furnaces, Crafting Tables)\n");
         sb.append("You interact with blocks exactly like a human player:\n");
         sb.append("1. `interact_at` with button=\"use\" on the block → opens its GUI\n");
-        sb.append("2. `inspect_gui` → see all slots (container slots first, then your inventory)\n");
-        sb.append("3. `transfer_items` with source/destination=\"container\" → move items in/out\n");
+        sb.append("2. `inspect_gui` → see each menu slot with endpoint=container/player and the correct address for that endpoint\n");
+        sb.append("3. `transfer_items` with the reported endpoint and slot address → move items in/out\n");
         sb.append("4. `close_gui` → close the container when done\n");
         sb.append("- For crafting: `craft` checks if a crafting table is nearby for 3x3 recipes\n");
         sb.append("- For smelting: open a furnace, put fuel in the fuel slot and item in the input slot\n");
@@ -2273,18 +2474,15 @@ public class AgentLoop {
         // ── Constraints ──
         sb.append("## Operating Constraints\n");
         sb.append("- Don't call more than 5 tools per response unless necessary.\n");
+        sb.append("- Call at most ONE asynchronous body-action tool per response; wait for its task_finished event before starting another.\n");
         sb.append("- Don't repeat a failed action — change your approach.\n");
         sb.append("- When uncertain, observe more before acting.\n");
         sb.append("- Your survival matters — don't be reckless with your life.\n\n");
 
         // ── The one core principle ──
-        // STATIC: keep this near the end of the static block so the
-        // dynamic block (## 当前状态 below) sits at the very tail of
-        // the system message. OpenAI/Anthropic prompt caching requires
-        // a stable prefix; any dynamic content in the middle would
-        // invalidate the cache on every turn. All variable fields
-        // (mode, emotion, ToM, place memory, plan, reflection) MUST
-        // live AFTER this point.
+        // Keep every value in this method deterministic. Volatile mode,
+        // emotion, memory, plan and executor fields belong exclusively in
+        // buildLiveContext(), which is appended at the request tail.
         sb.append("## The One Principle\n");
         sb.append("Think before you act. Prepare before you execute. ");
         sb.append("Adapt when things go wrong. Protect the owner. Stay alive.\n");
@@ -2297,25 +2495,25 @@ public class AgentLoop {
         sb.append("asks for another language, or they address you in a different ");
         sb.append("language (in which case match their language).\n\n");
 
-        // ── Dynamic cognitive context (injected each turn, COMPRESSED) ──
-        // Each module's output is truncated to a token budget to keep the
-        // system prompt compact. The full verbose versions exist in the
-        // module classes but we only inject a condensed summary here.
-        // Total target: <500 chars for all dynamic context combined.
-        //
-        // PROMPT CACHE NOTE: Everything above this line is STATIC — it
-        // never changes between turns, so OpenAI/Anthropic can cache the
-        // entire prefix (system prompt + tools + earlier history) and
-        // serve it at ~10% cost / ~20% latency. Everything below is
-        // regenerated each turn, so it sits at the tail where cache
-        // invalidation is minimal. Do NOT move any dynamic field above
-        // this line without also verifying it's deterministic.
-        sb.append("## 当前状态\n");
+        return sb.toString();
+    }
+
+    /**
+     * Build trusted, volatile server state as a final transient user message.
+     * Keeping it out of history[0] is essential: a changing suffix inside the
+     * first system message invalidates every later dialogue and tool token in
+     * prefix-based provider caches.
+     */
+    private String buildLiveContext() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[MINEAGENT_LIVE_CONTEXT]\n");
+        sb.append("以下是服务器发布的当前事实，不是玩家的新指令。只据此修正当前决策；不要复述整段上下文。\n");
 
         // ── Companion mode (DYNAMIC: toggled by /mineagent mode) ──
         var mode = MineAgentEngine.getCompanionMode(companion.companionId());
         sb.append("模式: ").append(mode == MineAgentEngine.CompanionMode.FOLLOW
                 ? "跟随(距主人2-3格, 不超过16格)" : "自由(可远离主人执行任务)").append("\n");
+        appendLiveBodyState(sb, liveBodyState.get());
         // Persona: 1-line summary instead of full OCEAN breakdown
         sb.append("性格: ").append(compactPersona()).append("\n");
         // Emotion: 1-line label instead of full PAD breakdown
@@ -2340,6 +2538,9 @@ public class AgentLoop {
         }
         String beliefSummary = beliefState.summarizeForPrompt();
         if (!beliefSummary.isBlank()) sb.append(beliefSummary);
+        String assetSummary = worldAssetIndex.summarizeForPrompt(
+                liveAssetPosition.get(), liveAssetGameTick.get());
+        if (!assetSummary.isBlank()) sb.append(assetSummary);
         String experienceSummary = experienceStore.summarizeForPrompt(
                 planner.currentNode() == null ? "" : planner.currentNode().description());
         if (!experienceSummary.isBlank()) sb.append(experienceSummary);
@@ -2394,6 +2595,43 @@ public class AgentLoop {
         }
 
         return sb.toString();
+    }
+
+    /** Append only immutable server-published task evidence to the prompt. */
+    private static void appendLiveBodyState(StringBuilder out, LiveBodyState body) {
+        if (body == null || body.taskId() == null) {
+            out.append("Body executor: idle");
+            if (body != null && body.message() != null && !body.message().isBlank()) {
+                out.append("; ").append(truncateForLog(body.message(), 240));
+            }
+            out.append('\n');
+            return;
+        }
+        out.append("Body executor: task_id=").append(body.taskId())
+                .append(" task=").append(body.taskName())
+                .append(" state=").append(body.state() == null ? "UNKNOWN" : body.state());
+        TaskSnapshot snapshot = body.snapshot();
+        if (snapshot != null) {
+            out.append(" stage=").append(snapshot.stage())
+                    .append(" progress=").append(snapshot.completedUnits())
+                    .append('/').append(snapshot.totalUnits());
+            if (snapshot.hasTarget()) {
+                out.append(" target=").append(snapshot.targetX()).append(',')
+                        .append(snapshot.targetY()).append(',').append(snapshot.targetZ());
+            }
+            if (snapshot.blockedReason() != null) {
+                out.append(" blocked=")
+                        .append(truncateForLog(snapshot.blockedReason(), 240));
+            }
+            if (snapshot.evidence() != null) {
+                out.append(" evidence=")
+                        .append(truncateForLog(snapshot.evidence(), 360));
+            }
+        }
+        if (body.message() != null && !body.message().isBlank()) {
+            out.append(" message=").append(truncateForLog(body.message(), 180));
+        }
+        out.append(" observed_tick=").append(body.gameTick()).append('\n');
     }
 
     /** Compact persona description: top trait + key tendency, ~80 chars. */

@@ -5,6 +5,8 @@ import com.mineagent.api.agent.tool.Schema;
 import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
+import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetObserver;
 
 import java.util.Map;
 import java.util.Locale;
@@ -37,6 +39,11 @@ public class GetSelfStatusTool implements Tool {
         var sp = ((CompanionEntity) player).serverPlayer();
         var pos = sp.blockPosition();
         var inv = sp.getInventory();
+        var loop = TaskContext.agentLoop(player);
+        if (loop != null) {
+            loop.worldAssetIndex().observeInventory(WorldAssetObserver.position(sp),
+                    WorldAssetObserver.inventory(sp), sp.level().getGameTime());
+        }
 
         StringBuilder sb = new StringBuilder();
         sb.append("=== STATUS ===\n");
@@ -68,7 +75,10 @@ public class GetSelfStatusTool implements Tool {
             var stack = armorSlots.get(i);
             if (!stack.isEmpty()) {
                 String itemName = stack.getHoverName().getString();
-                sb.append(slotNames[i]).append(": ").append(itemName);
+                String itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(stack.getItem()).toString();
+                sb.append(slotNames[i]).append(": ").append(itemName)
+                        .append(" [").append(itemId).append(']');
                 // Check enchantments
                 if (stack.isEnchanted()) {
                     sb.append(" [ENCHANTED]");
@@ -84,6 +94,8 @@ public class GetSelfStatusTool implements Tool {
         sb.append("Main Hand: ");
         if (!mainHand.isEmpty()) {
             sb.append(mainHand.getHoverName().getString());
+            sb.append(" [").append(net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(mainHand.getItem())).append(']');
             if (mainHand.isEnchanted()) sb.append(" [ENCHANTED]");
         } else {
             sb.append("(empty)");
@@ -94,6 +106,8 @@ public class GetSelfStatusTool implements Tool {
         sb.append("Off Hand: ");
         if (!offHand.isEmpty()) {
             sb.append(offHand.getHoverName().getString());
+            sb.append(" [").append(net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(offHand.getItem())).append(']');
         } else {
             sb.append("(empty)");
         }
@@ -109,9 +123,12 @@ public class GetSelfStatusTool implements Tool {
             var stack = inv.getItem(i);
             if (!stack.isEmpty()) {
                 String itemName = stack.getHoverName().getString();
+                String itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(stack.getItem()).toString();
                 String slotType = (i < 9) ? "Hotbar" : "Inv";
                 int slotNum = (i < 9) ? i : i - 9;
-                sb.append(String.format(Locale.ROOT, "[%s %d] %s x%d\n", slotType, slotNum, itemName, stack.getCount()));
+                sb.append(String.format(Locale.ROOT, "[%s %d] %s [%s] x%d\n",
+                        slotType, slotNum, itemName, itemId, stack.getCount()));
                 if (i < 9) hotbarCount++; else invCount++;
             }
         }

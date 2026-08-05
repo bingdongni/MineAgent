@@ -7,6 +7,7 @@ import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.entity.CompanionEntity;
 import com.mineagent.engine.task.TaskContext;
+import com.mineagent.engine.world.WorldAssetObserver;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
@@ -109,6 +110,11 @@ public class TransferItemsTool implements Tool {
             reply.accept(ToolArgs.errorJson("Destination slot does not accept this item"));
             return;
         }
+        // Keep the identity before safeTake/shrink mutates the source stack to
+        // empty. Reading sourceStack.getItem() after the transfer previously
+        // produced minecraft:air for a full-stack move.
+        String movedItemId = BuiltInRegistries.ITEM
+                .getKey(sourceStack.getItem()).toString();
 
         int requested = requestedCount == null
                 ? sourceStack.getCount() : Math.min(requestedCount, sourceStack.getCount());
@@ -169,11 +175,20 @@ public class TransferItemsTool implements Tool {
 
         TaskContext.syncInventory(sp);
         if (openMenu != null) openMenu.broadcastChanges();
+        var loop = TaskContext.agentLoop(player);
+        if (loop != null && openMenu != null && openMenu != sp.inventoryMenu) {
+            // Update the exact post-transfer menu contents. This prevents the
+            // persistent planner from believing that retrieved equipment is
+            // still in the container on the next decision.
+            WorldAssetObserver.observeOpenMenu(loop.worldAssetIndex(), sp, openMenu);
+        }
 
         JsonObject result = new JsonObject();
         result.addProperty("success", true);
         result.addProperty("action", action);
-        result.addProperty("item", BuiltInRegistries.ITEM.getKey(sourceStack.getItem()).toString());
+        result.addProperty("item", movedItemId);
+        result.addProperty("source", sourceType);
+        result.addProperty("destination", destinationType);
         result.addProperty("from_slot", fromIndex);
         result.addProperty("to_slot", toIndex);
         result.addProperty("count", moved);

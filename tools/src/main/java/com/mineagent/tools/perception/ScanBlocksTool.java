@@ -26,7 +26,8 @@ public class ScanBlocksTool implements Tool {
 
     @Override public String name() { return "scan_blocks"; }
     @Override public String description() {
-        return "Scan loaded nearby blocks by exact ID or block tag and return nearest positions.";
+        return "Scan loaded nearby blocks by exact ID or block tag, return nearest positions, "
+                + "and remember the observed registered block IDs for later recall.";
     }
     @Override
     public Map<String, Object> parameterSchema() {
@@ -70,9 +71,10 @@ public class ScanBlocksTool implements Tool {
             return;
         }
 
+        var loop = com.mineagent.engine.task.TaskContext.agentLoop(player);
         CompanionTickDispatcher.submitWork(player,
                 new ScanWork(sp.serverLevel(), sp.blockPosition(), radius,
-                        id, tag, reply));
+                        id, tag, loop, reply));
     }
 
     private static final class ScanWork implements CompanionTickDispatcher.TickWork {
@@ -81,6 +83,7 @@ public class ScanBlocksTool implements Tool {
         private final int radius;
         private final ResourceLocation exactId;
         private final TagKey<Block> tag;
+        private final com.mineagent.engine.loop.AgentLoop loop;
         private final Consumer<String> reply;
         private final JsonArray results = new JsonArray();
         private final AtomicBoolean replied = new AtomicBoolean();
@@ -92,12 +95,14 @@ public class ScanBlocksTool implements Tool {
 
         private ScanWork(net.minecraft.server.level.ServerLevel level, BlockPos center,
                          int radius, ResourceLocation exactId, TagKey<Block> tag,
+                         com.mineagent.engine.loop.AgentLoop loop,
                          Consumer<String> reply) {
             this.level = level;
             this.center = center.immutable();
             this.radius = radius;
             this.exactId = exactId;
             this.tag = tag;
+            this.loop = loop;
             this.reply = reply;
         }
 
@@ -114,11 +119,15 @@ public class ScanBlocksTool implements Tool {
                         boolean matches = tag != null ? state.is(tag)
                                 : BuiltInRegistries.BLOCK.getKey(state.getBlock()).equals(exactId);
                         if (matches) {
+                            ResourceLocation actualId = BuiltInRegistries.BLOCK
+                                    .getKey(state.getBlock());
                             JsonObject match = new JsonObject();
+                            match.addProperty("block", actualId.toString());
                             match.addProperty("x", pos.getX());
                             match.addProperty("y", pos.getY());
                             match.addProperty("z", pos.getZ());
                             results.add(match);
+                            rememberStructuredObservation(pos, actualId);
                             if (results.size() >= MAX_RESULTS) complete = true;
                         }
                     }
@@ -130,8 +139,26 @@ public class ScanBlocksTool implements Tool {
             response.add("found", results);
             response.addProperty("count", results.size());
             response.addProperty("truncated", results.size() >= MAX_RESULTS);
+            response.addProperty("memory_recorded", loop != null && !results.isEmpty());
             respondOnce(response.toString());
             return true;
+        }
+
+        /**
+         * Persist facts from the structured scan itself. The previous memory
+         * path parsed natural-language body logs with a fixed ore keyword
+         * list, so modded blocks and all but the first coordinate were lost.
+         */
+        private void rememberStructuredObservation(BlockPos pos, ResourceLocation blockId) {
+            if (loop == null || pos == null || blockId == null) return;
+            String id = blockId.toString();
+            String dimension = level.dimension().location().toString();
+            long now = System.currentTimeMillis();
+            loop.cognitiveMap().recordPoi(pos, "block:" + id, id,
+                    dimension, now);
+            loop.placeMemory().remember("block", id,
+                    pos.getX(), pos.getY(), pos.getZ(), dimension, now,
+                    "Observed by scan_blocks");
         }
 
         private void advance() {

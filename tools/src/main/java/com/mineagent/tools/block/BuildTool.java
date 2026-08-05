@@ -23,6 +23,8 @@ public class BuildTool implements Tool {
     @Override
     public String name() { return "build"; }
 
+    @Override public boolean dispatchesAsyncTask() { return true; }
+
     @Override
     public String description() {
         return """
