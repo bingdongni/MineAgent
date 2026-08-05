@@ -4,6 +4,7 @@ import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.api.entity.InputDriver;
 import com.mineagent.api.task.TaskChain;
 import com.mineagent.engine.entity.CompanionEntity;
+import com.mineagent.engine.MineAgentEngine;
 import com.mineagent.engine.act.Interaction;
 import com.mineagent.engine.task.TaskContext;
 
@@ -12,6 +13,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.SwordItem;
 import net.minecraft.world.item.TieredItem;
@@ -63,9 +65,10 @@ public final class MobDefenseChain implements TaskChain {
     public float getPriority(AgentPlayer companion) {
         try {
             ServerPlayer sp = ((CompanionEntity) companion).serverPlayer();
+            ServerPlayer owner = ((CompanionEntity) companion).serverPlayerOwner();
 
             // Check for nearby hostile mobs
-            List<LivingEntity> threats = findThreats(sp,
+            List<LivingEntity> threats = findThreats(sp, owner, companion.ownerUuid(),
                     reflexEnabled("avoid_creeper", companion, true));
             if (threats.isEmpty()) {
                 return Float.NEGATIVE_INFINITY;
@@ -94,9 +97,10 @@ public final class MobDefenseChain implements TaskChain {
         try {
             InputDriver input = inputDriver(companion);
             ServerPlayer sp = ((CompanionEntity) companion).serverPlayer();
+            ServerPlayer owner = ((CompanionEntity) companion).serverPlayerOwner();
 
             // Re-evaluate threats
-            List<LivingEntity> threats = findThreats(sp,
+            List<LivingEntity> threats = findThreats(sp, owner, companion.ownerUuid(),
                     reflexEnabled("avoid_creeper", companion, true));
 
             // Check if we need to switch mode (e.g., creeper appeared while fighting)
@@ -119,7 +123,9 @@ public final class MobDefenseChain implements TaskChain {
             switch (mode) {
                 case IDLE -> {
                     if (!threats.isEmpty()) {
-                        boolean canFight = canFight(companion, sp);
+                        boolean canFight = canFight(companion, sp)
+                                || (targetsOwner(targetCandidate(threats), owner)
+                                && companion.health() > config.healthFlee());
                         if (canFight) {
                             mode = Mode.FIGHTING;
                             target = threats.get(0);
@@ -196,7 +202,10 @@ public final class MobDefenseChain implements TaskChain {
             input.setSprinting(false);
 
             // Attack every 12 ticks (0.6 seconds — Minecraft attack cooldown)
-            if (sp.getAttackStrengthScale(0.5f) >= 0.9f && equipWeapon(sp)) {
+            if (sp.getAttackStrengthScale(0.5f) >= 0.9f) {
+                // Equipping is opportunistic. An unarmed companion must still
+                // be able to body-block and punch a mob attacking its owner.
+                equipWeapon(sp);
                 // Attack the tracked target directly after explicit reach and
                 // line-of-sight checks. View-vector leftClick could hit a
                 // different mob standing between two nearby threats.
@@ -228,7 +237,10 @@ public final class MobDefenseChain implements TaskChain {
         Vec3 away = sp.position().subtract(fleeFrom.position()).normalize();
         input.setForward(1.0f);
         input.setSprinting(true);
-        input.setJumping(true);
+        // Unconditional jumping loses speed, collides with ceilings and can
+        // repeatedly feed the same obstacle. Jump only to clear an observed
+        // horizontal collision while grounded.
+        input.setJumping(sp.horizontalCollision && sp.onGround());
 
         // Face the flee direction
         float yaw = (float) Math.toDegrees(Math.atan2(-away.x, away.z));
@@ -260,19 +272,56 @@ public final class MobDefenseChain implements TaskChain {
 
     /** Find hostile mobs within scan radius, sorted by distance (nearest first). */
     private static List<LivingEntity> findThreats(ServerPlayer player,
+                                                   ServerPlayer owner,
+                                                   java.util.UUID ownerUuid,
                                                    boolean includeNearbyCreepers) {
         AABB box = player.getBoundingBox().inflate(SCAN_RADIUS);
         List<LivingEntity> threats = new ArrayList<>();
         for (Entity entity : player.level().getEntities(player, box)) {
             if (entity instanceof Monster monster && monster.isAlive()
                     && (monster.getTarget() == player
+                        || targetsOwner(monster, owner)
+                        || targetsOwnedCompanion(monster, ownerUuid)
                         || (includeNearbyCreepers && monster instanceof Creeper
                             && monster.distanceTo(player) < CREEPER_FLEE_DISTANCE))) {
                 threats.add(monster);
             }
         }
-        threats.sort(Comparator.comparingDouble(e -> e.distanceTo(player)));
+        // Threat ownership matters more than nearest distance: a zombie six
+        // blocks away hitting the owner outranks an idle creeper at the scan
+        // edge, while a close armed creeper remains the top emergency.
+        threats.sort(Comparator.comparingDouble((LivingEntity threat) ->
+                threatScore(threat, player, owner, ownerUuid)).reversed());
         return threats;
+    }
+
+    private static LivingEntity targetCandidate(List<LivingEntity> threats) {
+        return threats == null || threats.isEmpty() ? null : threats.get(0);
+    }
+
+    private static boolean targetsOwner(LivingEntity threat, ServerPlayer owner) {
+        return threat instanceof Monster monster && owner != null
+                && monster.getTarget() == owner;
+    }
+
+    private static boolean targetsOwnedCompanion(Monster monster,
+                                                  java.util.UUID ownerUuid) {
+        return monster.getTarget() instanceof Player target
+                && MineAgentEngine.isCompanionOwnedBy(target.getUUID(), ownerUuid);
+    }
+
+    private static double threatScore(LivingEntity threat, ServerPlayer self,
+                                      ServerPlayer owner, java.util.UUID ownerUuid) {
+        double score = Math.max(0.0, SCAN_RADIUS - threat.distanceTo(self));
+        if (threat instanceof Monster monster) {
+            if (monster.getTarget() == self) score += 80.0;
+            if (targetsOwner(threat, owner)) score += 100.0;
+            if (targetsOwnedCompanion(monster, ownerUuid)) score += 90.0;
+        }
+        if (threat instanceof Creeper && threat.distanceTo(self) < CREEPER_FLEE_DISTANCE) {
+            score += 120.0;
+        }
+        return score;
     }
 
     private static boolean isCreeper(LivingEntity entity) {

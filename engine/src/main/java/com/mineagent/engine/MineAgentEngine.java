@@ -873,6 +873,10 @@ public final class MineAgentEngine {
                     TaskStatusTool.updateTaskInfo(pending.player().companionId(),
                             taskId, pending.record().getClass().getSimpleName(),
                             TaskState.FAILED, message, null, 0L);
+                    state.loop.onTaskFinished(taskId,
+                            pending.record().getClass().getSimpleName(), null,
+                            TaskState.FAILED, null, message,
+                            state.companion.serverPlayer().level().getGameTime());
                     state.loop.onBodyLog("[TASK_FINISHED] task_id=" + taskId
                             + " state=FAILED message=" + message);
                 }
@@ -1353,7 +1357,11 @@ public final class MineAgentEngine {
                 // Use the actual speaker's name. The old code inserted each
                 // recipient's own name, making every AI believe it said the
                 // message to itself and corrupting multi-agent coordination.
-                s.loop.onOwnerMessage("[同伴 " + speakerName + " 的发言]: " + text);
+                // A teammate utterance is not an owner command: routing it
+                // through onOwnerMessage corrupted TheoryOfMind, cache keys and
+                // interruption priority. Explicit team events have their own
+                // channel and routine state is shared through TeamBlackboard.
+                s.loop.onTeamEvent("from=" + speakerName + " message=" + text);
             }
         }
     }

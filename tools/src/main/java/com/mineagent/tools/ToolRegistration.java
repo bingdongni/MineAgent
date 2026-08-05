@@ -15,6 +15,7 @@ import com.mineagent.tools.inventory.EatItemTool;
 import com.mineagent.tools.inventory.EquipItemTool;
 import com.mineagent.tools.inventory.TransferItemsTool;
 import com.mineagent.tools.management.QueryExtraToolsTool;
+import com.mineagent.tools.management.CoordinateTeamTool;
 import com.mineagent.tools.management.TaskStatusTool;
 import com.mineagent.tools.management.TaskStopTool;
 import com.mineagent.tools.management.TodowriteTool;
@@ -90,6 +91,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new TaskStatusTool());
         ToolRegistry.register(new TaskStopTool());
         ToolRegistry.register(new QueryExtraToolsTool());
+        ToolRegistry.register(new CoordinateTeamTool());
 
         // Skills
         ToolRegistry.register(new LoadSkillTool());

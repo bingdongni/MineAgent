@@ -22,9 +22,12 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 ## Features
 
 - LLM-driven conversation, tool calls, and persistent task planning
+- Multi-rate cognition: 20 Hz body/survival control, 5 Hz tactical frames, and LLM calls only for open-ended replanning
+- Receding-horizon plans with hard constraints, executor evidence, explicit dependencies, and cycle validation
 - Fake-player movement, pathfinding, obstacle clearing, bridging, mining, placement, and combat
 - Survival chains for food, air, MLG water, defense, item pickup, following, and unsticking
-- Cognitive maps, place/event memory, learned importance, and reflection
+- Cognitive maps, place/event memory, learned importance, relevant experience retrieval, and parameterized skill traces
+- A live multi-companion team blackboard for roles, duplicate-work detection, and targeted support without waking every AI on ordinary chat
 - A unified world-asset index for inventory, equipment, inspected storage, drops, and known facilities, supporting reuse/retrieve/produce decisions by item or capability
 - Live registry-backed recipe discovery for vanilla and modded items instead of a fixed vanilla item list
 - Multi-companion management, skins, status HUD, and path/vision debugging
@@ -103,8 +106,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.1.4.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.1.4.jar`
+- `fabric/build/libs/mineagent-fabric-0.2.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.2.0.jar`
 
 ## Modules
 

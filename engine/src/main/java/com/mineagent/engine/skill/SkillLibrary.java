@@ -1,5 +1,7 @@
 package com.mineagent.engine.skill;
 
+import com.mineagent.engine.memory.TextSimilarity;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -7,8 +9,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 技能库 — Voyager 式的可复用动作序列。
  *
  * <p>灵感来自 Voyager (NVIDIA, TMLR 2024) 的技能库设计。
- * 核心思想：成功的动作序列封装成可复用技能，后续遇到相似任务
- * 直接检索执行，零 LLM 调用。
+ * 核心思想：成功的参数化动作序列封装成可复用技能，后续遇到相似任务
+ * 先检索可靠先例，再由规划器根据当前世界证据调整参数。
  *
  * <p>技能库越大，LLM 调用越少——这是终身学习的复利效应。
  *
@@ -36,9 +38,6 @@ public class SkillLibrary {
     ) {}
 
     private final Map<String, Skill> skills = new ConcurrentHashMap<>();
-    /** 简单关键词索引：keyword → 技能名列表。 */
-    private final Map<String, Set<String>> keywordIndex = new ConcurrentHashMap<>();
-
     /**
      * 注册一个新技能。如果同名技能已存在且成功率更高，则更新。
      */
@@ -50,8 +49,12 @@ public class SkillLibrary {
             int newInvocations = existing.invocations() + 1;
             double newRate = (existing.successRate() * existing.invocations() + (success ? 1 : 0))
                     / newInvocations;
+            // A failed adaptation is evidence about the skill's reliability,
+            // but it must not overwrite the last verified parameter trace.
             Skill updated = new Skill(
-                    name, description, triggerCondition, actionSequence,
+                    name, success ? description : existing.description(),
+                    success ? triggerCondition : existing.triggerCondition(),
+                    success ? actionSequence : existing.actionSequence(),
                     newRate, newInvocations, existing.createdTick());
             skills.put(name, updated);
         } else {
@@ -61,8 +64,6 @@ public class SkillLibrary {
             skills.put(name, skill);
         }
 
-        // 更新关键词索引
-        indexKeywords(name, description + " " + triggerCondition);
     }
 
     /**
@@ -79,28 +80,18 @@ public class SkillLibrary {
             return Collections.emptyList();
         }
 
-        String lowerDesc = taskDescription.toLowerCase();
-        Map<String, Integer> scores = new HashMap<>();
-
-        // 关键词匹配评分
-        for (var entry : keywordIndex.entrySet()) {
-            String keyword = entry.getKey();
-            if (lowerDesc.contains(keyword)) {
-                for (String skillName : entry.getValue()) {
-                    scores.merge(skillName, keyword.length(), Integer::sum);
-                }
-            }
-        }
-
-        if (scores.isEmpty()) return Collections.emptyList();
-
-        // 按匹配分数排序，取 top-3
-        return scores.entrySet().stream()
-                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+        // ASCII words alone cannot retrieve Chinese variants such as
+        // "收集木头" vs "砍树取木材". TextSimilarity adds Han bigram/trigram
+        // features while remaining deterministic and dependency-free.
+        return skills.values().stream()
+                .map(skill -> Map.entry(skill, TextSimilarity.score(taskDescription,
+                        skill.name() + " " + skill.description() + " "
+                                + skill.triggerCondition())))
+                .filter(entry -> entry.getValue() > 0.0)
+                .filter(entry -> entry.getKey().successRate() > 0.7)
+                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
                 .limit(3)
-                .map(e -> skills.get(e.getKey()))
-                .filter(Objects::nonNull)
-                .filter(s -> s.successRate() > 0.7) // 只推荐高成功率技能
+                .map(Map.Entry::getKey)
                 .toList();
     }
 
@@ -171,7 +162,6 @@ public class SkillLibrary {
     /** Replace the library with validated persisted entries and rebuild its index. */
     public void importAll(Collection<Skill> restored) {
         skills.clear();
-        keywordIndex.clear();
         if (restored == null) return;
         for (Skill skill : restored) {
             if (skill == null || skill.name() == null || skill.name().isBlank()
@@ -185,8 +175,6 @@ public class SkillLibrary {
                     Math.max(0.0, Math.min(1.0, skill.successRate())),
                     Math.max(1, skill.invocations()), Math.max(0L, skill.createdTick()));
             skills.put(normalized.name(), normalized);
-            indexKeywords(normalized.name(), normalized.description() + " "
-                    + normalized.triggerCondition());
         }
     }
 
@@ -224,15 +212,4 @@ public class SkillLibrary {
         return skills.values();
     }
 
-    // ── 内部方法 ──
-
-    private void indexKeywords(String skillName, String text) {
-        // 简单分词：按空格和标点分割，取长度 >1 的词
-        String[] words = text.toLowerCase().split("[\\s,，。.;；:：!！?？()（）]+");
-        for (String word : words) {
-            if (word.length() > 1) {
-                keywordIndex.computeIfAbsent(word, k -> ConcurrentHashMap.newKeySet()).add(skillName);
-            }
-        }
-    }
 }

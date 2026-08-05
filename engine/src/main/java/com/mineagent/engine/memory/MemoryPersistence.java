@@ -57,7 +57,7 @@ public class MemoryPersistence {
     private static final String EXPERIENCE_FILE = "experiences.json";
     private static final String SKILL_FILE = "learned_skills.json";
     private static final String CONVERSATION_FILE = "conversation.json";
-    private static final int FORMAT_VERSION = 5;
+    private static final int FORMAT_VERSION = 6;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 

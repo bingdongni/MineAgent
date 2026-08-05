@@ -5,6 +5,8 @@ import com.mineagent.api.agent.tool.Schema;
 import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolRegistry;
 import com.mineagent.api.entity.AgentPlayer;
+import com.mineagent.engine.MineAgentEngine;
+import com.mineagent.engine.loop.AgentLoop;
 
 import java.util.Map;
 import java.util.Set;
@@ -18,21 +20,6 @@ import java.util.function.Consumer;
  * <p>This is a <b>sync</b> tool - replies immediately.
  */
 public class QueryExtraToolsTool implements Tool {
-
-    /** Set of tool names that are included in the default prompt. */
-    private static final Set<String> DEFAULT_TOOLS = Set.of(
-            "goto", "look_around", "scan_blocks", "get_self_status", "resolve_need",
-            "auto_mine", "build", "inspect_block", "inspect_block_storage",
-            "melee_attack", "ranged_attack",
-            "equip_item", "eat_item", "drop_items", "collect_items", "transfer_items",
-            "craft", "lookup_recipe",
-            "interact_at", "interact_entity",
-            "inspect_gui", "close_gui",
-            "locate_structure", "locate_biome",
-            "get_owner_status", "get_world_info",
-            "todowrite", "task_status", "task_stop",
-            "scan_nearby_entities"
-    );
 
     @Override
     public String name() { return "query_extra_tools"; }
@@ -59,8 +46,9 @@ public class QueryExtraToolsTool implements Tool {
         var extraTools = new com.google.gson.JsonArray();
 
         int count = 0;
+        java.util.List<String> exposedNames = new java.util.ArrayList<>();
         for (var tool : allTools) {
-            if (DEFAULT_TOOLS.contains(tool.name())) continue;
+            if (AgentLoop.isCoreTool(tool.name())) continue;
             // Also skip this tool itself and management tools
             if (tool.name().equals("query_extra_tools")) continue;
 
@@ -73,8 +61,14 @@ public class QueryExtraToolsTool implements Tool {
             toolJson.add("parameters", new com.google.gson.Gson()
                     .toJsonTree(tool.parameterSchema()));
             extraTools.add(toolJson);
+            exposedNames.add(tool.name());
             count++;
         }
+
+        // Discovery must change the next tool round, not merely describe
+        // schemas that remain absent from the provider request.
+        MineAgentEngine.getCompanion(player.companionId())
+                .ifPresent(state -> state.loop.exposeExtraTools(exposedNames));
 
         // allTools.size() includes every default tool and overstated this count.
         result.add("extra_tools", extraTools);

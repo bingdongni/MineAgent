@@ -17,6 +17,9 @@ import com.mineagent.engine.memory.ImportanceEvaluator;
 import com.mineagent.engine.memory.ExperienceStore;
 import com.mineagent.engine.skill.SkillLibrary;
 import com.mineagent.engine.cache.DecisionCache;
+import com.mineagent.engine.cognition.RealtimeCognition;
+import com.mineagent.engine.cognition.SituationSnapshot;
+import com.mineagent.engine.cognition.TeamBlackboard;
 import com.mineagent.engine.theory.TheoryOfMind;
 import com.mineagent.engine.knowledge.MinecraftKnowledgeGraph;
 import com.mineagent.engine.planning.IntentContract;
@@ -118,6 +121,25 @@ public class AgentLoop {
      *  超过后真正结束回合，避免无限递归。 */
     private static final int MAX_REMEDIATION_ROUNDS = 1;
 
+    /**
+     * Stable high-frequency tool surface. Specialized GUI, storage, ranged,
+     * location and memory tools are exposed for the remainder of a turn by
+     * query_extra_tools, keeping the large schema prefix cacheable.
+     */
+    private static final Set<String> CORE_TOOL_NAMES = Set.of(
+            "goto", "look_around", "scan_blocks", "get_self_status",
+            "get_owner_status", "get_world_info", "resolve_need",
+            "auto_mine", "build", "craft", "lookup_recipe", "interact_at",
+            "collect_items", "eat_item", "equip_item", "transfer_items",
+            "melee_attack", "todowrite", "task_status", "task_stop",
+            "query_extra_tools", "list_learned_skills", "load_skill",
+            "coordinate_team");
+    private static final Set<String> SKILL_ACTION_TOOLS = Set.of(
+            "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
+            "equip_item", "eat_item", "drop_items", "collect_items",
+            "transfer_items", "craft", "interact_at", "interact_entity",
+            "close_gui");
+
     /** 距上次玩家消息的时间（毫秒）。
      *  如果玩家刚刚说话（<30秒），不使用缓存 — 对话场景需要
      *  LLM 真正理解并回应，缓存复用会导致答非所问。 */
@@ -155,6 +177,11 @@ public class AgentLoop {
      * old response to complete).
      */
     private final AtomicLong eventGeneration = new AtomicLong();
+    private final Set<String> exposedExtraTools = ConcurrentHashMap.newKeySet();
+    private record PendingSkillAction(String description,
+                                      ChatMessage.ToolCallRef call) {}
+    private final ConcurrentMap<String, PendingSkillAction> pendingTaskActions =
+            new ConcurrentHashMap<>();
 
     /**
      * Only populated while this loop thread is blocked inside a provider HTTP
@@ -214,6 +241,12 @@ public class AgentLoop {
      */
     private final WorldAssetIndex worldAssetIndex;
     private final ExperienceStore experienceStore;
+    /**
+     * Server-thread tactical cognition. It continuously publishes immutable
+     * evidence and handles reactions that are too urgent for an HTTP round
+     * trip; the LLM is woken only when executor evidence requires replanning.
+     */
+    private final RealtimeCognition realtimeCognition;
     /** Spatial memory — records points of interest discovered while
      *  exploring (ores, structures, hazards, chests). Backs the
      *  "记忆点" section of the system prompt so the LLM can recall
@@ -259,6 +292,7 @@ public class AgentLoop {
         this.beliefState = new BeliefState();
         this.worldAssetIndex = new WorldAssetIndex();
         this.experienceStore = new ExperienceStore();
+        this.realtimeCognition = new RealtimeCognition(companion);
         this.cognitiveMap = new com.mineagent.engine.memory.CognitiveMap();
         // The persistent loader appends validated dialogue after this system
         // entry. Keeping index zero reserved preserves provider message order.
@@ -311,7 +345,7 @@ public class AgentLoop {
         if (suspended) {
             // Preserve meaningful events for the first post-respawn turn, but
             // never let a dead/paused companion start LLM or tool work.
-            if (!"body_log".equals(reason)) {
+            if (!reasonAlreadyRecorded(reason)) {
                 synchronized (inboxLock) {
                     inbox.add(reason);
                 }
@@ -320,10 +354,12 @@ public class AgentLoop {
         }
         if (inProgress) {
             // Currently in a turn - add to inbox for batch processing
-            synchronized (inboxLock) {
-                inbox.add(reason);
+            if (!reasonAlreadyRecorded(reason)) {
+                synchronized (inboxLock) {
+                    inbox.add(reason);
+                }
             }
-            if ("owner_message".equals(reason)) {
+            if (shouldInterruptActiveCall(reason)) {
                 Thread activeCall = activeLLMCallThread.get();
                 if (activeCall != null) activeCall.interrupt();
             }
@@ -332,12 +368,25 @@ public class AgentLoop {
         // Spawn/resume wakes do not already have an owner/body message. Queue
         // the reason itself so providers such as Anthropic receive a real user
         // event instead of an invalid request containing only system messages.
-        if (!"owner_message".equals(reason) && !"body_log".equals(reason)) {
+        if (!reasonAlreadyRecorded(reason)) {
             synchronized (inboxLock) {
                 inbox.add(reason);
             }
         }
         startTurn(reason);
+    }
+
+    private static boolean reasonAlreadyRecorded(String reason) {
+        return "owner_message".equals(reason) || "body_log".equals(reason)
+                || "cognition_decision".equals(reason) || "team_event".equals(reason);
+    }
+
+    private static boolean shouldInterruptActiveCall(String reason) {
+        // These events invalidate the action assumptions of an in-flight
+        // request. Interrupting the provider call is materially faster than
+        // waiting only to discard its stale response afterward.
+        return "owner_message".equals(reason) || "body_log".equals(reason)
+                || "cognition_decision".equals(reason) || "team_event".equals(reason);
     }
 
     /**
@@ -348,7 +397,10 @@ public class AgentLoop {
         lastOwnerCommand = message.length() > 120 ? message.substring(0, 120) : message;
         lastOwnerMessageTime = System.currentTimeMillis();
         // Observe player intent for Theory of Mind
-        long gameTime = System.currentTimeMillis();
+        // TheoryOfMind uses game ticks for its decay window. Passing epoch
+        // milliseconds here made a documented 60-second window last about
+        // 1.2 seconds when mixed with server observations.
+        long gameTime = currentGameTickSafe();
         theoryOfMind.observe(message, gameTime);
         // Detect feedback tone (simple heuristic)
         String lower = message.toLowerCase();
@@ -370,10 +422,9 @@ public class AgentLoop {
         wake("owner_message");
     }
 
-    /**
-     * Add a body log entry and wake if idle.
-     */
+    /** Add a body observation to the next reasoning batch. */
     public void onBodyLog(String narrative) {
+        if (narrative == null || narrative.isBlank()) return;
         // Trigger emotions based on body event content.
         // Use independent if-statements (not else-if) so that a single
         // narrative containing multiple event types (e.g. "attacked by
@@ -404,10 +455,20 @@ public class AgentLoop {
         synchronized (inboxLock) {
             inbox.add("[BODY] " + narrative);
         }
-        // Only wake if idle - body logs are not urgent
-        if (!inProgress) {
-            wake("body_log");
+        // Low-level body observations are evidence, not independent decision
+        // points. Waking on every breath/follow/pickup message created request
+        // storms and stale responses. Only terminal or explicitly coordinated
+        // events require immediate high-level deliberation.
+        if (isDeliberationEvent(narrative)) wake("body_log");
+    }
+
+    /** Receive an explicit teammate event without treating it as owner speech. */
+    public void onTeamEvent(String event) {
+        if (event == null || event.isBlank()) return;
+        synchronized (inboxLock) {
+            inbox.add("[TEAM] " + event.trim());
         }
+        wake("team_event");
     }
 
     /** Commit a newly admitted body task to the shared planning state. */
@@ -421,6 +482,9 @@ public class AgentLoop {
                 intent == null ? taskName : intent.goal(), 1.0,
                 "scheduler", gameTick);
         if (snapshot != null) planner.recordProgress(taskId, snapshot, gameTick);
+        TeamBlackboard.updateTask(companion.ownerUuid(), companion.companionId(),
+                taskId, intent == null ? taskName : intent.goal(), TaskState.RUNNING,
+                taskTarget(snapshot), gameTick);
         publishWorldSnapshot(gameTick, true);
     }
 
@@ -445,6 +509,9 @@ public class AgentLoop {
                             + snapshot.targetY() + "," + snapshot.targetZ(),
                     1.0, "task:" + taskId, gameTick);
         }
+        TeamBlackboard.updateTask(companion.ownerUuid(), companion.companionId(),
+                taskId, taskName, state == null ? TaskState.RUNNING : state,
+                taskTarget(snapshot), gameTick);
         publishWorldSnapshot(gameTick, false);
     }
 
@@ -469,12 +536,24 @@ public class AgentLoop {
         String goal = intent == null ? taskName : intent.goal();
         ExperienceStore.Experience experience = experienceStore.record(
                 taskId, taskName, goal, state, snapshot, message, gameTick);
+        PendingSkillAction pendingAction = pendingTaskActions.remove(taskId);
+        if (pendingAction != null) {
+            List<ChatMessage.ToolCallRef> verifiedCalls = List.of(pendingAction.call());
+            List<String> toolNames = List.of(pendingAction.call().name());
+            String skillId = generateSkillId(pendingAction.description(),
+                    pendingAction.call().name(), toolNames);
+            skillLib.registerSequence(skillId, pendingAction.description(),
+                    pendingAction.description(), toolTraceJson(verifiedCalls),
+                    state == TaskState.SUCCESS);
+        }
         beliefState.observeRuleOutcome(goal, taskName,
                 intent == null ? "executor success" : intent.successCriterion(),
                 state == TaskState.SUCCESS,
                 experience.failureKind() + ": " + experience.evidence(), gameTick);
         beliefState.observeFact("body", "current_task", "idle", 1.0,
                 "scheduler", gameTick);
+        TeamBlackboard.updateTask(companion.ownerUuid(), companion.companionId(),
+                taskId, goal, state, taskTarget(snapshot), gameTick);
         // Task completion often changes inventory through mining, pickup,
         // crafting or placement. Capture the authoritative postcondition so
         // the next plan cannot reason from a pre-task inventory snapshot.
@@ -488,6 +567,63 @@ public class AgentLoop {
      */
     public void onServerStateTick(long gameTick) {
         publishWorldSnapshot(gameTick, false);
+        try {
+            var player = TaskContext.serverPlayer(companion);
+            var owner = companion instanceof com.mineagent.engine.entity.CompanionEntity entity
+                    ? entity.serverPlayerOwner() : null;
+            RealtimeCognition.TickResult result = realtimeCognition.tick(
+                    player, owner, toTaskObservation(liveBodyState.get()), gameTick);
+            if (result.ownerIntent() != null) {
+                var signal = result.ownerIntent();
+                theoryOfMind.observeIntent(signal.intent(), signal.confidence(),
+                        signal.evidence(), signal.gameTick());
+            }
+            if (result.deliberationEvent() != null) {
+                synchronized (inboxLock) {
+                    inbox.add(result.deliberationEvent());
+                }
+                wake("cognition_decision");
+            }
+        } catch (Throwable failure) {
+            // Entity teardown can race the final engine tick. Cognitive
+            // observation must never take down the server or the body loop.
+            System.err.println("[MineAgent] Realtime cognition failed for "
+                    + companion.companionName() + ": " + failure.getMessage());
+        }
+    }
+
+    private static SituationSnapshot.TaskObservation toTaskObservation(LiveBodyState body) {
+        if (body == null || body.taskId() == null) {
+            return SituationSnapshot.TaskObservation.idle();
+        }
+        TaskSnapshot snapshot = body.snapshot();
+        return new SituationSnapshot.TaskObservation(body.taskId(), body.taskName(),
+                body.state(), snapshot == null ? "running" : snapshot.stage(),
+                snapshot == null ? null : snapshot.blockedReason(), body.gameTick());
+    }
+
+    private static String taskTarget(TaskSnapshot snapshot) {
+        if (snapshot == null || !snapshot.hasTarget()) return null;
+        return snapshot.targetX() + "," + snapshot.targetY() + "," + snapshot.targetZ();
+    }
+
+    private static boolean isDeliberationEvent(String narrative) {
+        String value = narrative.stripLeading();
+        return value.startsWith("[TASK_FINISHED]")
+                || value.startsWith("[COGNITION_DECISION]")
+                || value.startsWith("[TEAM_SUPPORT]");
+    }
+
+    private long currentGameTickSafe() {
+        long published = liveAssetGameTick.get();
+        if (published > 0L) return published;
+        try {
+            return TaskContext.serverPlayer(companion).level().getGameTime();
+        } catch (Throwable ignored) {
+            // A monotonic local fallback preserves ordering during spawn before
+            // the first world snapshot; it is never mixed with epoch time.
+            return Math.max(0L, eventGeneration.get());
+        }
     }
 
     private void publishWorldSnapshot(long gameTick, boolean force) {
@@ -670,6 +806,21 @@ public class AgentLoop {
     public PersonaProfile persona() { return persona; }
     public MinecraftKnowledgeGraph knowledgeGraph() { return knowledgeGraph; }
     public DecisionCache decisionCache() { return decisionCache; }
+    public RealtimeCognition realtimeCognition() { return realtimeCognition; }
+
+    /** Expose validated specialized tools until the current turn finishes. */
+    public void exposeExtraTools(Collection<String> toolNames) {
+        if (toolNames == null) return;
+        for (String name : toolNames) {
+            if (name != null && !name.isBlank() && ToolRegistry.get(name).isPresent()) {
+                exposedExtraTools.add(name);
+            }
+        }
+    }
+
+    public static boolean isCoreTool(String name) {
+        return name != null && CORE_TOOL_NAMES.contains(name);
+    }
 
     // ── Turn execution ─────────────────────────────────────────────
 
@@ -760,6 +911,7 @@ public class AgentLoop {
         if (roundNumber == 0) {
             // Reset remediation counter at the start of each turn
             remediationRoundCounter = 0;
+            exposedExtraTools.clear();
         }
 
         // 4. Trim history to prevent context overflow
@@ -1017,6 +1169,11 @@ public class AgentLoop {
             FailureAnalysis analysis = analyzeFailure(content);
             boolean failed = analysis.isFailure();
             boolean succeeded = analysis.isSuccess();
+            if ("async_pending".equals(analysis.errorType())
+                    && SKILL_ACTION_TOOLS.contains(tc.name())) {
+                pendingTaskActions.put(tc.id(),
+                        new PendingSkillAction(currentTaskDescription(), tc));
+            }
 
             // 检查 LLM 是否在结果中标注了 importance 字段
             String importanceLabel = extractImportanceLabel(content);
@@ -1069,34 +1226,58 @@ public class AgentLoop {
         // 改进的技能注册：使用更稳定的技能ID
         if (anySuccess && !toolCalls.isEmpty()) {
             // 收集所有成功的工具调用
-            List<String> successfulTools = new ArrayList<>();
+            List<ChatMessage.ToolCallRef> successfulCalls = new ArrayList<>();
             for (int i = 0; i < toolCalls.size() && i < toolResults.size(); i++) {
                 var tc = toolCalls.get(i);
                 var result = toolResults.get(i);
                 if (result.content() != null && analyzeFailure(result.content()).isSuccess()) {
-                    successfulTools.add(tc.name());
+                    successfulCalls.add(tc);
                 }
             }
 
-            if (!successfulTools.isEmpty()) {
+            if (successfulCalls.stream().anyMatch(call ->
+                    SKILL_ACTION_TOOLS.contains(call.name()))) {
+                List<String> successfulTools = successfulCalls.stream()
+                        .map(ChatMessage.ToolCallRef::name).toList();
                 // 使用任务描述+工具序列生成稳定的技能ID
-                String taskDesc = planner.hasActivePlan()
-                        ? planner.currentNode().description()
-                        : "general_task";
+                String taskDesc = currentTaskDescription();
                 // 技能ID：任务类型 + 主要工具 + 工具序列签名。
                 // 序列签名确保不同动作序列生成不同技能ID，
                 // 避免"挖铁矿"的序列被"挖煤矿"覆盖（两者主工具相同）。
                 String primaryTool = successfulTools.get(0);
                 String skillId = generateSkillId(taskDesc, primaryTool, successfulTools);
 
-                skillLib.register(
+                skillLib.registerSequence(
                         skillId,
                         taskDesc,
                         taskDesc,
-                        String.join("->", successfulTools),
+                        toolTraceJson(successfulCalls),
                         anySuccess && !anyFailure);
             }
         }
+    }
+
+    private String currentTaskDescription() {
+        PlanGraph.PlanNode current = planner.currentNode();
+        return current == null ? "general_task" : current.description();
+    }
+
+    /** Preserve parameters so a learned sequence is adaptable, not a name list. */
+    private static String toolTraceJson(List<ChatMessage.ToolCallRef> calls) {
+        com.google.gson.JsonArray trace = new com.google.gson.JsonArray();
+        for (ChatMessage.ToolCallRef call : calls) {
+            com.google.gson.JsonObject action = new com.google.gson.JsonObject();
+            action.addProperty("tool", call.name());
+            try {
+                action.add("args", com.google.gson.JsonParser.parseString(call.arguments()));
+            } catch (com.google.gson.JsonParseException malformed) {
+                // Provider arguments should be JSON, but retaining malformed
+                // text is safer than dropping evidence or failing the turn.
+                action.addProperty("args_raw", call.arguments());
+            }
+            trace.add(action);
+        }
+        return trace.toString();
     }
 
     /**
@@ -1712,17 +1893,15 @@ public class AgentLoop {
                             owner, companion.companionId(), "companion_chat",
                             "[" + companion.companionName() + "] " + text);
                 }
-                // Broadcast to other companions so AIs can hear each other
-                // and collaborate. This does NOT cause loops because messages
-                // received from other companions are tagged "[同伴 ...]" and
-                // do not trigger another speakToOwner unless the model
-                // explicitly decides to respond.
+                // Ordinary speech is owner-facing and must not wake every
+                // sibling LLM. Explicit [TEAM] messages are the only spoken
+                // broadcast path; routine coordination uses TeamBlackboard.
                 // Guard against null owner (player offline): broadcastToOtherCompanions
                 // needs the owner UUID to find sibling companions, and calling
                 // owner.getUUID() on a null reference would NPE. Skip the
                 // broadcast in that case — sibling AIs will simply not hear
                 // this utterance until the owner reconnects.
-                if (owner != null) {
+                if (owner != null && isExplicitTeamMessage(text)) {
                     com.mineagent.engine.MineAgentEngine.broadcastToOtherCompanions(
                             companion.companionId(), owner.getUUID(), text);
                 }
@@ -1750,6 +1929,12 @@ public class AgentLoop {
                 history.add(ChatMessage.user(sb.toString()));
             }
         }
+    }
+
+    private static boolean isExplicitTeamMessage(String text) {
+        if (text == null) return false;
+        String value = text.stripLeading();
+        return value.startsWith("[TEAM]") || value.startsWith("【团队】");
     }
 
     // ── Tool execution ─────────────────────────────────────────────
@@ -2257,6 +2442,8 @@ public class AgentLoop {
     private List<Map<String, Object>> buildToolDefinitions() {
         List<Map<String, Object>> defs = new ArrayList<>();
         for (Tool tool : ToolRegistry.all()) {
+            if (!CORE_TOOL_NAMES.contains(tool.name())
+                    && !exposedExtraTools.contains(tool.name())) continue;
             Map<String, Object> def = new LinkedHashMap<>();
             def.put("type", "function");
             Map<String, Object> function = new LinkedHashMap<>();
@@ -2354,10 +2541,12 @@ public class AgentLoop {
         // ── Tool usage ──
         sb.append("## Your Tools\n");
         sb.append("You perceive and act through tools. Key ones:\n");
+        sb.append("- `query_extra_tools`: Expose specialized tool schemas for the rest of this turn. "
+                + "Call it before using a specialized tool that is not currently offered.\n");
         sb.append("- `get_self_status`: Check your health, hunger, inventory, equipment\n");
         sb.append("- `resolve_need`: Query owned/stored/world assets and live recipes for an item or capability before producing a replacement\n");
         sb.append("- `look_around`: See terrain, blocks, entities, hazards around you\n");
-        sb.append("- `scan_nearby_entities` / `scan_blocks`: Find specific things\n");
+        sb.append("- `scan_blocks`: Find specific blocks; entity, GUI, storage, ranged, location, and memory tools are available through `query_extra_tools`\n");
         sb.append("- `goto`: Move to a location (xz for horizontal, xzy for exact)\n");
         sb.append("- `auto_mine`: Dig blocks / `build`: Place blocks\n");
         sb.append("- `collect_items`: Pick up drops\n");
@@ -2365,10 +2554,11 @@ public class AgentLoop {
         sb.append("- `craft`: Create items from recipes\n");
         sb.append("- `lookup_recipe`: Query crafting recipes by input/output. ");
         sb.append("USE THIS before crafting to know exact ingredients — don't guess.\n");
-        sb.append("- `recall_memory`: Recall places you've discovered (ores, structures, hazards). ");
+        sb.append("- `recall_memory` (specialized): Recall places you've discovered (ores, structures, hazards). ");
         sb.append("USE THIS before exploring — you may already know where to find what you need.\n");
         sb.append("- `list_learned_skills`: See skills you've mastered from past successes. ");
         sb.append("Reuse them instead of re-planning common tasks.\n");
+        sb.append("- `coordinate_team`: Inspect team commitments, claim a role, or request targeted support.\n");
         sb.append("Read tool results carefully. If a tool fails, think about WHY ");
         sb.append("and try a different approach.\n\n");
 
@@ -2453,7 +2643,7 @@ public class AgentLoop {
         sb.append("## Using Containers (Chests, Furnaces, Crafting Tables)\n");
         sb.append("You interact with blocks exactly like a human player:\n");
         sb.append("1. `interact_at` with button=\"use\" on the block → opens its GUI\n");
-        sb.append("2. `inspect_gui` → see each menu slot with endpoint=container/player and the correct address for that endpoint\n");
+        sb.append("2. Call `query_extra_tools` if `inspect_gui`/`close_gui` are not exposed, then `inspect_gui` → see each menu slot with endpoint=container/player and the correct address for that endpoint\n");
         sb.append("3. `transfer_items` with the reported endpoint and slot address → move items in/out\n");
         sb.append("4. `close_gui` → close the container when done\n");
         sb.append("- For crafting: `craft` checks if a crafting table is nearby for 3x3 recipes\n");
@@ -2514,6 +2704,9 @@ public class AgentLoop {
         sb.append("模式: ").append(mode == MineAgentEngine.CompanionMode.FOLLOW
                 ? "跟随(距主人2-3格, 不超过16格)" : "自由(可远离主人执行任务)").append("\n");
         appendLiveBodyState(sb, liveBodyState.get());
+        sb.append(realtimeCognition.summarizeForPrompt());
+        sb.append(TeamBlackboard.summarize(companion.ownerUuid(),
+                companion.companionId(), liveAssetGameTick.get()));
         // Persona: 1-line summary instead of full OCEAN breakdown
         sb.append("性格: ").append(compactPersona()).append("\n");
         // Emotion: 1-line label instead of full PAD breakdown
@@ -2683,6 +2876,8 @@ public class AgentLoop {
             suspended = true;
             eventGeneration.incrementAndGet();
         }
+        realtimeCognition.close();
+        pendingTaskActions.clear();
         // Save memories before shutting down so the companion does not
         // "forget" everything on restart. Memory stores are thread-safe,
         // so saving from this thread while a turn is running is safe.

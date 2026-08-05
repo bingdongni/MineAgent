@@ -2,6 +2,35 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.2.0] - 2026-08-06
+
+### Added
+
+- Add a multi-rate realtime cognition layer: vanilla and survival control remain at 20 Hz, local situation frames refresh at 5 Hz or every emergency tick, and the LLM is reserved for open-ended deliberation.
+- Add immutable situation snapshots covering vitals, hazards, owner state, executor state, nearby actors, projectiles, drops, relationships, visibility, approach vectors, and grounded threat ownership.
+- Add a receding-horizon tactical planner with hard safety constraints and context-specific factors for survival, owner defense, threat control, team cohesion, information gain, and verified goal progress.
+- Add an owner-scoped live team blackboard and `coordinate_team` tool for roles, commitments, duplicate-work warnings, and explicit support requests.
+- Add dependency edges and cycle validation to `todowrite` plans through `depends_on`.
+- Add deterministic multilingual retrieval for successful and failed experiences using ASCII tokens and Chinese character n-grams.
+- Add tests for tactical posture selection, plan dependencies, team-state isolation and expiry, parameterized skill retrieval, and relevant successful experience recall.
+
+### Changed
+
+- Wake the LLM only for owner commands, verified task completion, explicit team support, or structured replanning events; routine body narration is batched into the next real decision.
+- Stop broadcasting every companion utterance to every sibling. Routine cooperation now uses live state, while only explicit `[TEAM]` communication wakes teammates.
+- Use Minecraft game ticks consistently in Theory of Mind, with bounded evidence weights and temporal decay; structured server observations outrank chat keyword guesses.
+- Expose a stable core tool schema by default and activate specialized schemas after `query_extra_tools`, reducing repeated prompt tokens while keeping tool order cache-stable.
+- Store learned skills as parameterized JSON tool traces. Asynchronous actions enter the skill library only after executor-verified terminal outcomes.
+- Rank combat threats by who they endanger as well as distance, defend the owner and sibling companions, and jump while fleeing only to clear a grounded collision.
+
+### Fixed
+
+- Prevent a blocked plan node from permanently occupying the current executable step when an independent ready step exists.
+- Reject missing plan dependencies, self/cyclic dependency graphs, and invalid partial replacements without destroying the last valid plan.
+- Prevent plan-only blocked states from causing a null dereference during skill learning.
+- Remove N-by-N companion request amplification and the resulting stale-response/token cascade.
+- Correct the former 60-second owner-intent window, which mixed epoch milliseconds with game ticks and effectively expired in about 1.2 seconds.
+
 ## [0.1.4] - 2026-08-05
 
 ### Added

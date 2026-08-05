@@ -156,8 +156,15 @@ public class PriorityAuction {
             String activeId = currentTask.record().toolCallId();
             String message = "Body is busy with task '" + activeId
                     + "'; wait for completion or call task_stop before dispatching another body task";
+            TaskSnapshot rejectedSnapshot = safeSnapshot(task);
             TaskStatusTool.updateTaskInfo(companion.companionId(), incomingId,
-                    describe(task), TaskState.CANCELLED, message, null, 0L, task.snapshot());
+                    describe(task), TaskState.CANCELLED, message, null, 0L, rejectedSnapshot);
+            IntentContract rejectedIntent = task instanceof IntentAwareTask aware
+                    ? aware.intentContract()
+                    : IntentContract.generic(describe(task), "Executor reports success",
+                    rejectedSnapshot.targetX(), rejectedSnapshot.targetY(), rejectedSnapshot.targetZ());
+            loop.onTaskFinished(incomingId, describe(task), rejectedIntent,
+                    TaskState.CANCELLED, rejectedSnapshot, message, gameTime());
             loop.onBodyLog("[TASK_FINISHED] task_id=" + incomingId
                     + " state=CANCELLED message=" + message);
             return new TaskAdmission(false, activeId, message);

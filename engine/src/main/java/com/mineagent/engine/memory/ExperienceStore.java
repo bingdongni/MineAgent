@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
+import java.util.Comparator;
 
 /**
  * Structured episodic and failure memory used by planning and rule revision.
@@ -67,18 +68,18 @@ public final class ExperienceStore {
 
     public synchronized String summarizeForPrompt(String currentIntent) {
         if (experiences.isEmpty()) return "";
-        String needle = normalize(currentIntent, "").toLowerCase(Locale.ROOT);
-        List<Experience> relevant = new ArrayList<>();
-        var iterator = experiences.descendingIterator();
-        while (iterator.hasNext() && relevant.size() < 6) {
-            Experience experience = iterator.next();
-            if (needle.isBlank()
-                    || experience.intent().toLowerCase(Locale.ROOT).contains(needle)
-                    || needle.contains(experience.intent().toLowerCase(Locale.ROOT))
-                    || experience.outcome() != TaskState.SUCCESS) {
-                relevant.add(experience);
-            }
-        }
+        String needle = normalize(currentIntent, "");
+        long newestTick = experiences.peekLast() == null
+                ? 0L : experiences.peekLast().gameTick();
+        List<Experience> relevant = experiences.stream()
+                .filter(experience -> needle.isBlank()
+                        || semanticScore(needle, experience) > 0.0)
+                .map(experience -> new ScoredExperience(experience,
+                        relevance(needle, experience, newestTick)))
+                .sorted(Comparator.comparingDouble(ScoredExperience::score).reversed())
+                .limit(6)
+                .map(ScoredExperience::experience)
+                .toList();
         if (relevant.isEmpty()) return "";
         StringBuilder out = new StringBuilder("Relevant verified experiences:\n");
         for (Experience experience : relevant) {
@@ -87,9 +88,32 @@ public final class ExperienceStore {
             if (experience.failureKind() != FailureKind.NONE) {
                 out.append(" (").append(experience.failureKind()).append(')');
             }
-            out.append(": ").append(experience.evidence()).append('\n');
+            out.append(": ").append(truncate(experience.evidence(), 260)).append('\n');
         }
         return out.toString();
+    }
+
+    private record ScoredExperience(Experience experience, double score) {}
+
+    private static double relevance(String query, Experience experience, long newestTick) {
+        double semantic = query.isBlank() ? 0.25 : semanticScore(query, experience);
+        double recency = newestTick <= 0L ? 0.0
+                : 0.12 / (1.0 + Math.max(0L, newestTick - experience.gameTick()) / 2_400.0);
+        // Failures remain useful but no longer crowd all successful precedents
+        // out of retrieval regardless of relevance.
+        double diagnostic = experience.outcome() == TaskState.SUCCESS ? 0.04 : 0.08;
+        return semantic + recency + diagnostic;
+    }
+
+    private static double semanticScore(String query, Experience experience) {
+        return TextSimilarity.score(query, experience.intent() + " "
+                + experience.action() + " " + experience.stage() + " "
+                + experience.evidence());
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null || value.length() <= max) return value;
+        return value.substring(0, max - 3) + "...";
     }
 
     public synchronized List<Experience> exportAll() {

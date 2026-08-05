@@ -1,4 +1,6 @@
-MineAgent is currently an alpha release for Minecraft 1.21.1 and requires Java 21.
+MineAgent 0.2.0 is an alpha release for Minecraft 1.21.1 and requires Java 21.
+
+This release introduces a realtime layered cognition architecture: fast local survival and tactical control, executor-evidence-backed rolling plans, owner-scoped team coordination, parameterized skill memory, and lower-overhead dynamic tool schemas. These changes improve responsiveness and grounding, but do not claim that arbitrary modpacks, competitive servers, or full-game completion have been validated autonomously.
 
 ## Downloads
 

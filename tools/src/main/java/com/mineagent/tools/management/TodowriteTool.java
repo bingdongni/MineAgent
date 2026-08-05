@@ -47,6 +47,9 @@ public final class TodowriteTool implements Tool {
                 "content", Map.of("type", "string", "description", "Concrete subgoal"),
                 "success_criterion", Map.of("type", List.of("string", "null"),
                         "description", "Observable completion condition"),
+                "depends_on", Map.of("type", "array",
+                        "description", "Step IDs that must be verified first",
+                        "items", Map.of("type", "string"), "maxItems", MAX_ITEMS),
                 "priority", Map.of("type", "string", "enum", List.of("high", "medium", "low")),
                 "status", Map.of("type", "string", "enum",
                         List.of("pending", "in_progress", "completed", "blocked", "invalidated"))
@@ -106,7 +109,27 @@ public final class TodowriteTool implements Tool {
                         + "' has invalid priority or status."));
                 return;
             }
+            List<String> dependencies = new ArrayList<>();
+            if (value.has("depends_on") && !value.get("depends_on").isJsonNull()) {
+                JsonArray dependencyValues = ToolArgs.getArray(value, "depends_on");
+                if (dependencyValues == null || dependencyValues.size() > MAX_ITEMS) {
+                    reply.accept(ToolArgs.errorJson("Todo item '" + id
+                            + "' has invalid depends_on."));
+                    return;
+                }
+                for (var dependencyValue : dependencyValues) {
+                    if (!dependencyValue.isJsonPrimitive()
+                            || !dependencyValue.getAsJsonPrimitive().isString()
+                            || !validText(dependencyValue.getAsString(), 64)) {
+                        reply.accept(ToolArgs.errorJson("Todo item '" + id
+                                + "' has a non-string dependency."));
+                        return;
+                    }
+                    dependencies.add(dependencyValue.getAsString());
+                }
+            }
             drafts.add(new PlanGraph.DraftNode(id, content, criterion, priority,
+                    dependencies,
                     parseStatus(status)));
         }
 
@@ -151,7 +174,7 @@ public final class TodowriteTool implements Tool {
                 .replacePlan(goal, drafts, constraints);
 
         JsonObject result = new JsonObject();
-        result.addProperty("success", true);
+        result.addProperty("success", update.accepted());
         result.addProperty("revision", update.revision());
         result.addProperty("verified_percent", state.get().loop.planGraph().progressPercent());
         JsonArray warnings = new JsonArray();
