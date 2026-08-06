@@ -284,7 +284,14 @@ public class PlaceEventMemory {
      * 只返回最近、最相关的记忆，避免 token 膨胀。
      */
     public String summarizeForPrompt() {
+        return summarizeForPrompt("", 10);
+    }
+
+    /** Return only locations semantically related to the active objective. */
+    public String summarizeForPrompt(String query, int limit) {
+        if (limit <= 0) return "";
         if (events.isEmpty()) return "（暂无位置记忆）";
+        String needle = query == null ? "" : query.trim();
 
         StringBuilder sb = new StringBuilder();
         sb.append("## 位置记忆（最近见过的资源/事件）\n");
@@ -299,14 +306,19 @@ public class PlaceEventMemory {
             }
         }
 
-        // 按重要性排序
-        List<Map.Entry<String, PlaceEvent>> sorted = new ArrayList<>(latest.entrySet());
-        sorted.sort((a, b) -> Float.compare(b.getValue().importance(), a.getValue().importance()));
+        List<ScoredPlace> sorted = latest.values().stream()
+                .map(event -> new ScoredPlace(event, placeScore(needle, event)))
+                .filter(value -> needle.isBlank() || value.score() > 0.0)
+                .sorted(Comparator.comparingDouble(ScoredPlace::score).reversed()
+                        .thenComparing(value -> value.event().timestamp(),
+                                Comparator.reverseOrder()))
+                .toList();
+        if (sorted.isEmpty()) return "";
 
         int shown = 0;
-        for (var entry : sorted) {
-            if (shown >= 10) break; // 最多显示10条
-            PlaceEvent e = entry.getValue();
+        for (ScoredPlace value : sorted) {
+            if (shown >= Math.min(10, limit)) break;
+            PlaceEvent e = value.event();
             sb.append("- ").append(e.subject())
               .append(" at (").append(e.x()).append(",").append(e.y()).append(",").append(e.z()).append(")")
               .append(" [").append(e.dimension()).append("]");
@@ -321,6 +333,17 @@ public class PlaceEventMemory {
         sb.append("（已探索 ").append(exploredChunks.size()).append(" 个区块）\n");
 
         return sb.toString();
+    }
+
+    private record ScoredPlace(PlaceEvent event, double score) {}
+
+    private static double placeScore(String query, PlaceEvent event) {
+        double semantic = query.isBlank() ? 0.25 : TextSimilarity.score(query,
+                event.type() + " " + event.subject() + " "
+                        + (event.note() == null ? "" : event.note()));
+        if (!query.isBlank() && semantic <= 0.0) return 0.0;
+        return semantic + event.importance() * 0.20
+                + Math.min(0.08, event.visitCount() * 0.01);
     }
 
     private static long chunkKey(int x, int z) {

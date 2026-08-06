@@ -35,6 +35,8 @@ public class PriorityAuction {
     private long lastProgressPublishTick = Long.MIN_VALUE;
     private long lastProgressVersion = Long.MIN_VALUE;
     private String lastProgressStage = "";
+    private String lastProgressBlocker = "";
+    private TaskState lastPublishedTaskState;
     private int consecutiveDangerSignals;
 
     private static final float BASE_PREEMPT_THRESHOLD =
@@ -180,6 +182,8 @@ public class PriorityAuction {
         lastProgressPublishTick = Long.MIN_VALUE;
         lastProgressVersion = Long.MIN_VALUE;
         lastProgressStage = "";
+        lastProgressBlocker = "";
+        lastPublishedTaskState = null;
         String taskName = describe(task);
         TaskStatusTool.updateTaskInfo(companion.companionId(), task.record().toolCallId(),
                 taskName, TaskState.RUNNING, "Running", null, 0L, task.snapshot());
@@ -287,6 +291,8 @@ public class PriorityAuction {
             taskPaused = false;
             lastProgressVersion = Long.MIN_VALUE;
             lastProgressStage = "";
+            lastProgressBlocker = "";
+            lastPublishedTaskState = null;
             publishProgress(true);
             pushTaskUpdate(describe(currentTask));
             return true;
@@ -301,19 +307,28 @@ public class PriorityAuction {
         if (task == null) return;
         long now = gameTime();
         TaskSnapshot snapshot = safeSnapshot(task);
+        TaskState publishedState = taskPaused ? TaskState.PAUSED : TaskState.RUNNING;
+        String blocker = snapshot.blockedReason() == null ? "" : snapshot.blockedReason();
         boolean changed = snapshot.progressVersion() != lastProgressVersion
                 || !snapshot.stage().equals(lastProgressStage)
-                || snapshot.isBlocked();
+                || !blocker.equals(lastProgressBlocker)
+                || publishedState != lastPublishedTaskState;
+        // A blocked snapshot used to force `changed=true` on every server tick.
+        // That advanced PlanGraph revisions continuously and repeatedly cancelled
+        // in-flight LLM requests. Unchanged snapshots are now one-second UI
+        // heartbeats; only new executor evidence reaches the planning layer.
         if (!force && !changed && now - lastProgressPublishTick < 20L) return;
         lastProgressPublishTick = now;
         lastProgressVersion = snapshot.progressVersion();
         lastProgressStage = snapshot.stage();
+        lastProgressBlocker = blocker;
+        lastPublishedTaskState = publishedState;
         long elapsed = Math.max(0L, now - taskStartGameTick);
         TaskStatusTool.updateTaskInfo(companion.companionId(), task.record().toolCallId(),
-                describe(task), taskPaused ? TaskState.PAUSED : TaskState.RUNNING,
+                describe(task), publishedState,
                 snapshot.summary(), null, elapsed, snapshot);
         loop.onTaskProgress(task.record().toolCallId(),
-                taskPaused ? TaskState.PAUSED : TaskState.RUNNING,
+                publishedState,
                 snapshot, snapshot.summary(), now);
     }
 

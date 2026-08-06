@@ -165,7 +165,9 @@ public final class WorldAssetIndex {
 
     public record State(List<Asset> assets, long revision) {}
 
-    private static final int MAX_ASSETS = 2_048;
+    private static final int MAX_ASSETS = 768;
+    private static final int MAX_WORLD_OBJECTS_PER_RESOURCE = 48;
+    private static final int MAX_PERSISTED_ASSETS = 256;
     private static final int MAX_RESOLUTION_CANDIDATES = 16;
     private static final EnumSet<Scope> CONTAINER_SCOPES =
             EnumSet.of(Scope.KNOWN_CONTAINER, Scope.OPEN_MENU);
@@ -398,10 +400,12 @@ public final class WorldAssetIndex {
         // would resurrect stale inventory after a restart; the next server
         // snapshot repopulates carried state authoritatively.
         List<Asset> durable = assets.values().stream()
-                .filter(asset -> asset.scope() != Scope.OPEN_MENU
-                        && asset.scope() != Scope.INVENTORY
-                        && asset.scope() != Scope.EQUIPPED
-                        && asset.scope() != Scope.DROPPED_ITEM)
+                .filter(WorldAssetIndex::persistentAsset)
+                .sorted(Comparator.comparingInt(WorldAssetIndex::persistenceRank)
+                        .reversed()
+                        .thenComparing(Comparator.comparingLong(Asset::observedTick)
+                                .reversed()))
+                .limit(MAX_PERSISTED_ASSETS)
                 .toList();
         return new State(durable, revision);
     }
@@ -410,10 +414,7 @@ public final class WorldAssetIndex {
         assets.clear();
         if (state != null && state.assets() != null) {
             for (Asset asset : state.assets()) {
-                if (!validAsset(asset) || asset.scope() == Scope.OPEN_MENU
-                        || asset.scope() == Scope.INVENTORY
-                        || asset.scope() == Scope.EQUIPPED
-                        || asset.scope() == Scope.DROPPED_ITEM) continue;
+                if (!validAsset(asset) || !persistentAsset(asset)) continue;
                 assets.put(asset.key(), asset);
             }
             revision = Math.max(0L, state.revision());
@@ -443,8 +444,11 @@ public final class WorldAssetIndex {
 
         List<Asset> useful = assets.values().stream()
                 .filter(asset -> asset.stored() || asset.scope() == Scope.WORLD_OBJECT)
-                .sorted(Comparator.comparingDouble(
-                                (Asset asset) -> distance(asset, currentPosition))
+                // Facilities and verified storage must not be hidden by a
+                // nearby ore vein or hundreds of water observations.
+                .sorted(Comparator.comparingInt(WorldAssetIndex::promptRank)
+                        .thenComparingDouble(
+                                 (Asset asset) -> distance(asset, currentPosition))
                         .thenComparing(Asset::key))
                 .limit(10).toList();
         for (Asset asset : useful) {
@@ -509,13 +513,57 @@ public final class WorldAssetIndex {
     }
 
     private void trim() {
+        Map<String, List<Asset>> resourceGroups = new LinkedHashMap<>();
+        for (Asset asset : assets.values()) {
+            if (asset.scope() != Scope.WORLD_OBJECT || importantWorldAsset(asset)) continue;
+            resourceGroups.computeIfAbsent(asset.position() == null
+                            ? asset.resourceId()
+                            : asset.position().dimension() + '|' + asset.resourceId(),
+                    ignored -> new ArrayList<>()).add(asset);
+        }
+        for (List<Asset> group : resourceGroups.values()) {
+            int limit = group.isEmpty() || !"water".equals(group.getFirst().kind())
+                    ? MAX_WORLD_OBJECTS_PER_RESOURCE : 16;
+            if (group.size() <= limit) continue;
+            group.sort(Comparator.comparingLong(Asset::observedTick).reversed()
+                    .thenComparing(Asset::key));
+            for (int index = limit; index < group.size(); index++) {
+                assets.remove(group.get(index).key());
+            }
+        }
         while (assets.size() > MAX_ASSETS) {
             String removable = assets.values().stream()
                     .filter(asset -> !asset.carried())
-                    .min(Comparator.comparingLong(Asset::observedTick))
+                    .min(Comparator.comparingInt(WorldAssetIndex::persistenceRank)
+                            .thenComparingLong(Asset::observedTick))
                     .map(Asset::key).orElse(assets.keySet().iterator().next());
             assets.remove(removable);
         }
+    }
+
+    private static boolean persistentAsset(Asset asset) {
+        return asset != null && (asset.scope() == Scope.KNOWN_CONTAINER
+                || (asset.scope() == Scope.WORLD_OBJECT && importantWorldAsset(asset)));
+    }
+
+    private static boolean importantWorldAsset(Asset asset) {
+        if (asset == null) return false;
+        String kind = asset.kind();
+        return kind.startsWith("station_") || kind.equals("storage")
+                || kind.equals("bed") || kind.equals("portal")
+                || kind.equals("block_entity")
+                || asset.capabilities().contains("world:placed");
+    }
+
+    private static int persistenceRank(Asset asset) {
+        if (asset == null) return 0;
+        if (asset.scope() == Scope.KNOWN_CONTAINER || asset.stored()) return 3;
+        if (asset.scope() == Scope.WORLD_OBJECT && importantWorldAsset(asset)) return 2;
+        return 0;
+    }
+
+    private static int promptRank(Asset asset) {
+        return 3 - persistenceRank(asset);
     }
 
     private static boolean validItem(ItemObservation item) {

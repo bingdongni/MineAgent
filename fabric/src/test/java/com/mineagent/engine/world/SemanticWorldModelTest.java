@@ -60,4 +60,23 @@ final class SemanticWorldModelTest {
                 "result.menu_type", 31L).orElseThrow().value());
         assertFalse(model.find("tool:inspect_gui", "result.slots", 31L).isPresent());
     }
+
+    @Test void durableRecallKeepsGoalsAndActionsWithoutAssetProjectionPollution() {
+        SemanticWorldModel model = new SemanticWorldModel();
+        model.recordOwnerIntent("build a safe bridge", 40L);
+        model.recordOutcome("build", true,
+                "bridge completed and verified", "build-call", 50L, true);
+        model.observe("asset:minecraft:iron_ore@4,20,4", "kind", "ore", null,
+                1.0, "asset_index", null, 45L, 0L, true);
+
+        var exported = model.exportState();
+        assertTrue(exported.events().stream()
+                .anyMatch(event -> event.subject().equals("owner_intent")));
+        assertTrue(exported.events().stream()
+                .anyMatch(event -> event.subject().equals("tool:build")));
+        assertFalse(exported.events().stream()
+                .anyMatch(event -> event.subject().startsWith("asset:")));
+        assertTrue(model.recallForPrompt("safe bridge", null, 60L, 4)
+                .contains("bridge"));
+    }
 }

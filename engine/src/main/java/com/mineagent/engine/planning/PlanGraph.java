@@ -183,9 +183,22 @@ public final class PlanGraph {
         if (node == null || snapshot == null) return;
         String statement = snapshot.summary();
         if (snapshot.isBlocked()) statement += "; blocked: " + snapshot.blockedReason();
-        List<Evidence> evidence = appendEvidence(node.evidence(),
-                new Evidence("task:" + taskId, statement, false, gameTick));
         NodeStatus status = snapshot.isBlocked() ? NodeStatus.BLOCKED : NodeStatus.IN_PROGRESS;
+        Evidence latest = node.evidence().isEmpty()
+                ? null : node.evidence().getLast();
+        String source = "task:" + taskId;
+        if (node.status() == status
+                && java.util.Objects.equals(node.lastFailure(), snapshot.blockedReason())
+                && latest != null && !latest.success()
+                && source.equals(latest.source())
+                && statement.equals(latest.statement())) {
+            // Progress heartbeats are useful to the UI, but identical evidence
+            // must not mutate the verifier graph. A revision per heartbeat made
+            // the rolling planner believe the world changed every tick.
+            return;
+        }
+        List<Evidence> evidence = appendEvidence(node.evidence(),
+                new Evidence(source, statement, false, gameTick));
         nodes.put(node.id(), replace(node, status, node.attempts(),
                 snapshot.blockedReason(), evidence));
         revision++;

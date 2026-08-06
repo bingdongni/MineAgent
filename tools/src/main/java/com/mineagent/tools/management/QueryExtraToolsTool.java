@@ -27,9 +27,9 @@ public class QueryExtraToolsTool implements Tool {
     @Override
     public String description() {
         return """
-            List tools that are not included in the default prompt. These are
-            typically tools loaded dynamically via skills or plugins. Returns
-            each extra tool's name, description, and parameter schema.
+            Expose specialized tools that are not in the compact default tool
+            surface. The next model request contains their complete callable
+            schemas, and they remain exposed for the current owner goal.
             """;
     }
 
@@ -52,15 +52,10 @@ public class QueryExtraToolsTool implements Tool {
             // Also skip this tool itself and management tools
             if (tool.name().equals("query_extra_tools")) continue;
 
-            JsonObject toolJson = new JsonObject();
-            toolJson.addProperty("name", tool.name());
-            toolJson.addProperty("description", tool.description());
-            // The tool promises a discoverable callable contract. Returning
-            // only prose left the LLM unable to construct valid arguments for
-            // the very tools this endpoint revealed.
-            toolJson.add("parameters", new com.google.gson.Gson()
-                    .toJsonTree(tool.parameterSchema()));
-            extraTools.add(toolJson);
+            // Full schemas are attached to the very next provider request.
+            // Repeating them inside this tool result paid for the same tokens
+            // twice and made the discovery round needlessly slow.
+            extraTools.add(tool.name());
             exposedNames.add(tool.name());
             count++;
         }
@@ -71,8 +66,10 @@ public class QueryExtraToolsTool implements Tool {
                 .ifPresent(state -> state.loop.exposeExtraTools(exposedNames));
 
         // allTools.size() includes every default tool and overstated this count.
-        result.add("extra_tools", extraTools);
+        result.add("exposed_tools", extraTools);
         result.addProperty("total_extra", count);
+        result.addProperty("next_step",
+                "Call the required tool directly; its full schema is now available.");
         reply.accept(result.toString());
     }
 }

@@ -75,6 +75,23 @@ final class WorldAssetIndexTest {
                 exported.assets().get(0).scope());
     }
 
+    @Test
+    void persistenceKeepsFacilitiesButDropsOrdinaryScannedResources() {
+        WorldAssetIndex index = new WorldAssetIndex();
+        index.observeWorldObject(world("ore", "minecraft:iron_ore", "ore",
+                new WorldAssetIndex.Position("minecraft:overworld", 4, 20, 4),
+                Set.of("resource:ore")), 50L);
+        index.observeWorldObject(world("water", "minecraft:water", "water",
+                new WorldAssetIndex.Position("minecraft:overworld", 5, 63, 5),
+                Set.of("fluid:water")), 50L);
+        index.observeWorldObject(world("table", "minecraft:crafting_table",
+                "station_crafting", HOME, Set.of("station:crafting")), 50L);
+
+        var exported = index.exportState();
+        assertEquals(1, exported.assets().size());
+        assertEquals("minecraft:crafting_table", exported.assets().getFirst().resourceId());
+    }
+
     private static WorldAssetIndex.ItemObservation item(
             int slot, String id, int count) {
         return item(slot, id, count, Set.of("item"), 0.0);
@@ -85,5 +102,12 @@ final class WorldAssetIndexTest {
             double quality) {
         return new WorldAssetIndex.ItemObservation(slot, id, count,
                 0, 0, capabilities, quality);
+    }
+
+    private static WorldAssetIndex.WorldObservation world(
+            String identity, String id, String kind, WorldAssetIndex.Position position,
+            Set<String> capabilities) {
+        return new WorldAssetIndex.WorldObservation(identity, id, kind, position,
+                1, 0, 0, capabilities, 0.0, 1.0);
     }
 }

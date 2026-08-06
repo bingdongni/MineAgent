@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mineagent.engine.cognition.SituationSnapshot;
+import com.mineagent.engine.memory.TextSimilarity;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -169,14 +170,29 @@ public final class SemanticWorldModel {
                 saturatedAdd(gameTick, 1_200L), false, false);
     }
 
+    /** Preserve owner goals as durable episodes without replaying raw chat history. */
+    public synchronized void recordOwnerIntent(String message, long gameTick) {
+        if (message == null || message.isBlank()) return;
+        append(EventType.OBSERVED, "owner_intent", "requested",
+                compact(message, 360), null, 1.0, "owner_message", null,
+                gameTick, Long.MAX_VALUE, true, false);
+    }
+
     public synchronized void recordOutcome(String toolName, boolean success,
                                            String evidence, String correlationId,
                                            long gameTick) {
+        recordOutcome(toolName, success, evidence, correlationId, gameTick, false);
+    }
+
+    public synchronized void recordOutcome(String toolName, boolean success,
+                                           String evidence, String correlationId,
+                                           long gameTick, boolean durable) {
         String subject = "tool:" + normalize(toolName, "unknown");
         append(EventType.OUTCOME, subject,
                 "outcome", success ? "success" : "failure", null, 1.0,
                 compact(evidence, 320), correlationId, gameTick,
-                saturatedAdd(gameTick, 2_400L), false, false);
+                durable ? Long.MAX_VALUE : saturatedAdd(gameTick, 2_400L),
+                durable, false);
         // Primitive top-level result fields provide generic semantic
         // postconditions for unfamiliar tools without hard-coding mod IDs or
         // parsing arbitrary nested payloads into unbounded prompt state.
@@ -193,7 +209,7 @@ public final class SemanticWorldModel {
             }
             observe(subject, "result." + entry.getKey(), compact(value, 160),
                     null, 0.95, "tool_result", correlationId, gameTick,
-                    2_400L, false);
+                    durable ? 0L : 2_400L, durable);
             emitted++;
         }
     }
@@ -231,6 +247,8 @@ public final class SemanticWorldModel {
                 // Carried stacks already have one aggregated inventory fact;
                 // duplicating every slot here wastes prompt space and events.
                 if (asset.carried()) continue;
+                if (asset.scope() == WorldAssetIndex.Scope.WORLD_OBJECT
+                        && !semanticAsset(asset)) continue;
                 String subject = "asset:" + asset.key();
                 seen.add(subject);
                 boolean durable = asset.scope() == WorldAssetIndex.Scope.KNOWN_CONTAINER
@@ -327,9 +345,11 @@ public final class SemanticWorldModel {
 
     public synchronized State exportState() {
         List<SemanticEvent> durableEvents = events.stream()
-                .filter(SemanticEvent::durable).toList();
+                .filter(SemanticEvent::durable)
+                .filter(event -> !derivedAssetSubject(event.subject())).toList();
         List<SemanticFact> durableFacts = facts.values().stream()
-                .filter(SemanticFact::durable).toList();
+                .filter(SemanticFact::durable)
+                .filter(fact -> !derivedAssetSubject(fact.subject())).toList();
         return new State(durableEvents, durableFacts, nextSequence, revision);
     }
 
@@ -342,12 +362,19 @@ public final class SemanticWorldModel {
             if (state.events() != null) {
                 state.events().stream().filter(java.util.Objects::nonNull)
                         .filter(SemanticEvent::durable)
+                        // Asset facts are a projection rebuilt from the bounded
+                        // WorldAssetIndex. Loading the v7 projection filled all
+                        // 2,048 semantic slots with ore/log/water observations.
+                        .filter(event -> !derivedAssetSubject(event.subject()))
                         .sorted(Comparator.comparingLong(SemanticEvent::sequence))
                         .forEach(events::add);
             }
             if (state.facts() != null) {
                 for (SemanticFact fact : state.facts()) {
-                    if (fact != null && fact.durable()) facts.put(fact.key(), fact);
+                    if (fact != null && fact.durable()
+                            && !derivedAssetSubject(fact.subject())) {
+                        facts.put(fact.key(), fact);
+                    }
                 }
             }
             nextSequence = Math.max(maxSequence() + 1L,
@@ -358,6 +385,60 @@ public final class SemanticWorldModel {
             revision = 0L;
         }
         trim();
+    }
+
+    /**
+     * Retrieve a compact, goal-conditioned packet from durable semantic
+     * episodes. This avoids injecting a broad memory dump on every request.
+     */
+    public synchronized String recallForPrompt(String query,
+                                               WorldAssetIndex.Position currentPosition,
+                                               long gameTick, int limit) {
+        if (query == null || query.isBlank() || events.isEmpty() || limit <= 0) return "";
+        List<ScoredEvent> relevant = events.stream()
+                .filter(SemanticEvent::durable)
+                .filter(event -> !derivedAssetSubject(event.subject()))
+                .map(event -> new ScoredEvent(event,
+                        recallScore(query, event, currentPosition, gameTick)))
+                .filter(value -> value.score() > 0.0)
+                .sorted(Comparator.comparingDouble(ScoredEvent::score).reversed()
+                        .thenComparing(value -> value.event().sequence(),
+                                Comparator.reverseOrder()))
+                .limit(Math.min(8, limit)).toList();
+        if (relevant.isEmpty()) return "";
+        StringBuilder out = new StringBuilder("Relevant long-term memory:\n");
+        for (ScoredEvent value : relevant) {
+            SemanticEvent event = value.event();
+            out.append("- ").append(event.subject()).append(' ')
+                    .append(event.predicate()).append('=')
+                    .append(compact(event.value(), 220));
+            if (event.position() != null) {
+                out.append(" @ ").append(event.position().compact());
+            }
+            out.append(" source=").append(compact(event.source(), 80))
+                    .append(" age_ticks=")
+                    .append(Math.max(0L, gameTick - event.gameTick())).append('\n');
+        }
+        return out.toString();
+    }
+
+    private record ScoredEvent(SemanticEvent event, double score) {}
+
+    private static double recallScore(String query, SemanticEvent event,
+                                      WorldAssetIndex.Position currentPosition,
+                                      long gameTick) {
+        double semantic = TextSimilarity.score(query, event.subject() + " "
+                + event.predicate() + " " + event.value() + " " + event.source());
+        if (semantic <= 0.0) return 0.0;
+        double recency = 0.12 / (1.0
+                + Math.max(0L, gameTick - event.gameTick()) / 12_000.0);
+        double outcome = event.type() == EventType.OUTCOME ? 0.08 : 0.03;
+        double proximity = 0.0;
+        if (currentPosition != null && event.position() != null) {
+            double distance = currentPosition.distanceTo(event.position());
+            if (Double.isFinite(distance)) proximity = 0.08 / (1.0 + distance / 32.0);
+        }
+        return semantic + recency + outcome + proximity;
     }
 
     public synchronized String summarizeForPrompt(long gameTick) {
@@ -427,6 +508,21 @@ public final class SemanticWorldModel {
         return new WorldAssetIndex.Position(position.dimension(),
                 (int) Math.floor(position.x()), (int) Math.floor(position.y()),
                 (int) Math.floor(position.z()));
+    }
+
+    private static boolean semanticAsset(WorldAssetIndex.Asset asset) {
+        String kind = asset.kind();
+        return asset.stored() || kind.startsWith("station_")
+                || kind.equals("storage") || kind.equals("bed")
+                || kind.equals("portal") || kind.equals("block_entity")
+                || asset.capabilities().contains("world:placed");
+    }
+
+    private static boolean derivedAssetSubject(String subject) {
+        return subject != null && (subject.startsWith("asset:")
+                || subject.startsWith("inventory:")
+                || subject.equals("self") || subject.equals("owner")
+                || subject.equals("environment") || subject.startsWith("actor:"));
     }
 
     private static boolean valueMatches(String actual, String expected) {

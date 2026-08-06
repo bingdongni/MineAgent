@@ -62,6 +62,7 @@ public final class HierarchicalRollingPlanner {
     private long observedWorldRevision;
     private long lastProgressTick;
     private long lastProgressVersion = Long.MIN_VALUE;
+    private String lastBlockedReason;
     private long lastSignalTick = Long.MIN_VALUE;
     private String lastSignalSignature = "";
     private int consecutiveFailures;
@@ -88,6 +89,7 @@ public final class HierarchicalRollingPlanner {
         observedPlanRevision = state.revision();
         observedWorldRevision = worldModel.revision();
         lastProgressTick = Math.max(0L, gameTick);
+        lastSignalSignature = "";
         revision++;
     }
 
@@ -99,18 +101,26 @@ public final class HierarchicalRollingPlanner {
         lastProgressTick = Math.max(0L, gameTick);
         lastProgressVersion = snapshot == null
                 ? Long.MIN_VALUE : snapshot.progressVersion();
+        lastBlockedReason = snapshot == null ? null : snapshot.blockedReason();
+        lastSignalSignature = "";
         revision++;
     }
 
     public synchronized void onTaskProgress(String taskId, TaskSnapshot snapshot,
                                             long gameTick) {
         if (!taskActive || taskId == null || !taskId.equals(activeTaskId)) return;
-        if (snapshot != null && (snapshot.progressVersion() != lastProgressVersion
-                || snapshot.isBlocked())) {
-            lastProgressVersion = snapshot.progressVersion();
-            lastProgressTick = Math.max(lastProgressTick, gameTick);
-            revision++;
-        }
+        if (snapshot == null) return;
+        boolean progressed = snapshot.progressVersion() != lastProgressVersion;
+        boolean blockerChanged = !java.util.Objects.equals(
+                snapshot.blockedReason(), lastBlockedReason);
+        if (!progressed && !blockerChanged) return;
+        lastProgressVersion = snapshot.progressVersion();
+        lastBlockedReason = snapshot.blockedReason();
+        if (progressed) lastProgressTick = Math.max(lastProgressTick, gameTick);
+        // Re-arm the gate only for genuinely new executor evidence. Repeated
+        // blocked heartbeats used to produce a fresh replan signature forever.
+        lastSignalSignature = "";
+        revision++;
     }
 
     public synchronized void onTaskFinished(String taskId, TaskState state,
@@ -119,6 +129,8 @@ public final class HierarchicalRollingPlanner {
         taskActive = false;
         activeTaskId = null;
         activeTaskName = null;
+        lastBlockedReason = null;
+        lastSignalSignature = "";
         lastProgressTick = Math.max(lastProgressTick, gameTick);
         if (state == TaskState.SUCCESS) consecutiveFailures = 0;
         else if (state == TaskState.FAILED || state == TaskState.CANCELLED) {
@@ -181,9 +193,13 @@ public final class HierarchicalRollingPlanner {
         observedWorldRevision = Math.max(observedWorldRevision, worldRevision);
         if (reason == null) return null;
         String active = current == null ? null : current.id();
-        String signature = reason + "|" + active + "|" + state.revision();
-        // One unchanged invalid state produces one paid reasoning wake. A new
-        // plan revision, active step, or failure reason creates a new signature.
+        String decisionEvidence = current == null ? null : current.lastFailure();
+        String signature = reason + "|" + goalEpoch + "|" + active + "|"
+                + normalize(decisionEvidence, "") + "|" + consecutiveFailures;
+        // Graph revisions include progress/UI bookkeeping and are not decision
+        // evidence. Keying the gate by revision caused one paid LLM wake per
+        // repeated blocked snapshot. Display-only elapsed ticks also change on
+        // every stall heartbeat, so the gate uses only semantic evidence.
         if (signature.equals(lastSignalSignature)) return null;
         lastSignalSignature = signature;
         lastSignalTick = gameTick;
@@ -241,6 +257,8 @@ public final class HierarchicalRollingPlanner {
         activeTaskId = null;
         activeTaskName = null;
         lastProgressVersion = Long.MIN_VALUE;
+        lastBlockedReason = null;
+        lastSignalSignature = "";
     }
 
     private static List<PlanGraph.PlanNode> tacticalWindow(List<PlanGraph.PlanNode> nodes) {

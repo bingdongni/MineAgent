@@ -242,25 +242,34 @@ public class CognitiveMap {
      * 按类别分组，只显示已验证且重要的 POI，避免 token 膨胀。
      */
     public String summarizeForPrompt() {
-        List<PointOfInterest> verified = new ArrayList<>();
-        for (PointOfInterest poi : pois.values()) {
-            if (poi.verified()) verified.add(poi);
-        }
-        if (verified.isEmpty()) return "";
+        return summarizeForPrompt("", 8);
+    }
 
-        // 按重要性排序，最多显示 8 条
-        verified.sort((a, b) -> Float.compare(b.importance(), a.importance()));
+    /** Return a bounded spatial-memory packet relevant to the active goal. */
+    public String summarizeForPrompt(String query, int limit) {
+        if (limit <= 0) return "";
+        String needle = query == null ? "" : query.trim();
+        List<ScoredPoi> verified = pois.values().stream()
+                .filter(PointOfInterest::verified)
+                .map(poi -> new ScoredPoi(poi, spatialScore(needle, poi)))
+                .filter(value -> needle.isBlank() || value.score() > 0.0)
+                .sorted(Comparator.comparingDouble(ScoredPoi::score).reversed()
+                        .thenComparing(value -> value.poi().lastVisitTime(),
+                                Comparator.reverseOrder()))
+                .toList();
+        if (verified.isEmpty()) return "";
 
         StringBuilder sb = new StringBuilder();
         sb.append("## 空间记忆\n");
         int shown = 0;
         Map<String, Integer> perTopCategory = new HashMap<>();
-        for (PointOfInterest poi : verified) {
-            if (shown >= 8) break;
+        for (ScoredPoi value : verified) {
+            if (shown >= Math.min(8, limit)) break;
+            PointOfInterest poi = value.poi();
             // 同一大类（resource/hazard/...）最多显示 3 条，保证多样性
             String topCat = poi.category().split(":")[0];
             int count = perTopCategory.getOrDefault(topCat, 0);
-            if (count >= 3) continue;
+            if (count >= 2) continue;
             sb.append("- ").append(poi.label())
               .append(" at (").append(poi.x()).append(",")
               .append(poi.y()).append(",").append(poi.z()).append(")")
@@ -273,6 +282,16 @@ public class CognitiveMap {
             shown++;
         }
         return sb.toString();
+    }
+
+    private record ScoredPoi(PointOfInterest poi, double score) {}
+
+    private static double spatialScore(String query, PointOfInterest poi) {
+        double semantic = query.isBlank() ? 0.25 : TextSimilarity.score(query,
+                poi.category() + " " + poi.label());
+        if (!query.isBlank() && semantic <= 0.0) return 0.0;
+        return semantic + poi.importance() * 0.20
+                + Math.min(0.08, poi.visitCount() * 0.01);
     }
 
     // ─── 持久化支持 ───

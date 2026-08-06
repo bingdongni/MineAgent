@@ -1,5 +1,10 @@
 package com.mineagent.engine.skill;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.mineagent.api.agent.tool.ToolRegistry;
 import com.mineagent.engine.memory.TextSimilarity;
 
 import java.util.*;
@@ -24,6 +29,18 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SkillLibrary {
 
+    private static final int MAX_SEQUENCE_STEPS = 24;
+    private static final Set<String> CONTROL_TOOLS = Set.of(
+            "execute_skill", "load_skill", "list_learned_skills",
+            "query_extra_tools", "explore_mechanism", "todowrite",
+            "task_status", "task_stop", "coordinate_team");
+    private static final Set<String> OBSERVATION_TOOLS = Set.of(
+            "look_around", "scan_blocks", "scan_nearby_entities",
+            "get_self_status", "get_owner_status", "get_world_info",
+            "resolve_need", "lookup_recipe", "inspect_block",
+            "inspect_block_storage", "inspect_gui", "recall_memory",
+            "locate_structure", "locate_biome");
+
     /**
      * 一个可复用技能。
      */
@@ -43,7 +60,11 @@ public class SkillLibrary {
      */
     public void register(String name, String description, String triggerCondition,
                           String actionSequence, boolean success) {
-        Skill existing = skills.get(name);
+        String normalizedName = name == null ? "" : name.trim();
+        String validatedSequence = validateSequence(actionSequence);
+        if (normalizedName.isBlank() || vagueLegacyGoal(normalizedName, description,
+                triggerCondition) || validatedSequence == null) return;
+        Skill existing = skills.get(normalizedName);
         if (existing != null) {
             // 更新成功率和使用次数
             int newInvocations = existing.invocations() + 1;
@@ -52,16 +73,16 @@ public class SkillLibrary {
             // A failed adaptation is evidence about the skill's reliability,
             // but it must not overwrite the last verified parameter trace.
             Skill updated = new Skill(
-                    name, success ? description : existing.description(),
+                    normalizedName, success ? description : existing.description(),
                     success ? triggerCondition : existing.triggerCondition(),
-                    success ? actionSequence : existing.actionSequence(),
+                    success ? validatedSequence : existing.actionSequence(),
                     newRate, newInvocations, existing.createdTick());
-            skills.put(name, updated);
+            skills.put(normalizedName, updated);
         } else {
             Skill skill = new Skill(
-                    name, description, triggerCondition, actionSequence,
+                    normalizedName, description, triggerCondition, validatedSequence,
                     success ? 1.0 : 0.0, 1, System.currentTimeMillis());
-            skills.put(name, skill);
+            skills.put(normalizedName, skill);
         }
 
     }
@@ -76,21 +97,26 @@ public class SkillLibrary {
      * @return 匹配的技能列表（按匹配度排序），最多 3 个
      */
     public List<Skill> retrieve(String taskDescription) {
-        if (taskDescription == null || taskDescription.isBlank()) {
-            return Collections.emptyList();
-        }
+        return relevant(taskDescription, 3);
+    }
 
-        // ASCII words alone cannot retrieve Chinese variants such as
-        // "收集木头" vs "砍树取木材". TextSimilarity adds Han bigram/trigram
-        // features while remaining deterministic and dependency-free.
+    /** Retrieve a bounded relevant subset; a blank query returns the best skills. */
+    public List<Skill> relevant(String taskDescription, int limit) {
+        if (limit <= 0 || skills.isEmpty()) return Collections.emptyList();
+        String query = taskDescription == null ? "" : taskDescription.trim();
         return skills.values().stream()
-                .map(skill -> Map.entry(skill, TextSimilarity.score(taskDescription,
-                        skill.name() + " " + skill.description() + " "
-                                + skill.triggerCondition())))
-                .filter(entry -> entry.getValue() > 0.0)
-                .filter(entry -> entry.getKey().successRate() > 0.7)
-                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
-                .limit(3)
+                .filter(skill -> skill.successRate() > 0.7)
+                .map(skill -> Map.entry(skill, query.isBlank() ? skill.successRate()
+                        : TextSimilarity.score(query, skill.name() + " "
+                                + skill.description() + " " + skill.triggerCondition())))
+                .filter(entry -> query.isBlank() || entry.getValue() > 0.0)
+                .sorted(Comparator.<Map.Entry<Skill, Double>>comparingDouble(
+                                Map.Entry::getValue).reversed()
+                        .thenComparing(entry -> entry.getKey().successRate(),
+                                Comparator.reverseOrder())
+                        .thenComparing(entry -> entry.getKey().invocations(),
+                                Comparator.reverseOrder()))
+                .limit(Math.min(8, limit))
                 .map(Map.Entry::getKey)
                 .toList();
     }
@@ -168,10 +194,13 @@ public class SkillLibrary {
                     || skill.actionSequence() == null || skill.actionSequence().isBlank()) {
                 continue;
             }
+            String validatedSequence = validateSequence(skill.actionSequence());
+            if (vagueLegacyGoal(skill.name(), skill.description(), skill.triggerCondition())
+                    || validatedSequence == null) continue;
             Skill normalized = new Skill(skill.name().trim(),
                     skill.description() == null ? "" : skill.description(),
                     skill.triggerCondition() == null ? "" : skill.triggerCondition(),
-                    skill.actionSequence(),
+                    validatedSequence,
                     Math.max(0.0, Math.min(1.0, skill.successRate())),
                     Math.max(1, skill.invocations()), Math.max(0L, skill.createdTick()));
             skills.put(normalized.name(), normalized);
@@ -210,6 +239,52 @@ public class SkillLibrary {
      */
     public java.util.Collection<Skill> allSkills() {
         return skills.values();
+    }
+
+    /**
+     * Validate persisted traces before the runtime can replay them. A sequence
+     * must contain a real action; query-only transcripts merely repeat costly
+     * discovery and were the main source of the old skill-file pollution.
+     */
+    private static String validateSequence(String sequence) {
+        JsonElement parsed;
+        try {
+            parsed = JsonParser.parseString(sequence);
+        } catch (RuntimeException malformed) {
+            return null;
+        }
+        if (!parsed.isJsonArray()) return null;
+        JsonArray steps = parsed.getAsJsonArray();
+        if (steps.isEmpty() || steps.size() > MAX_SEQUENCE_STEPS) return null;
+        boolean registryReady = ToolRegistry.size() > 0;
+        boolean hasAction = false;
+        for (JsonElement element : steps) {
+            if (!element.isJsonObject()) return null;
+            JsonObject step = element.getAsJsonObject();
+            if (!step.has("tool") || !step.get("tool").isJsonPrimitive()) return null;
+            String tool;
+            try {
+                tool = step.get("tool").getAsString().trim().toLowerCase(Locale.ROOT);
+            } catch (RuntimeException malformedTool) {
+                return null;
+            }
+            if (!tool.matches("[a-z][a-z0-9_]{0,63}") || CONTROL_TOOLS.contains(tool)) {
+                return null;
+            }
+            if (registryReady && ToolRegistry.get(tool).isEmpty()) return null;
+            if (step.has("args") && !step.get("args").isJsonObject()) return null;
+            if (!OBSERVATION_TOOLS.contains(tool)) hasAction = true;
+        }
+        return hasAction ? steps.toString() : null;
+    }
+
+    private static boolean vagueLegacyGoal(String name, String description,
+                                            String triggerCondition) {
+        return "general_task".equalsIgnoreCase(name == null ? "" : name.trim())
+                || "general_task".equalsIgnoreCase(
+                description == null ? "" : description.trim())
+                || "general_task".equalsIgnoreCase(
+                triggerCondition == null ? "" : triggerCondition.trim());
     }
 
 }

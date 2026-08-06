@@ -92,6 +92,20 @@ final class PlanGraphTest {
                 graph.exportState().nodes().getFirst().status());
     }
 
+    @Test void identicalBlockedHeartbeatDoesNotAdvanceRevision() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("reach target", List.of(draft("move", List.of())), List.of());
+        graph.bindTask("task", "goto", null, 1L);
+        TaskSnapshot blocked = TaskSnapshot.progress("blocked", "waiting at wall",
+                0L, 1L, null, null, null, "solid wall", "same evidence", 7L);
+
+        graph.recordProgress("task", blocked, 2L);
+        long revision = graph.exportState().revision();
+        graph.recordProgress("task", blocked, 3L);
+
+        assertEquals(revision, graph.exportState().revision());
+    }
+
     private static PlanGraph.DraftNode draft(String id, List<String> dependencies) {
         return new PlanGraph.DraftNode(id, id, "executor verifies " + id,
                 "medium", dependencies, PlanGraph.NodeStatus.PENDING);

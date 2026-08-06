@@ -7,6 +7,14 @@ English | [简体中文](README.md)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
 
+## v0.2.6: long-term memory, realtime decisions, and token efficiency
+
+- Owner intent, strategic goals, and the active plan step now form one retrieval query, so prompts include only relevant semantic outcomes, verified experiences, cognitive-map POIs, and place-event memories.
+- Owner goals and verified world-action outcomes persist across restarts. Routine scans, live inventory projections, and derived asset facts remain volatile, and legacy `asset:*` pollution is filtered during migration.
+- Identical blocked heartbeats, cognition events, and rolling replans trigger one decision. Routine body narration no longer starts implicit LLM requests or repeatedly interrupts HTTP calls.
+- Dynamic tools remain exposed for the active owner goal, discovery no longer repeats complete schemas, and routine follow-up generations use a bounded output budget while initial strategy and large builds keep the configured budget.
+- Learned skills must contain a real action and pass JSON, tool-availability, and executability validation. Skill queries return only a small objective-relevant subset.
+
 ## v0.2.5: L3 closed-loop intelligence architecture
 
 - The closed-loop skill runtime executes learned skills one step at a time, checks preconditions, waits for authoritative task outcomes, verifies semantic postconditions, and requests replanning instead of blindly replaying a failed suffix.
@@ -114,8 +122,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.2.5.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.2.5.jar`
+- `fabric/build/libs/mineagent-fabric-0.2.6.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.2.6.jar`
 
 ## Modules
 

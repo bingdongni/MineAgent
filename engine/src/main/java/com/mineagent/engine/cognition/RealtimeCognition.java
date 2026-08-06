@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class RealtimeCognition {
     private static final long NORMAL_INTERVAL_TICKS = 4L;
-    private static final long DELIBERATION_COOLDOWN_TICKS = 80L;
     private static final int MAX_RECENT_EVENTS = 8;
 
     public record OwnerIntentSignal(TheoryOfMind.PlayerIntent intent,
@@ -44,7 +43,6 @@ public final class RealtimeCognition {
     private final ArrayDeque<String> recentEvents = new ArrayDeque<>();
 
     private long lastObservationTick = Long.MIN_VALUE;
-    private long lastDeliberationTick = Long.MIN_VALUE;
     private String lastDeliberationSignature = "";
     private float previousHealth = Float.NaN;
     private float previousOwnerHealth = Float.NaN;
@@ -156,16 +154,19 @@ public final class RealtimeCognition {
     }
 
     private String deliberationEvent(SituationSnapshot frame, TacticalDecision decision) {
-        if (!decision.deliberationRequired()) return null;
-        String signature = decision.posture() + "|" + frame.task().taskId()
-                + "|" + frame.task().blockedReason();
-        if (signature.equals(lastDeliberationSignature)
-                && lastDeliberationTick != Long.MIN_VALUE
-                && frame.gameTick() - lastDeliberationTick < DELIBERATION_COOLDOWN_TICKS) {
+        if (!decision.deliberationRequired()) {
+            // Once the blocker clears, a later recurrence is a new decision
+            // episode and may legitimately wake the planner again.
+            lastDeliberationSignature = "";
             return null;
         }
+        String signature = decision.posture() + "|" + frame.task().taskId()
+                + "|" + frame.task().blockedReason();
+        // An unchanged invalid state needs one replan, not one replan every
+        // cooldown window. The old periodic emission repeatedly cancelled HTTP
+        // calls while the executor remained blocked.
+        if (signature.equals(lastDeliberationSignature)) return null;
         lastDeliberationSignature = signature;
-        lastDeliberationTick = frame.gameTick();
         return "[COGNITION_DECISION] " + decision.compact()
                 + "; executor evidence invalidated the current action. Replan from live evidence instead of retrying unchanged.";
     }

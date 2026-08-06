@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mineagent.api.agent.tool.Schema;
 import com.mineagent.api.agent.tool.Tool;
+import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.task.TaskContext;
 
@@ -47,8 +48,10 @@ public class LearnedSkillsTool implements Tool {
 
     @Override
     public Map<String, Object> parameterSchema() {
-        // No parameters — just list all learned skills
-        return Schema.object().build();
+        return Schema.object()
+                .optionalString("query",
+                        "Current objective; returns only the most relevant learned skills")
+                .build();
     }
 
     @Override
@@ -61,22 +64,22 @@ public class LearnedSkillsTool implements Tool {
         }
 
         var skillLib = loop.skillLibrary();
-        var skills = skillLib.allSkills();
+        String query = ToolArgs.getString(args, "query", "");
+        var skills = skillLib.relevant(query, query.isBlank() ? 5 : 3);
 
         if (skills.isEmpty()) {
             JsonObject result = new JsonObject();
             result.addProperty("count", 0);
-            result.addProperty("message",
-                    "You haven't learned any skills yet. Skills are "
-                    + "recorded automatically when you complete tasks "
-                    + "successfully. Keep playing and you'll build up "
-                    + "a library of reusable action patterns.");
+            result.addProperty("message", skillLib.size() == 0
+                    ? "No verified action skills have been learned yet."
+                    : "No reliable learned skill matches this objective.");
             reply.accept(result.toString());
             return;
         }
 
         JsonObject result = new JsonObject();
         result.addProperty("count", skills.size());
+        result.addProperty("total_available", skillLib.size());
 
         JsonArray arr = new JsonArray();
         for (var skill : skills) {

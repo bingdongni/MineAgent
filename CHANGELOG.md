@@ -2,6 +2,32 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.2.6] - 2026-08-06
+
+### Added
+
+- Add goal-conditioned long-term recall across owner intent, strategic goal, active plan step, verified experiences, semantic outcomes, cognitive-map POIs, and place-event memory.
+- Persist verified physical-action outcomes and owner goals while keeping live scans, inventory projections, and routine observations volatile.
+- Add regression coverage for repeated blocked heartbeats, durable semantic recall, asset persistence boundaries, goal-conditioned spatial memory, and learned-skill validation.
+
+### Changed
+
+- Coalesce duplicate cognition, scheduler, and rolling-planner events before they can interrupt an in-flight LLM request.
+- Keep specialized tool schemas exposed for the active owner goal and return only tool names from discovery results instead of duplicating complete schemas.
+- Use a compact stable core tool surface, deterministic intent-based tool routing, and a 4K cap for routine follow-up generations while preserving full output budgets for initial strategy and large structured builds.
+- Retrieve only a small query-relevant subset of learned skills and require every learned trace to contain at least one executable world action.
+- Bound the persisted world-asset index and prioritize durable storage, workstations, beds, portals, modded block entities, and verified placements over ordinary ore, logs, and water scans.
+- Increment the memory format to version 8; v1-v7 files remain readable and are cleaned during migration without deleting user memory.
+
+### Fixed
+
+- Prevent identical blocked progress heartbeats from incrementing plan revisions or repeatedly waking and cancelling LLM requests.
+- Prevent elapsed stall ticks from changing the replan deduplication signature every server tick.
+- Prevent normal body narration from entering the reasoning inbox and implicitly starting extra turns.
+- Prevent history/tool discovery churn from repeatedly dropping provider prompt-cache reuse within one owner objective.
+- Prevent old plan nodes from overriding a newer owner instruction during experience retrieval and skill naming.
+- Remove legacy `asset:*`, query-only, malformed, obsolete-tool, and `general_task` pollution from persisted semantic and skill memory.
+
 ## [0.2.5] - 2026-08-06
 
 ### Added

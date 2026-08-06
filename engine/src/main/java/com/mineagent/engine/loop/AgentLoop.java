@@ -132,12 +132,11 @@ public class AgentLoop {
      */
     private static final Set<String> CORE_TOOL_NAMES = Set.of(
             "goto", "look_around", "scan_blocks", "get_self_status",
-            "get_owner_status", "get_world_info", "resolve_need",
+            "resolve_need",
             "auto_mine", "build", "craft", "lookup_recipe", "interact_at",
             "collect_items", "eat_item", "equip_item", "transfer_items",
             "melee_attack", "todowrite", "task_status", "task_stop",
-            "query_extra_tools", "list_learned_skills", "load_skill",
-            "execute_skill", "explore_mechanism", "coordinate_team");
+            "query_extra_tools");
     private static final Set<String> SKILL_ACTION_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
@@ -151,6 +150,17 @@ public class AgentLoop {
             "get_self_status", "get_owner_status", "get_world_info",
             "resolve_need", "lookup_recipe", "inspect_block",
             "inspect_block_storage", "inspect_gui", "recall_memory");
+    private static final Set<String> INVENTORY_EXTRA_TOOLS = Set.of(
+            "drop_items", "inspect_gui", "close_gui", "inspect_block_storage");
+    private static final Set<String> PERCEPTION_EXTRA_TOOLS = Set.of(
+            "recall_memory", "inspect_block", "scan_nearby_entities",
+            "get_owner_status", "get_world_info");
+    private static final Set<String> COMBAT_EXTRA_TOOLS = Set.of(
+            "scan_nearby_entities", "ranged_attack", "interact_entity");
+    private static final Set<String> LOCATION_EXTRA_TOOLS = Set.of(
+            "recall_memory", "locate_structure", "locate_biome");
+    private static final Set<String> GUI_EXTRA_TOOLS = Set.of(
+            "inspect_gui", "close_gui", "inspect_block", "inspect_block_storage");
 
     /** 距上次玩家消息的时间（毫秒）。
      *  如果玩家刚刚说话（<30秒），不使用缓存 — 对话场景需要
@@ -167,8 +177,10 @@ public class AgentLoop {
     private volatile String reasoningEffort; // off/low/medium/high/xhigh/max or null
 
     private final List<ChatMessage> history = new ArrayList<>();
-    private final List<String> inbox = new ArrayList<>(); // pending body-log entries
+    /** Pending deliberation events, coalesced by semantic identity. */
+    private final LinkedHashMap<String, String> inbox = new LinkedHashMap<>();
     private final Object inboxLock = new Object(); // unified inbox lock (L1 fix)
+    private static final int MAX_PENDING_EVENTS = 32;
 
     private volatile boolean inProgress = false;
     private volatile boolean suspended = false;
@@ -376,28 +388,24 @@ public class AgentLoop {
      * </ul>
      */
     public synchronized void wake(String reason) {
-        // A monotonic generation cannot collide when two events arrive in the
-        // same millisecond. The previous wall-clock timestamp occasionally did,
-        // allowing an obsolete response to execute after a newer owner command.
-        eventGeneration.incrementAndGet();
         if (suspended) {
             // Preserve meaningful events for the first post-respawn turn, but
             // never let a dead/paused companion start LLM or tool work.
             if (!reasonAlreadyRecorded(reason)) {
-                synchronized (inboxLock) {
-                    inbox.add(reason);
-                }
+                enqueueInbox(reason);
             }
             return;
         }
         if (inProgress) {
             // Currently in a turn - add to inbox for batch processing
             if (!reasonAlreadyRecorded(reason)) {
-                synchronized (inboxLock) {
-                    inbox.add(reason);
-                }
+                enqueueInbox(reason);
             }
             if (shouldInterruptActiveCall(reason)) {
+                // Generation advances only for a newly admitted decision event.
+                // Previously every repeated blocked heartbeat advanced it and
+                // interrupted the same HTTP request hundreds of times.
+                eventGeneration.incrementAndGet();
                 Thread activeCall = activeLLMCallThread.get();
                 if (activeCall != null) activeCall.interrupt();
             }
@@ -407,10 +415,9 @@ public class AgentLoop {
         // the reason itself so providers such as Anthropic receive a real user
         // event instead of an invalid request containing only system messages.
         if (!reasonAlreadyRecorded(reason)) {
-            synchronized (inboxLock) {
-                inbox.add(reason);
-            }
+            enqueueInbox(reason);
         }
+        eventGeneration.incrementAndGet();
         startTurn(reason);
     }
 
@@ -430,12 +437,63 @@ public class AgentLoop {
     }
 
     /**
+     * Add one decision event while replacing an older event with the same
+     * semantic identity. The bound is a final safety net for modded producers
+     * that emit unbounded diagnostics.
+     */
+    private boolean enqueueInbox(String event) {
+        if (event == null || event.isBlank()) return false;
+        String normalized = event.trim();
+        String key = inboxKey(normalized);
+        synchronized (inboxLock) {
+            String previous = inbox.put(key, normalized);
+            while (inbox.size() > MAX_PENDING_EVENTS) {
+                Iterator<String> oldest = inbox.keySet().iterator();
+                if (!oldest.hasNext()) break;
+                oldest.next();
+                oldest.remove();
+            }
+            return previous == null || !previous.equals(normalized);
+        }
+    }
+
+    private static String inboxKey(String event) {
+        if (event.contains("[TASK_FINISHED]")) {
+            return "task_finished:" + eventField(event, "task_id");
+        }
+        if (event.contains("[SKILL_FINISHED]")) {
+            return "skill_finished:" + eventField(event, "run_id");
+        }
+        if (event.contains("[ROLLING_REPLAN]")) {
+            return "rolling:" + eventField(event, "reason") + ':'
+                    + eventField(event, "active_step");
+        }
+        if (event.contains("[COGNITION_DECISION]")) return "cognition_decision";
+        return event.replaceAll("\\s+", " ");
+    }
+
+    private static String eventField(String event, String field) {
+        String marker = field + '=';
+        int start = event.indexOf(marker);
+        if (start < 0) return "unknown";
+        start += marker.length();
+        int end = event.indexOf(' ', start);
+        return end < 0 ? event.substring(start) : event.substring(start, end);
+    }
+
+    /**
      * Add an owner message and wake the loop.
      */
     public void onOwnerMessage(String message) {
         // Track last owner command for decision cache keying
         lastOwnerCommand = message.length() > 120 ? message.substring(0, 120) : message;
+        // Keep a separate, bounded objective. The cache key deliberately uses
+        // a shorter string, but retrieval and learned skills must not fall back
+        // to an older plan node just because the new instruction was truncated.
+        activeOwnerGoal = truncateForLog(message, 360);
         lastOwnerMessageTime = System.currentTimeMillis();
+        prepareToolsForOwnerIntent(message);
+        semanticWorldModel.recordOwnerIntent(message, currentGameTickSafe());
         // Observe player intent for Theory of Mind
         // TheoryOfMind uses game ticks for its decay window. Passing epoch
         // milliseconds here made a documented 60-second window last about
@@ -492,23 +550,23 @@ public class AgentLoop {
         // e.g. "saw iron_ore at (10, 64, -5)" → remember it
         recordPlaceEventFromLog(narrative);
 
-        synchronized (inboxLock) {
-            inbox.add("[BODY] " + narrative);
-        }
         // Low-level body observations are evidence, not independent decision
         // points. Waking on every breath/follow/pickup message created request
-        // storms and stale responses. Only terminal or explicitly coordinated
-        // events require immediate high-level deliberation.
-        if (isDeliberationEvent(narrative)) wake("body_log");
+        // storms and also caused the turn-final inbox check to start an extra
+        // request even without wake(). LiveBodyState/RealtimeCognition already
+        // carry routine evidence, so only deliberation events enter the inbox.
+        if (isDeliberationEvent(narrative)
+                && enqueueInbox("[BODY] " + narrative)) {
+            wake("body_log");
+        }
     }
 
     /** Receive an explicit teammate event without treating it as owner speech. */
     public void onTeamEvent(String event) {
         if (event == null || event.isBlank()) return;
-        synchronized (inboxLock) {
-            inbox.add("[TEAM] " + event.trim());
+        if (enqueueInbox("[TEAM] " + event.trim())) {
+            wake("team_event");
         }
-        wake("team_event");
     }
 
     /** Commit a newly admitted body task to the shared planning state. */
@@ -616,8 +674,10 @@ public class AgentLoop {
         String mappedAction = dispatchedActionTools.remove(taskId);
         String outcomeAction = mappedAction != null ? mappedAction
                 : pendingAction == null ? taskName : pendingAction.call().name();
+        // An executor terminal result is verified world interaction evidence.
+        // Persist it across restarts; routine observations remain volatile.
         semanticWorldModel.recordOutcome(outcomeAction,
-                state == TaskState.SUCCESS, message, taskId, gameTick);
+                state == TaskState.SUCCESS, message, taskId, gameTick, true);
         mechanismExplorer.onTaskFinished(taskId, state, message, gameTick);
         if (skillAction) {
             skillRuntime.onTaskFinished(taskId, state, message, gameTick);
@@ -658,13 +718,6 @@ public class AgentLoop {
                 theoryOfMind.observeIntent(signal.intent(), signal.confidence(),
                         signal.evidence(), signal.gameTick());
             }
-            if (result.deliberationEvent() != null) {
-                synchronized (inboxLock) {
-                    inbox.add(result.deliberationEvent());
-                }
-                wake("cognition_decision");
-            }
-
             // Skill and experiment transitions run on the authoritative server
             // thread. Each transition is bounded to one step per tick.
             skillRuntime.tick(gameTick);
@@ -679,11 +732,13 @@ public class AgentLoop {
             }
             HierarchicalRollingPlanner.ReplanSignal replan =
                     skillRuntime.active() ? null : rollingPlanner.tick(gameTick);
-            if (replan != null) {
-                synchronized (inboxLock) {
-                    inbox.add(replan.event());
-                }
-                wake("rolling_replan");
+            // Tactical cognition and the rolling planner can identify the same
+            // blocked executor frame in one tick. Prefer the structured rolling
+            // signal and admit only one paid deliberation event.
+            String deliberation = replan != null
+                    ? replan.event() : result.deliberationEvent();
+            if (deliberation != null && enqueueInbox(deliberation)) {
+                wake(replan != null ? "rolling_replan" : "cognition_decision");
             }
         } catch (Throwable failure) {
             // Entity teardown can race the final engine tick. Cognitive
@@ -972,7 +1027,7 @@ public class AgentLoop {
         } catch (Throwable failure) {
             String detail = toolErrorJson(toolName, failure);
             semanticWorldModel.recordOutcome(toolName, false, detail,
-                    actionId, currentGameTickSafe());
+                    actionId, currentGameTickSafe(), true);
             dispatchedActionTools.remove(actionId);
             return new SkillRuntime.DispatchResult(false,
                     tool.dispatchesAsyncTask(), false, detail);
@@ -981,7 +1036,7 @@ public class AgentLoop {
         if (raw == null) {
             String detail = "Tool violated callback contract and returned no result";
             semanticWorldModel.recordOutcome(toolName, false, detail,
-                    actionId, currentGameTickSafe());
+                    actionId, currentGameTickSafe(), true);
             dispatchedActionTools.remove(actionId);
             return new SkillRuntime.DispatchResult(false,
                     tool.dispatchesAsyncTask(), false, detail);
@@ -992,7 +1047,7 @@ public class AgentLoop {
         if (!asynchronous) {
             dispatchedActionTools.remove(actionId);
             semanticWorldModel.recordOutcome(toolName, success, raw,
-                    actionId, currentGameTickSafe());
+                    actionId, currentGameTickSafe(), true);
         }
         mechanismExplorer.onToolDispatched(actionId, toolName,
                 arguments.toString(), currentGameTickSafe());
@@ -1020,6 +1075,9 @@ public class AgentLoop {
         semanticWorldModel.observe("skill:" + snapshot.runId(), "status",
                 snapshot.status().name().toLowerCase(Locale.ROOT), null, 1.0,
                 "skill_runtime", snapshot.runId(), gameTick, 2_400L, false);
+        semanticWorldModel.recordOutcome("execute_skill", success,
+                snapshot.skillName() + ": " + snapshot.lastEvidence(),
+                snapshot.runId(), gameTick, true);
         onBodyLog("[SKILL_FINISHED] run_id=" + snapshot.runId()
                 + " skill=" + snapshot.skillName() + " state=" + snapshot.status()
                 + " evidence=" + snapshot.lastEvidence());
@@ -1033,6 +1091,60 @@ public class AgentLoop {
                 exposedExtraTools.add(name);
             }
         }
+    }
+
+    /**
+     * Select optional schemas once per owner goal. This is a latency router,
+     * not a task classifier: the LLM still decides what to do, and
+     * query_extra_tools remains the language/mod-agnostic fallback.
+     */
+    private void prepareToolsForOwnerIntent(String message) {
+        exposedExtraTools.clear();
+        String intent = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        if (containsAny(intent, "give", "drop", "hand", "transfer", "store",
+                "retrieve", "给", "交给", "丢", "转移", "放入", "取出", "箱子")) {
+            exposeExtraTools(INVENTORY_EXTRA_TOOLS);
+        }
+        if (containsAny(intent, "craft", "make", "smelt", "cook", "recipe",
+                "合成", "制作", "打造", "熔炼", "烧制", "配方")) {
+            exposeExtraTools(GUI_EXTRA_TOOLS);
+        }
+        if (containsAny(intent, "mine", "gather", "collect", "find", "resource",
+                "挖", "采集", "收集", "寻找", "资源", "矿", "木")) {
+            exposeExtraTools(PERCEPTION_EXTRA_TOOLS);
+        }
+        if (containsAny(intent, "fight", "attack", "defend", "kill", "combat",
+                "战斗", "攻击", "防御", "击杀", "怪物")) {
+            exposeExtraTools(COMBAT_EXTRA_TOOLS);
+        }
+        if (containsAny(intent, "locate", "biome", "structure", "explore", "where",
+                "定位", "群系", "结构", "探索", "哪里")) {
+            exposeExtraTools(LOCATION_EXTRA_TOOLS);
+        }
+        if (containsAny(intent, "interact", "open", "inspect", "use", "click",
+                "交互", "打开", "检查", "使用", "点击")) {
+            exposeExtraTools(GUI_EXTRA_TOOLS);
+            exposeExtraTools(Set.of("interact_entity"));
+        }
+        if (containsAny(intent, "team", "teammate", "coordinate", "cooperate",
+                "团队", "队友", "协作", "合作")) {
+            exposeExtraTools(Set.of("coordinate_team"));
+        }
+        if (containsAny(intent, "mod", "mechanism", "machine", "unknown", "experiment",
+                "模组", "机制", "机器", "陌生", "实验")) {
+            exposeExtraTools(Set.of("explore_mechanism"));
+        }
+        if (!skillLib.retrieve(intent).isEmpty()) {
+            exposeExtraTools(Set.of("execute_skill", "load_skill", "list_learned_skills"));
+        }
+    }
+
+    private static boolean containsAny(String value, String... needles) {
+        if (value == null || value.isBlank()) return false;
+        for (String needle : needles) {
+            if (value.contains(needle)) return true;
+        }
+        return false;
     }
 
     public static boolean isCoreTool(String name) {
@@ -1128,7 +1240,9 @@ public class AgentLoop {
         if (roundNumber == 0) {
             // Reset remediation counter at the start of each turn
             remediationRoundCounter = 0;
-            exposedExtraTools.clear();
+            // Extra schemas stay stable for the entire owner-goal episode.
+            // Clearing them at every task_finished turn forced repeated
+            // query_extra_tools calls and invalidated the provider tool prefix.
         }
 
         // 4. Trim history to prevent context overflow
@@ -1397,10 +1511,7 @@ public class AgentLoop {
         int successCount = 0;
         PlanGraph.State tracePlan = planner.exportState();
         PlanGraph.PlanNode traceNode = planner.currentNode();
-        String traceGoal = !tracePlan.goal().isBlank() ? tracePlan.goal()
-                : traceNode != null ? traceNode.description()
-                : lastOwnerCommand == null || lastOwnerCommand.isBlank()
-                ? "general_task" : lastOwnerCommand;
+        String traceGoal = currentGoalContext(tracePlan, traceNode);
 
         // 记录情绪变化前的 PAD 值，用于学习重要性
         float pleasureBefore = emotion.pleasure();
@@ -1520,7 +1631,9 @@ public class AgentLoop {
                     verifiedActionTrace.add(call);
                 }
             }
-            if (!episodeComplete || verifiedActionTrace.isEmpty()) return;
+            if (!episodeComplete || verifiedActionTrace.isEmpty()
+                    || verifiedActionTrace.stream().noneMatch(
+                    call -> SKILL_ACTION_TOOLS.contains(call.name()))) return;
             List<ChatMessage.ToolCallRef> verified = List.copyOf(verifiedActionTrace);
             List<String> toolNames = verified.stream()
                     .map(ChatMessage.ToolCallRef::name).toList();
@@ -1533,8 +1646,18 @@ public class AgentLoop {
     }
 
     private String currentTaskDescription() {
-        PlanGraph.PlanNode current = planner.currentNode();
-        return current == null ? "general_task" : current.description();
+        return currentGoalContext(planner.exportState(), planner.currentNode());
+    }
+
+    /** Prefer the newest owner objective over a plan restored from an older turn. */
+    private String currentGoalContext(PlanGraph.State plan, PlanGraph.PlanNode node) {
+        if (activeOwnerGoal != null && !activeOwnerGoal.isBlank()) return activeOwnerGoal;
+        if (plan != null && plan.goal() != null && !plan.goal().isBlank()) return plan.goal();
+        if (node != null && node.description() != null && !node.description().isBlank()) {
+            return node.description();
+        }
+        return lastOwnerCommand == null || lastOwnerCommand.isBlank()
+                ? "current task" : lastOwnerCommand;
     }
 
     /** Preserve parameters so a learned sequence is adaptable, not a name list. */
@@ -1787,7 +1910,8 @@ public class AgentLoop {
                 LLMResponse response;
                 try {
                     response = provider.complete(baseUrl, apiKey, model,
-                            messagesToSend, toolDefs, temperature, maxTokens, reasoningEffort);
+                            messagesToSend, toolDefs, temperature,
+                            outputTokenBudget(roundNumber), reasoningEffort);
                 } finally {
                     activeLLMCallThread.compareAndSet(requestThread, null);
                 }
@@ -1848,6 +1972,24 @@ public class AgentLoop {
             }
         }
         return null;
+    }
+
+    /**
+     * Bound routine follow-up generations without constraining large build
+     * coordinate payloads or the first strategic response. Reasoning models
+     * still receive 4K tokens so their hidden reasoning is not starved.
+     */
+    private int outputTokenBudget(int roundNumber) {
+        if (roundNumber <= 0 || maxTokens <= 4_096 || complexStructuredOutputLikely()) {
+            return maxTokens;
+        }
+        return Math.min(maxTokens, 4_096);
+    }
+
+    private boolean complexStructuredOutputLikely() {
+        String goal = activeOwnerGoal == null ? "" : activeOwnerGoal.toLowerCase(Locale.ROOT);
+        return containsAny(goal, "build", "blueprint", "structure", "architect",
+                "construction", "建造", "建筑", "蓝图", "结构");
     }
 
     /** Sleep in short slices so a new owner event or cancel wakes the loop logically. */
@@ -2191,7 +2333,7 @@ public class AgentLoop {
     private void drainInbox() {
         synchronized (inboxLock) {
             if (inbox.isEmpty()) return;
-            var batch = new ArrayList<>(inbox);
+            var batch = new ArrayList<>(inbox.values());
             inbox.clear();
             // Events are observations presented to the model, not immutable
             // system-level instructions. A user-role event also guarantees a
@@ -2357,7 +2499,8 @@ public class AgentLoop {
                         if (!async) {
                             dispatchedActionTools.remove(tc.id());
                             semanticWorldModel.recordOutcome(tc.name(), success,
-                                    safeResult, tc.id(), callbackTick);
+                                    safeResult, tc.id(), callbackTick,
+                                    durableToolOutcome(tc.name()));
                         }
                         mechanismExplorer.onToolResult(tc.id(), success, async,
                                 safeResult, callbackTick);
@@ -2379,7 +2522,8 @@ public class AgentLoop {
                     System.err.println("[MineAgent] Tool '" + tc.name()
                             + "' threw: " + t);
                     semanticWorldModel.recordOutcome(tc.name(), false,
-                            String.valueOf(t.getMessage()), tc.id(), currentGameTickSafe());
+                            String.valueOf(t.getMessage()), tc.id(), currentGameTickSafe(),
+                            durableToolOutcome(tc.name()));
                     dispatchedActionTools.remove(tc.id());
                     mechanismExplorer.onToolResult(tc.id(), false, false,
                             String.valueOf(t.getMessage()), currentGameTickSafe());
@@ -2395,6 +2539,9 @@ public class AgentLoop {
             } catch (Throwable schedulingFailure) {
                 if (state.compareAndSet(
                         ToolExecutionState.PENDING, ToolExecutionState.COMPLETED)) {
+                    semanticWorldModel.recordOutcome(tc.name(), false,
+                            String.valueOf(schedulingFailure.getMessage()), tc.id(),
+                            currentGameTickSafe(), durableToolOutcome(tc.name()));
                     resultHolder.set(toolErrorJson(tc.name(), schedulingFailure));
                     latch.countDown();
                 }
@@ -2414,7 +2561,7 @@ public class AgentLoop {
                     dispatchedActionTools.remove(exec.toolCallId());
                     semanticWorldModel.recordOutcome(exec.toolName(), false,
                             "Tool execution timed out", exec.toolCallId(),
-                            currentGameTickSafe());
+                            currentGameTickSafe(), durableToolOutcome(exec.toolName()));
                     mechanismExplorer.onToolResult(exec.toolCallId(), false,
                             false, "Tool execution timed out", currentGameTickSafe());
                     resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
@@ -2442,7 +2589,8 @@ public class AgentLoop {
                 exec.state().set(ToolExecutionState.EXPIRED);
                 dispatchedActionTools.remove(exec.toolCallId());
                 semanticWorldModel.recordOutcome(exec.toolName(), false,
-                        "Interrupted", exec.toolCallId(), currentGameTickSafe());
+                        "Interrupted", exec.toolCallId(), currentGameTickSafe(),
+                        durableToolOutcome(exec.toolName()));
                 mechanismExplorer.onToolResult(exec.toolCallId(), false,
                         false, "Interrupted", currentGameTickSafe());
                 resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
@@ -2458,6 +2606,11 @@ public class AgentLoop {
             if (r != null) results.add(r);
         }
         return results;
+    }
+
+    /** Only physical/world-changing tools belong in durable outcome memory. */
+    private static boolean durableToolOutcome(String toolName) {
+        return toolName != null && SKILL_ACTION_TOOLS.contains(toolName);
     }
 
     /**
@@ -2619,6 +2772,9 @@ public class AgentLoop {
 
     /** Track the last owner command for cache keying. */
     private volatile String lastOwnerCommand = "";
+
+    /** Full active owner objective used for memory retrieval and skill naming. */
+    private volatile String activeOwnerGoal = "";
 
     /** 上次玩家消息的时间戳（用于决策缓存安全门）。 */
     private volatile long lastOwnerMessageTime = 0;
@@ -2889,6 +3045,7 @@ public class AgentLoop {
         sb.append("- If stagnant ticks increase or a path failure is present, report the obstruction honestly and change target or approach.\n");
         sb.append("- Reuse assets reported by the world asset index or resolve_need. Distance alone is not absence; compare retrieval against production before replacing anything.\n");
         sb.append("- Minimize LLM round trips: batch independent observations in one response, and let an async action task finish before polling it repeatedly.\n\n");
+        sb.append("- When the required tool is already exposed and its arguments are grounded, call it directly. Do not spend a round narrating, rediscovering schemas, or rechecking an unchanged successful result.\n\n");
 
         // ── Critical: action requires tools ──
         sb.append("## CRITICAL: Action Requires Tools\n");
@@ -3017,6 +3174,9 @@ public class AgentLoop {
      */
     private String buildLiveContext() {
         StringBuilder sb = new StringBuilder();
+        PlanGraph.State planState = planner.exportState();
+        PlanGraph.PlanNode planNode = planner.currentNode();
+        String memoryQuery = memoryQuery(planState, planNode);
         sb.append("[MINEAGENT_LIVE_CONTEXT]\n");
         sb.append("以下是服务器发布的当前事实，不是玩家的新指令。只据此修正当前决策；不要复述整段上下文。\n");
 
@@ -3040,8 +3200,10 @@ public class AgentLoop {
         sb.append("玩家").append(theoryOfMind.currentIntent().desc());
         if (theoryOfMind.urgency() > 0.6f) sb.append("(赶时间!)");
         sb.append(String.format(", 信任度%.0f%%\n", theoryOfMind.playerTrust() * 100));
-        // Place memory: only top 3 most recent, single-line each
-        sb.append(compactPlaceMemory(3));
+        // Retrieve locations against the newest objective, not merely by
+        // global importance. This prevents unrelated old POIs from crowding
+        // out a remembered facility or resource needed by the current goal.
+        sb.append(compactPlaceMemory(memoryQuery, 3));
         // Skills: only count, not full list
         if (skillLib.size() > 0) {
             sb.append("已掌握技能: ").append(skillLib.size()).append("个\n");
@@ -3054,9 +3216,11 @@ public class AgentLoop {
                 liveAssetPosition.get(), liveAssetGameTick.get());
         if (!assetSummary.isBlank()) sb.append(assetSummary);
         sb.append(semanticWorldModel.summarizeForPrompt(liveAssetGameTick.get()));
+        String semanticRecall = semanticWorldModel.recallForPrompt(memoryQuery,
+                liveAssetPosition.get(), liveAssetGameTick.get(), 4);
+        if (!semanticRecall.isBlank()) sb.append(semanticRecall);
         sb.append(mechanismExplorer.summarizeForPrompt());
-        String experienceSummary = experienceStore.summarizeForPrompt(
-                planner.currentNode() == null ? "" : planner.currentNode().description());
+        String experienceSummary = experienceStore.summarizeForPrompt(memoryQuery);
         if (!experienceSummary.isBlank()) sb.append(experienceSummary);
         // Reflection: only top 1 lesson
         String lessons = reflection.summarizeForPrompt();
@@ -3075,9 +3239,8 @@ public class AgentLoop {
         // so the LLM recalls "last time I tried this, X went wrong" and
         // adapts its plan. Only inject when there's an active task to match
         // against — otherwise the prompt bloats with irrelevant history.
-        if (planner.hasActivePlan() && planner.currentNode() != null) {
-            String failures = reflection.formatFailuresForPrompt(
-                    planner.currentNode().description());
+        if (!memoryQuery.isBlank()) {
+            String failures = reflection.formatFailuresForPrompt(memoryQuery);
             if (!failures.isBlank()) {
                 // Compress: only the lesson lines, not the full format
                 // (the full format has headers and task descriptions that
@@ -3098,7 +3261,7 @@ public class AgentLoop {
         // can reason "I saw iron ore 5 blocks north" without re-scanning.
         // This is critical for spatial reasoning and avoiding redundant
         // exploration (the MINDCUBE "build map first, then reason" insight).
-        String spatialMemory = cognitiveMap.summarizeForPrompt();
+        String spatialMemory = cognitiveMap.summarizeForPrompt(memoryQuery, 4);
         if (!spatialMemory.isBlank()) {
             sb.append(spatialMemory);
         }
@@ -3109,6 +3272,23 @@ public class AgentLoop {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Compose one retrieval query from the newest command and both planning
+     * horizons. Keeping all three makes recall robust while a rolling plan is
+     * being repaired, but newest owner text remains first and therefore clear.
+     */
+    private String memoryQuery(PlanGraph.State planState, PlanGraph.PlanNode node) {
+        LinkedHashSet<String> parts = new LinkedHashSet<>();
+        if (activeOwnerGoal != null && !activeOwnerGoal.isBlank()) parts.add(activeOwnerGoal);
+        if (planState != null && planState.goal() != null && !planState.goal().isBlank()) {
+            parts.add(planState.goal());
+        }
+        if (node != null && node.description() != null && !node.description().isBlank()) {
+            parts.add(node.description());
+        }
+        return truncateForLog(String.join(" | ", parts), 640);
     }
 
     /** Append only immutable server-published task evidence to the prompt. */
@@ -3164,8 +3344,8 @@ public class AgentLoop {
     }
 
     /** Compact place memory: only the N most recent unique subjects. */
-    private String compactPlaceMemory(int max) {
-        var summary = placeMemory.summarizeForPrompt();
+    private String compactPlaceMemory(String query, int max) {
+        var summary = placeMemory.summarizeForPrompt(query, max);
         if (summary == null || summary.isBlank() || summary.startsWith("（暂无")) {
             return "位置记忆: (无)\n";
         }
