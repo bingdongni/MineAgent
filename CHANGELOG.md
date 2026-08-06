@@ -2,6 +2,33 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.3.1] - 2026-08-06
+
+### Added
+
+- Add verifier-backed strategic goal states and machine-checkable semantic acceptance conditions above the tactical plan graph.
+- Add suffix-only plan repair that retains verified checkpoints, constraints, evidence, and stable dependency identities.
+- Add `plan_acquisition`, a bounded recursive item dependency planner over live carried assets, observed storage/drops, recipe yields, batches, alternatives, planned surplus, and unknown station leaves.
+- Add asynchronous vanilla `use_item` execution for immediate, natural-duration, and charged item lifecycles in either hand with optional 3D aim.
+- Add asynchronous `wait_for` execution for duration, inventory, semantic fact, GUI slot, dimension, block, and entity conditions with stability windows and hard deadlines.
+- Add regression coverage for suffix preservation, blocked-milestone recovery, strategic acceptance, same-goal failure reset, restart ownership, and v1-v9 plan-state compatibility.
+
+### Changed
+
+- Keep strategic progress below 100 percent until both executor-backed milestones and explicit top-level acceptance conditions are verified.
+- Rebind recovery actions to blocked milestones and clear only the invalid tactical failure window after an accepted repair.
+- Give the explicitly requested acquisition DAG a bounded complete tool-result budget instead of truncating it at the generic action-result limit.
+- Increment the memory format to version 10; v1-v9 files remain readable and in-flight body ownership remains non-restorable.
+
+### Fixed
+
+- Prevent plan replacement while a body task or learned skill still owns evidence bindings.
+- Prevent survival preemption from turning an interrupted consumable use into success or releasing an item without rebuilding its vanilla use state.
+- Allow GUI-slot waits to verify empty slots and zero counts without confusing unrelated slot contents for the requested item.
+- Reject malformed wait, dimension, presence, and aim parameters instead of silently applying defaults.
+- Prevent unloaded chunks from proving that an entity is absent.
+- Prevent an accepted same-goal repair from immediately retriggering a stale repeated-failure signal.
+
 ## [0.3.0] - 2026-08-06
 
 ### Added

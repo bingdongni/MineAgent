@@ -31,13 +31,15 @@ public final class TodowriteTool implements Tool {
             "pending", "in_progress", "completed", "blocked", "invalidated");
     private static final int MAX_ITEMS = 64;
     private static final int MAX_CONSTRAINTS = 32;
+    private static final int MAX_GOAL_CONDITIONS = 16;
     private static final int MAX_TEXT_LENGTH = 512;
 
     @Override public String name() { return "todowrite"; }
 
     @Override public String description() {
-        return "Replace the current long-horizon plan. Completed steps are accepted only "
-                + "when executor evidence exists. Include owner constraints when they matter.";
+        return "Create or repair the verifier-backed long-horizon plan. Use update_mode=repair "
+                + "after a blocker so verified checkpoints are retained. Completed steps and "
+                + "top-level goal acceptance require observed executor/world evidence.";
     }
 
     @Override
@@ -60,11 +62,26 @@ public final class TodowriteTool implements Tool {
                 "description", Map.of("type", "string"),
                 "scope", Map.of("type", List.of("string", "null"))
         ), List.of("id", "kind", "description"));
+        Map<String, Object> conditionItem = objectSchema(Map.of(
+                "subject", Map.of("type", "string",
+                        "description", "Semantic subject, e.g. inventory:minecraft:iron_ingot"),
+                "predicate", Map.of("type", "string",
+                        "description", "Semantic predicate, e.g. count"),
+                "value", Map.of("type", "string",
+                        "description", "Expected string or finite numeric value"),
+                "comparison", Map.of("type", "string", "enum",
+                        List.of("equals", "at_least", "at_most", "present")),
+                "minimum_confidence", Map.of("type", List.of("number", "null"),
+                        "minimum", 0.0, "maximum", 1.0)
+        ), List.of("subject", "predicate", "value", "comparison"));
         return Schema.object()
                 .optionalString("goal", "The owner's current top-level goal")
+                .optionalString("update_mode", "Plan update: 'replace' for a new goal or 'repair' for the invalid suffix")
                 .array("todos", "Complete ordered plan; replaces prior nodes", todoItem, 0)
                 .optionalArray("constraints", "Hard constraints and owner preferences; omitted preserves existing constraints",
                         constraintItem, 0)
+                .optionalArray("goal_conditions", "Machine-checkable top-level acceptance conditions; omitted preserves them during repair",
+                        conditionItem, 0)
                 .build();
     }
 
@@ -164,14 +181,82 @@ public final class TodowriteTool implements Tool {
             }
         }
 
+        List<PlanGraph.GoalCondition> goalConditions = null;
+        if (args.has("goal_conditions") && !args.get("goal_conditions").isJsonNull()) {
+            JsonArray values = ToolArgs.getArray(args, "goal_conditions");
+            if (values == null || values.size() > MAX_GOAL_CONDITIONS) {
+                reply.accept(ToolArgs.errorJson("'goal_conditions' must contain at most "
+                        + MAX_GOAL_CONDITIONS + " objects."));
+                return;
+            }
+            goalConditions = new ArrayList<>();
+            for (int index = 0; index < values.size(); index++) {
+                if (!values.get(index).isJsonObject()) {
+                    reply.accept(ToolArgs.errorJson("Goal condition " + index
+                            + " must be an object."));
+                    return;
+                }
+                JsonObject value = values.get(index).getAsJsonObject();
+                String subject = ToolArgs.getString(value, "subject");
+                String predicate = ToolArgs.getString(value, "predicate");
+                String expected = ToolArgs.getString(value, "value");
+                String comparison = ToolArgs.getString(value, "comparison", "equals");
+                Double confidence = ToolArgs.has(value, "minimum_confidence")
+                        ? ToolArgs.getDoubleOrNull(value, "minimum_confidence") : 0.6;
+                if (!validText(subject, 256) || !validText(predicate, 128)
+                        || !validText(expected, 256) || confidence == null
+                        || confidence < 0.0 || confidence > 1.0) {
+                    reply.accept(ToolArgs.errorJson("Goal condition " + index
+                            + " contains invalid fields."));
+                    return;
+                }
+                PlanGraph.Comparison parsedComparison;
+                try {
+                    parsedComparison = PlanGraph.Comparison.valueOf(
+                            comparison.trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException invalidComparison) {
+                    reply.accept(ToolArgs.errorJson("Goal condition " + index
+                            + " has invalid comparison '" + comparison + "'."));
+                    return;
+                }
+                if ((parsedComparison == PlanGraph.Comparison.AT_LEAST
+                        || parsedComparison == PlanGraph.Comparison.AT_MOST)
+                        && !finiteNumber(expected)) {
+                    reply.accept(ToolArgs.errorJson("Goal condition " + index
+                            + " requires a finite numeric value for " + comparison + "."));
+                    return;
+                }
+                goalConditions.add(new PlanGraph.GoalCondition(subject, predicate,
+                        expected, parsedComparison, confidence));
+            }
+        }
+
         var state = MineAgentEngine.getCompanion(player.companionId());
         if (state.isEmpty()) {
             reply.accept(ToolArgs.errorJson("Companion is no longer active."));
             return;
         }
+        if (state.get().auction.hasRunningTask()
+                || state.get().loop.skillRuntime().active()) {
+            // Plan nodes own body/skill outcome bindings. Replacing them while
+            // an executor is live would orphan its eventual evidence and can
+            // make a failed action verify an unrelated new milestone.
+            reply.accept(ToolArgs.errorJson(
+                    "Cannot update the plan while a body task or skill is running; wait for its terminal result or stop it first."));
+            return;
+        }
         String goal = ToolArgs.getString(args, "goal", null);
-        PlanGraph.UpdateResult update = state.get().loop.planGraph()
-                .replacePlan(goal, drafts, constraints);
+        String updateMode = ToolArgs.getString(args, "update_mode", "replace")
+                .trim().toLowerCase(Locale.ROOT);
+        if (!"replace".equals(updateMode) && !"repair".equals(updateMode)) {
+            reply.accept(ToolArgs.errorJson("'update_mode' must be 'replace' or 'repair'."));
+            return;
+        }
+        PlanGraph.UpdateResult update = "repair".equals(updateMode)
+                ? state.get().loop.planGraph().repairPlan(
+                        goal, drafts, constraints, goalConditions)
+                : state.get().loop.planGraph().replacePlan(
+                        goal, drafts, constraints, goalConditions);
         if (update.accepted()) {
             long gameTick;
             try {
@@ -186,6 +271,9 @@ public final class TodowriteTool implements Tool {
         JsonObject result = new JsonObject();
         result.addProperty("success", update.accepted());
         result.addProperty("revision", update.revision());
+        result.addProperty("update_mode", updateMode);
+        result.addProperty("goal_status", state.get().loop.planGraph()
+                .goalStatus().name().toLowerCase(Locale.ROOT));
         result.addProperty("verified_percent", state.get().loop.planGraph().progressPercent());
         JsonArray warnings = new JsonArray();
         update.warnings().forEach(warnings::add);
@@ -209,6 +297,14 @@ public final class TodowriteTool implements Tool {
 
     private static boolean validText(String value, int maxLength) {
         return value != null && !value.isBlank() && value.length() <= maxLength;
+    }
+
+    private static boolean finiteNumber(String value) {
+        try {
+            return Double.isFinite(Double.parseDouble(value));
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
     }
 
     private static Map<String, Object> objectSchema(

@@ -61,4 +61,22 @@ final class HierarchicalRollingPlannerTest {
         restored.importState(source.exportState());
         assertTrue(restored.summarizeForPrompt().contains("execution=idle"));
     }
+
+    @Test void acceptedSameGoalRepairClearsWindowFailureCounter() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("goal", List.of(new PlanGraph.DraftNode(
+                "step", "step", "done", "high", List.of(),
+                PlanGraph.NodeStatus.PENDING)), List.of());
+        HierarchicalRollingPlanner planner = new HierarchicalRollingPlanner(
+                graph, new SemanticWorldModel());
+        planner.onPlanReplaced("goal", 1L);
+        planner.onSynchronousOutcome(false, 2L);
+        planner.onSynchronousOutcome(false, 3L);
+        assertEquals(HierarchicalRollingPlanner.Reason.REPEATED_FAILURE,
+                planner.tick(4L).reason());
+
+        planner.onPlanReplaced("goal", 5L);
+        assertNull(planner.tick(6L));
+        assertEquals(0, planner.exportState().consecutiveFailures());
+    }
 }

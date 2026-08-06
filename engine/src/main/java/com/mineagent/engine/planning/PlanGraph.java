@@ -2,6 +2,7 @@ package com.mineagent.engine.planning;
 
 import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.engine.world.SemanticWorldModel;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -20,6 +21,50 @@ import java.util.Set;
  */
 public final class PlanGraph {
     public enum NodeStatus { PENDING, IN_PROGRESS, VERIFIED, INVALIDATED, BLOCKED }
+
+    public enum GoalStatus { UNPLANNED, ACTIVE, VERIFYING, VERIFIED, BLOCKED }
+
+    public enum Comparison { EQUALS, AT_LEAST, AT_MOST, PRESENT }
+
+    /** A top-level acceptance condition grounded in the semantic world model. */
+    public record GoalCondition(String subject, String predicate, String value,
+                                Comparison comparison, double minimumConfidence) {
+        public GoalCondition {
+            subject = normalize(subject, "unknown");
+            predicate = normalize(predicate, "observed");
+            value = normalize(value, "*");
+            comparison = comparison == null ? Comparison.EQUALS : comparison;
+            minimumConfidence = Double.isFinite(minimumConfidence)
+                    ? Math.max(0.0, Math.min(1.0, minimumConfidence)) : 0.6;
+        }
+
+        public boolean matches(SemanticWorldModel worldModel, long gameTick) {
+            if (worldModel == null) return false;
+            var fact = worldModel.find(subject, predicate, gameTick)
+                    .filter(found -> found.confidenceAt(gameTick) >= minimumConfidence)
+                    .orElse(null);
+            if (fact == null) return false;
+            if (comparison == Comparison.PRESENT) return true;
+            if (comparison == Comparison.EQUALS) {
+                return "*".equals(value) || fact.value().equalsIgnoreCase(value);
+            }
+            try {
+                double actual = Double.parseDouble(fact.value());
+                double expected = Double.parseDouble(value);
+                if (!Double.isFinite(actual) || !Double.isFinite(expected)) return false;
+                return comparison == Comparison.AT_LEAST
+                        ? actual >= expected : actual <= expected;
+            } catch (NumberFormatException notNumeric) {
+                return false;
+            }
+        }
+
+        public String describe() {
+            return subject + " " + predicate + " "
+                    + comparison.name().toLowerCase(java.util.Locale.ROOT)
+                    + " " + value;
+        }
+    }
 
     public record Evidence(String source, String statement, boolean success,
                            long gameTick) {
@@ -58,7 +103,19 @@ public final class PlanGraph {
 
     public record State(String goal, List<PlanNode> nodes,
                         List<IntentContract.Constraint> constraints,
-                        long revision) {}
+                        List<GoalCondition> goalConditions,
+                        GoalStatus goalStatus, int repairCount,
+                        long revision) {
+        public State {
+            nodes = nodes == null ? List.of() : List.copyOf(nodes);
+            constraints = constraints == null ? List.of() : List.copyOf(constraints);
+            goalConditions = goalConditions == null ? List.of()
+                    : goalConditions.stream().filter(java.util.Objects::nonNull).toList();
+            goalStatus = goalStatus == null ? GoalStatus.UNPLANNED : goalStatus;
+            repairCount = Math.max(0, repairCount);
+            revision = Math.max(0L, revision);
+        }
+    }
 
     public record UpdateResult(List<String> warnings, long revision, boolean accepted) {}
 
@@ -66,11 +123,20 @@ public final class PlanGraph {
     private final Map<String, String> taskBindings = new LinkedHashMap<>();
     private final Map<String, String> toolBindings = new LinkedHashMap<>();
     private List<IntentContract.Constraint> constraints = List.of();
+    private List<GoalCondition> goalConditions = List.of();
+    private GoalStatus goalStatus = GoalStatus.UNPLANNED;
+    private int repairCount;
     private String goal = "";
     private long revision;
 
     public synchronized UpdateResult replacePlan(String newGoal, List<DraftNode> drafts,
                                                   List<IntentContract.Constraint> newConstraints) {
+        return replacePlan(newGoal, drafts, newConstraints, null);
+    }
+
+    public synchronized UpdateResult replacePlan(String newGoal, List<DraftNode> drafts,
+                                                  List<IntentContract.Constraint> newConstraints,
+                                                  List<GoalCondition> newGoalConditions) {
         List<String> warnings = new ArrayList<>();
         LinkedHashMap<String, PlanNode> previousNodes = new LinkedHashMap<>(nodes);
         LinkedHashMap<String, DraftNode> validated = new LinkedHashMap<>();
@@ -151,8 +217,120 @@ public final class PlanGraph {
             PlanNode after = nodes.get(entry.getValue());
             return before == null || after == null || !sameSemantics(before, after);
         });
+        String previousGoal = goal;
         goal = normalize(newGoal, goal.isBlank() ? "Current owner goal" : goal);
         if (newConstraints != null) constraints = List.copyOf(newConstraints);
+        if (newGoalConditions != null) goalConditions = List.copyOf(newGoalConditions);
+        else if (!goal.equals(previousGoal)) goalConditions = List.of();
+        repairCount = 0;
+        refreshGoalStatus();
+        revision++;
+        return new UpdateResult(List.copyOf(warnings), revision, true);
+    }
+
+    /**
+     * Replace only the unverified suffix of the current plan.
+     *
+     * <p>A rolling planner must not discard executor-confirmed milestones just
+     * because its next tactical window changed. Dependencies may therefore
+     * reference verified nodes omitted from the repair request. Unfinished
+     * omitted nodes are intentionally removed; they belong to the invalid
+     * suffix being replaced.
+     */
+    public synchronized UpdateResult repairPlan(String newGoal, List<DraftNode> drafts,
+                                                 List<IntentContract.Constraint> newConstraints,
+                                                 List<GoalCondition> newGoalConditions) {
+        String requestedGoal = normalize(newGoal, goal);
+        if (goal.isBlank() || !requestedGoal.equals(goal)) {
+            return replacePlan(requestedGoal, drafts, newConstraints, newGoalConditions);
+        }
+
+        List<String> warnings = new ArrayList<>();
+        LinkedHashMap<String, DraftNode> validated = validateDrafts(drafts, warnings);
+        Set<String> available = new LinkedHashSet<>(validated.keySet());
+        nodes.values().stream().filter(node -> node.status() == NodeStatus.VERIFIED)
+                .map(PlanNode::id).forEach(available::add);
+        for (DraftNode draft : validated.values()) {
+            for (String dependency : draft.dependsOn()) {
+                if (!available.contains(dependency)) {
+                    warnings.add("Step '" + draft.id()
+                            + "' depends on missing or unverified step '" + dependency + "'");
+                }
+            }
+        }
+
+        // Build the combined graph used for cycle validation. Verified nodes
+        // retain their original edges unless the repair explicitly replaces
+        // that ID with different semantics.
+        LinkedHashMap<String, DraftNode> combined = new LinkedHashMap<>();
+        for (PlanNode node : nodes.values()) {
+            if (node.status() == NodeStatus.VERIFIED
+                    && !validated.containsKey(node.id())) {
+                combined.put(node.id(), new DraftNode(node.id(), node.description(),
+                        node.successCriterion(), node.priority(), node.dependsOn(),
+                        NodeStatus.VERIFIED));
+            }
+        }
+        combined.putAll(validated);
+        if (containsCycle(combined)) warnings.add("Plan dependency graph contains a cycle");
+        if (!warnings.isEmpty()) {
+            return new UpdateResult(List.copyOf(warnings), revision, false);
+        }
+
+        LinkedHashMap<String, PlanNode> previous = new LinkedHashMap<>(nodes);
+        LinkedHashMap<String, PlanNode> replacement = new LinkedHashMap<>();
+        for (PlanNode node : previous.values()) {
+            if (node.status() == NodeStatus.VERIFIED
+                    && !validated.containsKey(node.id())) {
+                replacement.put(node.id(), node);
+            }
+        }
+
+        int inProgress = 0;
+        for (DraftNode draft : validated.values()) {
+            PlanNode before = previous.get(draft.id());
+            boolean same = sameSemantics(before, draft);
+            List<Evidence> evidence = same ? before.evidence() : List.of();
+            NodeStatus requested = draft.requestedStatus() == null
+                    ? NodeStatus.PENDING : draft.requestedStatus();
+            // Verified checkpoints are monotonic within one owner goal. A
+            // repaired suffix cannot accidentally downgrade and repeat them.
+            NodeStatus committed = same && before.status() == NodeStatus.VERIFIED
+                    ? NodeStatus.VERIFIED : requested;
+            if (committed == NodeStatus.VERIFIED
+                    && evidence.stream().noneMatch(Evidence::success)) {
+                committed = NodeStatus.PENDING;
+                warnings.add("Step '" + draft.id()
+                        + "' was not marked verified because it has no successful executor evidence");
+            }
+            if (committed == NodeStatus.IN_PROGRESS && ++inProgress > 1) {
+                committed = NodeStatus.PENDING;
+                warnings.add("Only one step may control the body; step '"
+                        + draft.id() + "' was kept pending");
+            }
+            replacement.put(draft.id(), new PlanNode(draft.id(), draft.description(),
+                    draft.successCriterion(), draft.priority(), draft.dependsOn(),
+                    committed, same ? before.attempts() : 0,
+                    same ? before.lastFailure() : null, evidence));
+        }
+        for (Map.Entry<String, PlanNode> entry : replacement.entrySet()) {
+            PlanNode node = entry.getValue();
+            if (node.status() == NodeStatus.IN_PROGRESS
+                    && !dependenciesVerified(node.dependsOn(), replacement)) {
+                entry.setValue(replace(node, NodeStatus.PENDING, node.attempts(),
+                        node.lastFailure(), node.evidence()));
+            }
+        }
+
+        nodes.clear();
+        nodes.putAll(replacement);
+        taskBindings.clear();
+        toolBindings.clear();
+        if (newConstraints != null) constraints = List.copyOf(newConstraints);
+        if (newGoalConditions != null) goalConditions = List.copyOf(newGoalConditions);
+        repairCount++;
+        goalStatus = GoalStatus.ACTIVE;
+        refreshGoalStatus();
         revision++;
         return new UpdateResult(List.copyOf(warnings), revision, true);
     }
@@ -160,7 +338,7 @@ public final class PlanGraph {
     public synchronized void bindTask(String taskId, String toolName,
                                       IntentContract contract, long gameTick) {
         if (taskId == null || taskId.isBlank()) return;
-        PlanNode node = currentNode();
+        PlanNode node = nodeForAction();
         if (node == null) {
             String id = "body-" + Math.max(1L, revision + 1L);
             node = new PlanNode(id,
@@ -174,6 +352,7 @@ public final class PlanGraph {
             nodes.put(node.id(), node);
         }
         taskBindings.put(taskId, node.id());
+        goalStatus = GoalStatus.ACTIVE;
         revision++;
     }
 
@@ -201,6 +380,7 @@ public final class PlanGraph {
                 new Evidence(source, statement, false, gameTick));
         nodes.put(node.id(), replace(node, status, node.attempts(),
                 snapshot.blockedReason(), evidence));
+        refreshGoalStatus();
         revision++;
     }
 
@@ -219,13 +399,14 @@ public final class PlanGraph {
                 : state == TaskState.CANCELLED ? NodeStatus.INVALIDATED : NodeStatus.BLOCKED;
         nodes.put(node.id(), replace(node, status, node.attempts(),
                 success ? null : message, evidence));
+        refreshGoalStatus();
         revision++;
     }
 
     /** Bind all synchronous calls in one model response to the same ready node. */
     public synchronized void bindToolCall(String toolCallId) {
         if (toolCallId == null || toolCallId.isBlank()) return;
-        PlanNode node = currentNode();
+        PlanNode node = nodeForAction();
         if (node != null) toolBindings.put(toolCallId, node.id());
     }
 
@@ -257,6 +438,7 @@ public final class PlanGraph {
                 node.attempts() + 1,
                 verified ? null : alreadyFailedInBatch ? node.lastFailure() : evidence,
                 updated));
+        refreshGoalStatus();
         revision++;
         return true;
     }
@@ -272,25 +454,69 @@ public final class PlanGraph {
         return null;
     }
 
+    /**
+     * Select a milestone that may own a newly admitted recovery action.
+     * Blocked nodes are deliberately excluded from {@link #currentNode()} so
+     * the rolling planner can request repair, but an alternative action issued
+     * during that repair still belongs to the same milestone. Creating a new
+     * anonymous body node here used to detach retries from their failure
+     * history and made long plans grow without bound.
+     */
+    public synchronized PlanNode nodeForAction() {
+        PlanNode ready = currentNode();
+        if (ready != null) return ready;
+        for (PlanNode node : nodes.values()) {
+            if (node.status() == NodeStatus.BLOCKED
+                    && dependenciesVerified(node.dependsOn(), nodes)) return node;
+        }
+        return null;
+    }
+
     public synchronized boolean hasActivePlan() {
-        return nodes.values().stream().anyMatch(node ->
-                node.status() == NodeStatus.PENDING
-                        || node.status() == NodeStatus.IN_PROGRESS
-                        || node.status() == NodeStatus.BLOCKED);
+        return !nodes.isEmpty() && goalStatus != GoalStatus.VERIFIED;
     }
 
     public synchronized int progressPercent() {
         if (nodes.isEmpty()) return 0;
         long completed = nodes.values().stream()
                 .filter(node -> node.status() == NodeStatus.VERIFIED).count();
-        return (int) Math.round(completed * 100.0 / nodes.size());
+        int nodeProgress = (int) Math.round(completed * 100.0 / nodes.size());
+        // A complete tactical window is not the same as an accepted strategic
+        // goal when explicit world conditions remain unverified.
+        return nodeProgress == 100 && goalStatus != GoalStatus.VERIFIED
+                ? 99 : nodeProgress;
+    }
+
+    /** Refresh top-level acceptance after the latest server world snapshot. */
+    public synchronized boolean verifyGoal(SemanticWorldModel worldModel,
+                                           long gameTick) {
+        GoalStatus before = goalStatus;
+        if (before == GoalStatus.VERIFIED) return false;
+        refreshGoalStatus();
+        if (goalStatus == GoalStatus.VERIFYING
+                && goalConditions.stream().allMatch(condition ->
+                condition.matches(worldModel, gameTick))) {
+            goalStatus = GoalStatus.VERIFIED;
+        }
+        if (goalStatus != before) revision++;
+        return before != GoalStatus.VERIFIED && goalStatus == GoalStatus.VERIFIED;
+    }
+
+    public synchronized List<GoalCondition> goalConditions() {
+        return goalConditions;
+    }
+
+    public synchronized GoalStatus goalStatus() {
+        return goalStatus;
     }
 
     public synchronized String summarizeForPrompt() {
         if (nodes.isEmpty()) return "Plan: none";
         StringBuilder out = new StringBuilder("Plan goal: ").append(goal)
                 .append(" (revision ").append(revision).append(", ")
-                .append(progressPercent()).append("% verified)\n");
+                .append(progressPercent()).append("% verified, status=")
+                .append(goalStatus.name().toLowerCase(java.util.Locale.ROOT))
+                .append(", repairs=").append(repairCount).append(")\n");
         for (PlanNode node : nodes.values()) {
             out.append("- [").append(node.status()).append("] ")
                     .append(node.id()).append(": ").append(node.description());
@@ -307,11 +533,18 @@ public final class PlanGraph {
                         .append(constraint.description()).append('\n');
             }
         }
+        if (!goalConditions.isEmpty()) {
+            out.append("Goal acceptance conditions:\n");
+            for (GoalCondition condition : goalConditions) {
+                out.append("- ").append(condition.describe()).append('\n');
+            }
+        }
         return out.toString();
     }
 
     public synchronized State exportState() {
-        return new State(goal, List.copyOf(nodes.values()), constraints, revision);
+        return new State(goal, List.copyOf(nodes.values()), constraints,
+                goalConditions, goalStatus, repairCount, revision);
     }
 
     public synchronized void importState(State state) {
@@ -321,6 +554,11 @@ public final class PlanGraph {
         if (state == null) return;
         goal = normalize(state.goal(), "Restored goal");
         constraints = state.constraints() == null ? List.of() : List.copyOf(state.constraints());
+        goalConditions = state.goalConditions() == null
+                ? List.of() : List.copyOf(state.goalConditions());
+        goalStatus = state.goalStatus() == null
+                ? GoalStatus.UNPLANNED : state.goalStatus();
+        repairCount = Math.max(0, state.repairCount());
         if (state.nodes() != null) {
             for (PlanNode node : state.nodes()) {
                 if (node == null || node.id() == null || node.id().isBlank()) continue;
@@ -332,11 +570,40 @@ public final class PlanGraph {
                         failure, node.evidence()));
             }
         }
+        // A completed goal is a durable checkpoint. Every other structural
+        // state is recomputed after converting interrupted body ownership to a
+        // blocker, so restart cannot restore a false RUNNING state.
+        if (goalStatus != GoalStatus.VERIFIED) refreshGoalStatus();
         revision = Math.max(0L, state.revision()) + 1L;
     }
 
     public synchronized List<IntentContract.Constraint> constraints() {
         return constraints;
+    }
+
+    private void refreshGoalStatus() {
+        if (nodes.isEmpty()) {
+            goalStatus = GoalStatus.UNPLANNED;
+            return;
+        }
+        boolean hasRequired = false;
+        boolean allRequiredVerified = true;
+        boolean blockedOnly = true;
+        for (PlanNode node : nodes.values()) {
+            if (node.status() == NodeStatus.INVALIDATED) continue;
+            hasRequired = true;
+            if (node.status() != NodeStatus.VERIFIED) allRequiredVerified = false;
+            if (node.status() == NodeStatus.PENDING
+                    || node.status() == NodeStatus.IN_PROGRESS) blockedOnly = false;
+        }
+        if (!hasRequired) {
+            goalStatus = GoalStatus.BLOCKED;
+        } else if (allRequiredVerified) {
+            goalStatus = goalConditions.isEmpty()
+                    ? GoalStatus.VERIFIED : GoalStatus.VERIFYING;
+        } else {
+            goalStatus = blockedOnly ? GoalStatus.BLOCKED : GoalStatus.ACTIVE;
+        }
     }
 
     private static PlanNode replace(PlanNode node, NodeStatus status, int attempts,
@@ -367,6 +634,22 @@ public final class PlanGraph {
                 && first.description().equals(second.description())
                 && first.successCriterion().equals(second.successCriterion())
                 && first.dependsOn().equals(second.dependsOn());
+    }
+
+    private static LinkedHashMap<String, DraftNode> validateDrafts(
+            List<DraftNode> drafts, List<String> warnings) {
+        LinkedHashMap<String, DraftNode> validated = new LinkedHashMap<>();
+        if (drafts == null) return validated;
+        for (DraftNode draft : drafts) {
+            if (draft == null || draft.id() == null || draft.id().isBlank()) {
+                warnings.add("Plan contains a node without an id");
+                continue;
+            }
+            if (validated.putIfAbsent(draft.id(), draft) != null) {
+                warnings.add("Duplicate step id '" + draft.id() + "'");
+            }
+        }
+        return validated;
     }
 
     private static boolean containsCycle(Map<String, DraftNode> graph) {

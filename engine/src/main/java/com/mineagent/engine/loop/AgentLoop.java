@@ -133,23 +133,23 @@ public class AgentLoop {
      */
     private static final Set<String> CORE_TOOL_NAMES = Set.of(
             "goto", "look_around", "scan_blocks", "get_self_status",
-            "resolve_need",
+            "resolve_need", "plan_acquisition",
             "auto_mine", "build", "craft", "lookup_recipe", "interact_at",
-            "collect_items", "eat_item", "equip_item", "transfer_items",
+            "collect_items", "eat_item", "use_item", "equip_item", "transfer_items",
             "melee_attack", "todowrite", "task_status", "task_stop",
-            "query_extra_tools");
+            "wait_for", "query_extra_tools");
     private static final Set<String> SKILL_ACTION_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
             "transfer_items", "craft", "interact_at", "interact_entity",
-            "close_gui");
+            "use_item", "wait_for", "close_gui");
     private static final Set<String> SKILL_TRACE_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
             "transfer_items", "craft", "interact_at", "interact_entity",
-            "close_gui", "look_around", "scan_blocks", "scan_nearby_entities",
+            "use_item", "wait_for", "close_gui", "look_around", "scan_blocks", "scan_nearby_entities",
             "get_self_status", "get_owner_status", "get_world_info",
-            "resolve_need", "lookup_recipe", "inspect_block",
+            "resolve_need", "plan_acquisition", "lookup_recipe", "inspect_block",
             "inspect_block_storage", "inspect_gui", "recall_memory");
     private static final Set<String> INVENTORY_EXTRA_TOOLS = Set.of(
             "drop_items", "inspect_gui", "close_gui", "inspect_block_storage");
@@ -427,7 +427,7 @@ public class AgentLoop {
     private static boolean reasonAlreadyRecorded(String reason) {
         return "owner_message".equals(reason) || "body_log".equals(reason)
                 || "cognition_decision".equals(reason) || "team_event".equals(reason)
-                || "rolling_replan".equals(reason);
+                || "rolling_replan".equals(reason) || "goal_verified".equals(reason);
     }
 
     private static boolean shouldInterruptActiveCall(String reason) {
@@ -436,7 +436,7 @@ public class AgentLoop {
         // waiting only to discard its stale response afterward.
         return "owner_message".equals(reason) || "body_log".equals(reason)
                 || "cognition_decision".equals(reason) || "team_event".equals(reason)
-                || "rolling_replan".equals(reason);
+                || "rolling_replan".equals(reason) || "goal_verified".equals(reason);
     }
 
     /**
@@ -471,6 +471,7 @@ public class AgentLoop {
             return "rolling:" + eventField(event, "reason") + ':'
                     + eventField(event, "active_step");
         }
+        if (event.contains("[GOAL_VERIFIED]")) return "goal_verified";
         if (event.contains("[COGNITION_DECISION]")) return "cognition_decision";
         return event.replaceAll("\\s+", " ");
     }
@@ -716,6 +717,11 @@ public class AgentLoop {
             RealtimeCognition.TickResult result = realtimeCognition.tick(
                     player, owner, toTaskObservation(liveBodyState.get()), gameTick);
             semanticWorldModel.observeSituation(realtimeCognition.currentFrame());
+            // Evaluate strategic acceptance only after the authoritative live
+            // snapshot has refreshed inventory, position, actors and task
+            // facts. This prevents a completed tactical suffix from being
+            // mistaken for completion of the owner's actual objective.
+            boolean goalVerified = planner.verifyGoal(semanticWorldModel, gameTick);
             if (result.ownerIntent() != null) {
                 var signal = result.ownerIntent();
                 theoryOfMind.observeIntent(signal.intent(), signal.confidence(),
@@ -740,8 +746,14 @@ public class AgentLoop {
             // signal and admit only one paid deliberation event.
             String deliberation = replan != null
                     ? replan.event() : result.deliberationEvent();
+            if (goalVerified) {
+                deliberation = "[GOAL_VERIFIED] goal="
+                        + truncateForLog(planner.exportState().goal(), 240)
+                        + "; all required milestones and acceptance conditions are satisfied";
+            }
             if (deliberation != null && enqueueInbox(deliberation)) {
-                wake(replan != null ? "rolling_replan" : "cognition_decision");
+                wake(goalVerified ? "goal_verified"
+                        : replan != null ? "rolling_replan" : "cognition_decision");
             }
         } catch (Throwable failure) {
             // Entity teardown can race the final engine tick. Cognitive
@@ -770,6 +782,7 @@ public class AgentLoop {
         String value = narrative.stripLeading();
         return value.startsWith("[TASK_FINISHED]")
                 || value.startsWith("[SKILL_FINISHED]")
+                || value.startsWith("[GOAL_VERIFIED]")
                 || value.startsWith("[ROLLING_REPLAN]")
                 || value.startsWith("[COGNITION_DECISION]")
                 || value.startsWith("[TEAM_SUPPORT]");
@@ -988,7 +1001,7 @@ public class AgentLoop {
         SkillRuntime.StartResult result = skillRuntime.start(
                 skillName, overrides, gameTick);
         if (result.accepted()) {
-            PlanGraph.PlanNode current = planner.currentNode();
+            PlanGraph.PlanNode current = planner.nodeForAction();
             boolean hadPlan = planner.hasActivePlan();
             IntentContract contract = current == null
                     ? IntentContract.generic("Execute learned skill " + skillName,
@@ -2665,6 +2678,14 @@ public class AgentLoop {
         // object instead of repairing a cut in the entity or terrain arrays.
         if (lower.contains("look_around")) return 9000;
         if (lower.contains("resolve_need")) return 7000;
+        if (lower.contains("plan_acquisition")) {
+            // This result is an explicitly requested dependency DAG. Cutting
+            // it at the generic 800-character action limit removes deeper
+            // leaves and makes the planner fabricate missing prerequisites.
+            // The tool itself bounds depth/node count, so a larger complete
+            // result remains deterministic and paid only on planning turns.
+            return 26000;
+        }
         if (lower.contains("inspect_gui") || lower.contains("inspect_block_storage")) {
             return 9000;
         }
@@ -3062,6 +3083,7 @@ public class AgentLoop {
                 + "Call it before using a specialized tool that is not currently offered.\n");
         sb.append("- `get_self_status`: Check your health, hunger, inventory, equipment\n");
         sb.append("- `resolve_need`: Query owned/stored/world assets and live recipes for an item or capability before producing a replacement\n");
+        sb.append("- `plan_acquisition`: Expand a target item/count into a bounded recursive dependency DAG. It distinguishes carried, observed storage, planned surplus, craftable recipes and unknown station mechanics; follow its leaves instead of remaking assets blindly.\n");
         sb.append("- `look_around`: See terrain, blocks, entities, hazards around you\n");
         sb.append("- `scan_blocks`: Find specific blocks; entity, GUI, storage, ranged, location, and memory tools are available through `query_extra_tools`\n");
         sb.append("- `goto`: Move to a location (xz for horizontal, xzy for exact)\n");
@@ -3069,6 +3091,8 @@ public class AgentLoop {
         sb.append("- `collect_items`: Pick up drops\n");
         sb.append("- `equip_item`: Reuse an existing tool, armor piece, hotbar item or offhand item\n");
         sb.append("- `craft`: Create items from recipes\n");
+        sb.append("- `use_item`: Use a held item in air through vanilla (throws, drinks, charges); use target coordinates when direction matters and wait for its terminal result.\n");
+        sb.append("- `wait_for`: Hold the body on a bounded, server-observed condition (inventory/GUI/semantic fact/dimension/block/entity/time). Use it after opening a furnace or unfamiliar machine instead of narrating an untracked wait.\n");
         sb.append("- `lookup_recipe`: Query crafting recipes by input/output. ");
         sb.append("USE THIS before crafting to know exact ingredients — don't guess.\n");
         sb.append("- `recall_memory` (specialized): Recall places you've discovered (ores, structures, hazards). ");

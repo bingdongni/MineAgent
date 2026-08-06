@@ -1,7 +1,9 @@
 package com.mineagent.engine.planning;
 
+import com.google.gson.Gson;
 import com.mineagent.api.task.TaskSnapshot;
 import com.mineagent.api.task.TaskState;
+import com.mineagent.engine.world.SemanticWorldModel;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -104,6 +106,79 @@ final class PlanGraphTest {
         graph.recordProgress("task", blocked, 3L);
 
         assertEquals(revision, graph.exportState().revision());
+    }
+
+    @Test void suffixRepairRetainsVerifiedCheckpointAndItsDependencyIdentity() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("survive", List.of(
+                draft("gather", List.of()), draft("old-route", List.of("gather"))),
+                List.of());
+        graph.bindTask("gather-task", "auto_mine", null, 1L);
+        graph.recordOutcome("gather-task", TaskState.SUCCESS,
+                TaskSnapshot.running("done", "done"), "logs acquired", 2L);
+        graph.bindTask("route-task", "goto", null, 3L);
+        graph.recordOutcome("route-task", TaskState.FAILED,
+                TaskSnapshot.running("failed", "failed"), "route blocked", 4L);
+
+        var repair = graph.repairPlan("survive", List.of(new PlanGraph.DraftNode(
+                "new-route", "use another route", "arrive", "high",
+                List.of("gather"), PlanGraph.NodeStatus.PENDING)), null, null);
+
+        assertTrue(repair.accepted());
+        assertEquals(List.of("gather", "new-route"), graph.exportState().nodes()
+                .stream().map(PlanGraph.PlanNode::id).toList());
+        assertEquals(PlanGraph.NodeStatus.VERIFIED,
+                graph.exportState().nodes().getFirst().status());
+        assertEquals("new-route", graph.currentNode().id());
+    }
+
+    @Test void recoveryActionBindsBackToBlockedMilestone() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("reach", List.of(draft("route", List.of())), List.of());
+        graph.bindTask("first", "goto", null, 1L);
+        graph.recordOutcome("first", TaskState.FAILED,
+                TaskSnapshot.running("failed", "failed"), "wall", 2L);
+
+        graph.bindTask("alternative", "goto", null, 3L);
+        graph.recordOutcome("alternative", TaskState.SUCCESS,
+                TaskSnapshot.running("done", "done"), "arrived", 4L);
+
+        assertEquals(1, graph.exportState().nodes().size());
+        assertEquals(PlanGraph.NodeStatus.VERIFIED,
+                graph.exportState().nodes().getFirst().status());
+    }
+
+    @Test void explicitGoalConditionPreventsPrematureStrategicCompletion() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("obtain iron", List.of(draft("smelt", List.of())), List.of(),
+                List.of(new PlanGraph.GoalCondition("inventory:minecraft:iron_ingot",
+                        "count", "3", PlanGraph.Comparison.AT_LEAST, 0.9)));
+        graph.bindTask("task", "wait_for", null, 1L);
+        graph.recordOutcome("task", TaskState.SUCCESS,
+                TaskSnapshot.running("done", "done"), "machine completed", 2L);
+        assertTrue(graph.hasActivePlan());
+        assertEquals(PlanGraph.GoalStatus.VERIFYING, graph.goalStatus());
+
+        SemanticWorldModel world = new SemanticWorldModel();
+        world.observe("inventory:minecraft:iron_ingot", "count", "3", null,
+                1.0, "test", null, 3L, 40L, false);
+        assertTrue(graph.verifyGoal(world, 3L));
+        assertEquals(PlanGraph.GoalStatus.VERIFIED, graph.goalStatus());
+        assertFalse(graph.hasActivePlan());
+    }
+
+    @Test void legacyPlanStateWithoutV10FieldsRestoresWithSafeDefaults() {
+        PlanGraph.State legacy = new Gson().fromJson("""
+                {"goal":"legacy","nodes":[],"constraints":[],"revision":7}
+                """, PlanGraph.State.class);
+
+        PlanGraph graph = new PlanGraph();
+        graph.importState(legacy);
+
+        assertEquals("legacy", graph.exportState().goal());
+        assertEquals(List.of(), graph.goalConditions());
+        assertEquals(PlanGraph.GoalStatus.UNPLANNED, graph.goalStatus());
+        assertEquals(8L, graph.exportState().revision());
     }
 
     private static PlanGraph.DraftNode draft(String id, List<String> dependencies) {

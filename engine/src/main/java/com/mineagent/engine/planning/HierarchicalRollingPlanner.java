@@ -84,8 +84,12 @@ public final class HierarchicalRollingPlanner {
         if (!normalized.equals(strategicGoal)) {
             strategicGoal = normalized;
             goalEpoch++;
-            consecutiveFailures = 0;
         }
+        // Failure count belongs to the invalid tactical window. Keeping it
+        // after an accepted same-goal suffix repair immediately emitted the
+        // same REPEATED_FAILURE signal before the repaired step could run.
+        // Durable failure evidence remains in PlanGraph/ExperienceStore.
+        consecutiveFailures = 0;
         observedPlanRevision = state.revision();
         observedWorldRevision = worldModel.revision();
         lastProgressTick = Math.max(0L, gameTick);
@@ -178,7 +182,9 @@ public final class HierarchicalRollingPlanner {
             detail = consecutiveFailures + " consecutive executor failures";
         } else if (graph.hasActivePlan() && current == null) {
             reason = Reason.WINDOW_EXHAUSTED;
-            detail = "No dependency-ready step remains in the tactical window";
+            detail = state.goalStatus() == PlanGraph.GoalStatus.VERIFYING
+                    ? "All tactical milestones are verified, but top-level acceptance evidence is still missing"
+                    : "No dependency-ready step remains in the tactical window";
         } else if (current != null && current.status() != PlanGraph.NodeStatus.IN_PROGRESS
                 && worldRevision - observedWorldRevision >= 32L
                 && state.revision() == observedPlanRevision
@@ -215,7 +221,10 @@ public final class HierarchicalRollingPlanner {
         }
         StringBuilder out = new StringBuilder("Hierarchical rolling planner:\n");
         out.append("- strategic_goal=").append(normalize(strategicGoal, state.goal()))
-                .append(" epoch=").append(goalEpoch).append('\n');
+                .append(" epoch=").append(goalEpoch)
+                .append(" status=").append(state.goalStatus().name()
+                        .toLowerCase(Locale.ROOT))
+                .append(" repairs=").append(state.repairCount()).append('\n');
         List<PlanGraph.PlanNode> tactical = tacticalWindow(state.nodes());
         out.append("- tactical_window=");
         if (tactical.isEmpty()) out.append("empty");
@@ -234,6 +243,14 @@ public final class HierarchicalRollingPlanner {
         out.append("- execution=").append(taskActive
                 ? activeTaskName + " task_id=" + activeTaskId : "idle")
                 .append(" consecutive_failures=").append(consecutiveFailures).append('\n');
+        if (!state.goalConditions().isEmpty()) {
+            out.append("- strategic_acceptance=");
+            for (int index = 0; index < state.goalConditions().size(); index++) {
+                if (index > 0) out.append("; ");
+                out.append(state.goalConditions().get(index).describe());
+            }
+            out.append('\n');
+        }
         out.append("Plan only the next useful window; preserve verified prefix, explicit dependencies, constraints, contingencies, and observable success criteria.\n");
         return out.toString();
     }

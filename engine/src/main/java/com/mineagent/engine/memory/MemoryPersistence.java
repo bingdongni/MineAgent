@@ -66,7 +66,10 @@ public class MemoryPersistence {
     // v9 adds environment-scoped mechanism profiles, evidence-weighted rules,
     // exploration budgets and adapter identities. Gson supplies safe defaults
     // for absent v1-v8 fields, so existing companion memories remain readable.
-    private static final int FORMAT_VERSION = 9;
+    // Version 10 adds top-level goal acceptance and suffix-repair metadata to
+    // PlanGraph.State. Its record constructor supplies defaults for v1-v9
+    // files, so existing companion memories remain readable.
+    private static final int FORMAT_VERSION = 10;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 

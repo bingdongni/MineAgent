@@ -14,11 +14,13 @@ import com.mineagent.tools.inventory.DropItemsTool;
 import com.mineagent.tools.inventory.EatItemTool;
 import com.mineagent.tools.inventory.EquipItemTool;
 import com.mineagent.tools.inventory.TransferItemsTool;
+import com.mineagent.tools.inventory.UseItemTool;
 import com.mineagent.tools.management.QueryExtraToolsTool;
 import com.mineagent.tools.management.CoordinateTeamTool;
 import com.mineagent.tools.management.TaskStatusTool;
 import com.mineagent.tools.management.TaskStopTool;
 import com.mineagent.tools.management.TodowriteTool;
+import com.mineagent.tools.management.WaitForTool;
 import com.mineagent.tools.movement.MoveToTool;
 import com.mineagent.tools.perception.GetSelfStatusTool;
 import com.mineagent.tools.perception.LookAroundTool;
@@ -27,6 +29,7 @@ import com.mineagent.tools.perception.ScanBlocksTool;
 import com.mineagent.tools.perception.ScanNearbyEntitiesTool;
 import com.mineagent.tools.planning.ResolveNeedTool;
 import com.mineagent.tools.planning.ExploreMechanismTool;
+import com.mineagent.tools.planning.PlanAcquisitionTool;
 import com.mineagent.tools.skill.LearnedSkillsTool;
 import com.mineagent.tools.skill.LoadSkillTool;
 import com.mineagent.tools.skill.ExecuteSkillTool;
@@ -50,6 +53,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new ScanNearbyEntitiesTool());
         ToolRegistry.register(new RecallMemoryTool());
         ToolRegistry.register(new ResolveNeedTool());
+        ToolRegistry.register(new PlanAcquisitionTool());
         ToolRegistry.register(new ExploreMechanismTool());
 
         // Block
@@ -68,6 +72,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new DropItemsTool());
         ToolRegistry.register(new CollectItemsTool());
         ToolRegistry.register(new TransferItemsTool());
+        ToolRegistry.register(new UseItemTool());
 
         // Crafting
         ToolRegistry.register(new CraftTool());
@@ -95,6 +100,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new TaskStopTool());
         ToolRegistry.register(new QueryExtraToolsTool());
         ToolRegistry.register(new CoordinateTeamTool());
+        ToolRegistry.register(new WaitForTool());
 
         // Skills
         ToolRegistry.register(new LoadSkillTool());

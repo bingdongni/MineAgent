@@ -11,6 +11,8 @@ import com.mineagent.tools.combat.MeleeAttackTool;
 import com.mineagent.tools.combat.RangedAttackTool;
 import com.mineagent.tools.inventory.CollectItemsTool;
 import com.mineagent.tools.inventory.EatItemTool;
+import com.mineagent.tools.inventory.UseItemTool;
+import com.mineagent.tools.management.WaitForTool;
 import com.mineagent.tools.movement.MoveToTool;
 
 /**
@@ -69,6 +71,16 @@ public final class TaskRegistration {
         CompanionTaskFactory.register(
                 EatItemTool.EatItemTaskRecord.class,
                 EatItemTask::new
+        );
+
+        CompanionTaskFactory.register(
+                UseItemTool.UseItemTaskRecord.class,
+                UseItemTask::new
+        );
+
+        CompanionTaskFactory.register(
+                WaitForTool.WaitForTaskRecord.class,
+                WaitForTask::new
         );
 
         // Block interaction

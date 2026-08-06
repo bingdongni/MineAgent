@@ -7,6 +7,17 @@ English | [简体中文](README.md)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
 
+## v0.3.1: complex single-player task closure
+
+- Long-horizon plans now distinguish tactical completion from strategic acceptance. `goal_conditions` verify inventory, state, or other observable postconditions against the live semantic world model; without final evidence the plan remains `verifying` instead of declaring the owner's goal complete after one successful action.
+- Rolling replanning uses `repair` to replace only the failed suffix while retaining executor-backed checkpoints, dependency identity, hard constraints, and goal acceptance. Recovery actions bind to their original milestone, and restart never restores false body ownership or a stale failure window.
+- The new `plan_acquisition` tool recursively expands an item target into a bounded dependency DAG from live inventory, actually observed storage/drops, and server-registered recipes. It accounts for recipe yield, batches, alternatives, and planned surplus while leaving unknown machines and external station requirements as explicit observation leaves.
+- The new asynchronous `use_item` primitive covers throws, drinking/eating, charged release, either hand, and 3D aim through vanilla `ServerPlayerGameMode`. Survival preemption reconstructs continuous use instead of reporting an interrupted action as success.
+- The new `wait_for` task waits with bounded timeouts and stable observations for time, inventory, semantic facts, GUI slots, dimensions, blocks, and entity presence/absence. Machine processing and dimension transitions now have authoritative scheduler outcomes instead of ending with narrative waiting.
+- Plan, wait, and item-use arguments and lifecycles are strictly guarded. A live body task or skill cannot have its plan bindings rewritten. Memory format 10 remains compatible with v1-v9 plan files.
+
+These changes provide general long-horizon mechanisms for survival, creative, adventure, and modded tasks rather than a hard-coded Ender Dragon script. Completion rates still depend on the selected LLM, world conditions, observable mod contracts, and server rules; release builds do not replace long-duration in-game validation.
+
 ## v0.3.0: L4 unfamiliar-environment and mod-mechanism adaptation
 
 - MineAgent now builds bounded profiles for unfamiliar registered blocks, items, menus, recipes, entities, state properties, and GUI slot layouts from real inspection results. It does not require or pretend to access a mod's private implementation API.
@@ -133,8 +144,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.3.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.3.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.3.1.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.3.1.jar`
 
 ## Modules
 
