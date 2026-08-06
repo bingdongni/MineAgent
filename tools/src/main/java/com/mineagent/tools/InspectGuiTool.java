@@ -15,6 +15,7 @@ import java.util.function.Consumer;
 
 /** Reads the slots of the companion's currently open non-inventory menu. */
 public class InspectGuiTool implements Tool {
+    private static final int MAX_OBSERVED_SLOTS = 96;
     @Override public String name() { return "inspect_gui"; }
     @Override public String description() {
         return "Read item slots in the currently open chest, furnace, crafting, or other container menu.";
@@ -36,6 +37,14 @@ public class InspectGuiTool implements Tool {
 
         JsonObject result = new JsonObject();
         result.addProperty("container_type", menu.getClass().getSimpleName());
+        try {
+            var menuTypeId = net.minecraft.core.registries.BuiltInRegistries.MENU
+                    .getKey(menu.getType());
+            if (menuTypeId != null) result.addProperty("menu_type_id", menuTypeId.toString());
+        } catch (RuntimeException unsupportedMenuType) {
+            // A custom menu may not expose a registered type.  Its class name
+            // and live slot structure remain valid black-box evidence.
+        }
         var loop = TaskContext.agentLoop(player);
         String observedContainerId = loop == null ? null
                 : WorldAssetObserver.observeOpenMenu(
@@ -47,28 +56,38 @@ public class InspectGuiTool implements Tool {
         for (int i = 0; i < menu.slots.size(); i++) {
             var menuSlot = menu.getSlot(i);
             var stack = menuSlot.getItem();
-            if (stack.isEmpty()) continue;
+            boolean playerInventory = menuSlot.container == sp.getInventory();
+            // Empty machine slots carry layout information; empty player slots
+            // do not.  This keeps mod-machine role discovery complete without
+            // spending prompt tokens on 36 ordinary empty inventory slots.
+            if (playerInventory && stack.isEmpty()) continue;
+            if (slots.size() >= MAX_OBSERVED_SLOTS) break;
             JsonObject slot = new JsonObject();
             slot.addProperty("slot", i);
-            boolean playerInventory = menuSlot.container == sp.getInventory();
             slot.addProperty("endpoint", playerInventory ? "player" : "container");
+            slot.addProperty("slot_type", menuSlot.getClass().getSimpleName());
+            slot.addProperty("occupied", !stack.isEmpty());
             if (playerInventory) {
                 // transfer_items uses native player inventory indices for the
                 // player endpoint, not menu indices. Reporting both prevents
                 // the model from addressing the wrong backing slot.
                 slot.addProperty("inventory_slot", menuSlot.getContainerSlot());
             }
-            slot.addProperty("item", net.minecraft.core.registries.BuiltInRegistries.ITEM
-                    .getKey(stack.getItem()).toString());
-            slot.addProperty("count", stack.getCount());
-            if (stack.isDamageableItem()) {
-                slot.addProperty("durability", stack.getMaxDamage() - stack.getDamageValue());
+            if (!stack.isEmpty()) {
+                slot.addProperty("item", net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(stack.getItem()).toString());
+                slot.addProperty("count", stack.getCount());
+                if (stack.isDamageableItem()) {
+                    slot.addProperty("durability", stack.getMaxDamage() - stack.getDamageValue());
+                }
+                if (stack.isEnchanted()) slot.addProperty("enchanted", true);
             }
-            if (stack.isEnchanted()) slot.addProperty("enchanted", true);
             slots.add(slot);
         }
         result.add("slots", slots);
         result.addProperty("total_slots", menu.slots.size());
+        result.addProperty("observed_slots", slots.size());
+        result.addProperty("slots_truncated", slots.size() >= MAX_OBSERVED_SLOTS);
         result.addProperty("slot_addressing",
                 "Use 'slot' for endpoint=container and 'inventory_slot' for endpoint=player");
         reply.accept(result.toString());

@@ -7,6 +7,17 @@ English | [简体中文](README.md)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
 
+## v0.3.0: L4 unfamiliar-environment and mod-mechanism adaptation
+
+- MineAgent now builds bounded profiles for unfamiliar registered blocks, items, menus, recipes, entities, state properties, and GUI slot layouts from real inspection results. It does not require or pretend to access a mod's private implementation API.
+- Controlled experiments freeze a pre-action semantic baseline, execute one scheduler-admitted probe, and require a newer correlated state delta. Failed execution remains inconclusive, and an unchanged post-state cannot be mislearned as causal success.
+- Probe choice balances expected information gain, resource/time cost, risk, reversibility, and a persistent per-subject budget. High-risk probes are rejected; medium-risk probes require an explicit verified compensation, and irreversible crafting is not used for autonomous experimentation.
+- Competing hypotheses accumulate support and counterexamples. A rule needs at least two independent contexts before confirmation; contradictions lower confidence and immediately invalidate its generated adapter.
+- Confirmed rules are scoped to a Minecraft/loader/mod-version/registry fingerprint. Environment changes make them stale until revalidated, while compatible knowledge survives restarts without restoring an in-flight experiment or body ownership.
+- Confirmed action rules compile into ordinary skills with declared postconditions. Reuse still runs through `SkillRuntime`, the task scheduler, survival priorities, and owner-safety constraints. Only a small goal-relevant rule set enters each prompt.
+
+This is black-box adaptation to observable game contracts, not a claim of universal support for every mod, competitive server, or arbitrary private mod API. Fabric is the supported loader; NeoForge remains experimental pending broader in-game coverage.
+
 ## v0.2.6: long-term memory, realtime decisions, and token efficiency
 
 - Owner intent, strategic goals, and the active plan step now form one retrieval query, so prompts include only relevant semantic outcomes, verified experiences, cognitive-map POIs, and place-event memories.
@@ -122,8 +133,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.2.6.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.2.6.jar`
+- `fabric/build/libs/mineagent-fabric-0.3.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.3.0.jar`
 
 ## Modules
 

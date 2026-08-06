@@ -63,9 +63,10 @@ public class MemoryPersistence {
     private static final String ROLLING_PLAN_FILE = "rolling_plan.json";
     private static final String MECHANISM_FILE = "mechanism_experiments.json";
     private static final String CONVERSATION_FILE = "conversation.json";
-    // v8 removes derived asset facts and non-executable learned traces while
-    // retaining backward-compatible reads of v1-v7 files.
-    private static final int FORMAT_VERSION = 8;
+    // v9 adds environment-scoped mechanism profiles, evidence-weighted rules,
+    // exploration budgets and adapter identities. Gson supplies safe defaults
+    // for absent v1-v8 fields, so existing companion memories remain readable.
+    private static final int FORMAT_VERSION = 9;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 

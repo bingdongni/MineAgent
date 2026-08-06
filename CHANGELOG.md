@@ -2,6 +2,32 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.3.0] - 2026-08-06
+
+### Added
+
+- Add an environment-scoped mechanism knowledge base for bounded block, item, entity, menu, recipe, property, and GUI-slot profiles learned from real tool observations.
+- Add loader/mod-version/registry fingerprints so confirmed rules become stale instead of replaying silently after the game environment changes.
+- Add competing evidence-weighted hypotheses, independent-context confirmation, counterexample invalidation, persistent per-subject exploration budgets, and information-per-cost probe ranking.
+- Add explicit reversible compensation for state-changing experiments and compile confirmed action rules into ordinary postcondition-verified skills.
+- Add L4 regression coverage for causal baselines, independent confirmation, contradictions, fingerprint invalidation, compensation requirements, GUI structure, restart semantics, safe probe ranking, and goal-relevant recall.
+
+### Changed
+
+- Require every medium-risk exploration probe to declare a verified compensation; reject high-risk probes and irreversible crafting as autonomous experiments.
+- Feed successful inspection results into bounded mechanism profiles even outside an explicitly armed experiment.
+- Return registered menu type IDs and empty container-side slot structure from `inspect_gui` while retaining a strict output bound.
+- Recall at most three sufficiently relevant mechanism rules in the dynamic prompt and automatically expose controlled exploration when a known-unverified object is relevant to the owner goal.
+- Increment the memory format to version 9; v1-v8 files remain readable and no in-flight body ownership is restored.
+
+### Fixed
+
+- Prevent an old or heartbeat-refreshed semantic fact from proving a causal mechanism transition.
+- Prevent one successful probe or repeated evidence from the same setup from creating a reusable rule.
+- Remove generated adapters immediately after contradictory verified evidence or an environment fingerprint change.
+- Prevent adapter reconstruction during memory load from inflating learned-skill invocation statistics.
+- Prevent a single common query word from injecting unrelated mechanism rules into prompts.
+
 ## [0.2.6] - 2026-08-06
 
 ### Added

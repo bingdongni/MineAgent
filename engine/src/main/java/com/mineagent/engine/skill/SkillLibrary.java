@@ -178,6 +178,32 @@ public class SkillLibrary {
         return Optional.ofNullable(skills.get(skillName));
     }
 
+    /**
+     * Install a mechanism adapter without pretending that compilation was a
+     * successful body invocation.  Normal {@link #register} updates Bayesian
+     * reliability counters; using it during every memory load used to inflate
+     * confidence without executing anything.
+     */
+    public void upsertVerifiedAdaptation(String name, String description,
+                                         String triggerCondition,
+                                         String actionSequence) {
+        String normalizedName = name == null ? "" : name.trim();
+        String validated = validateSequence(actionSequence);
+        if (normalizedName.isBlank() || validated == null) return;
+        Skill existing = skills.get(normalizedName);
+        skills.put(normalizedName, new Skill(normalizedName,
+                description == null ? "" : description,
+                triggerCondition == null ? "" : triggerCondition,
+                validated, existing == null ? 1.0 : existing.successRate(),
+                existing == null ? 1 : existing.invocations(),
+                existing == null ? System.currentTimeMillis() : existing.createdTick()));
+    }
+
+    /** Remove a generated adapter as soon as its evidence or environment is stale. */
+    public boolean remove(String name) {
+        return name != null && skills.remove(name) != null;
+    }
+
     /** Stable snapshot used by memory persistence. */
     public List<Skill> exportAll() {
         return skills.values().stream()

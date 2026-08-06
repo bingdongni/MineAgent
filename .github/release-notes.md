@@ -1,15 +1,17 @@
-MineAgent 0.2.6 is an alpha release for Minecraft 1.21.1 and requires Java 21.
+MineAgent 0.3.0 is an alpha release for Minecraft 1.21.1 and requires Java 21.
 
-This release focuses on long-session intelligence and responsiveness. Long-term recall is now conditioned on the latest owner objective, strategic goal, and active plan step. Verified world-action outcomes and owner goals persist, while routine scans and derived asset projections remain volatile. Legacy semantic and learned-skill pollution is filtered during backward-compatible v8 memory migration.
+This release implements the L4 unfamiliar-environment and mod-mechanism adaptation loop on top of the v0.2.6 event-sourced world model and verified skill runtime. Successful inspections build bounded profiles for registered blocks, items, menus, recipes, entities, state properties, and GUI slots. Controlled experiments compare hypotheses under a persistent resource budget, freeze a pre-action baseline, require a newer correlated observation, and keep execution failures inconclusive.
 
-Repeated blocked heartbeats and equivalent cognition/replan events are coalesced before they can wake or cancel LLM calls. Dynamic tools stay exposed for one owner objective, discovery results no longer duplicate complete schemas, and routine follow-up generations use a bounded output budget without constraining initial strategy or large build payloads.
+State-changing experiments require an explicit verified compensation. High-risk probes and irreversible autonomous crafting experiments are rejected. A rule needs support from at least two independent contexts before confirmation; counterexamples lower confidence and invalidate generated adapters. Confirmed action rules compile into ordinary postcondition-checked skills, so reuse remains subject to SkillRuntime, scheduler admission, survival priorities, and owner-safety constraints.
 
-The release includes 46 passing Fabric regression tests covering planning, semantic memory, asset persistence, goal-conditioned retrieval, skills, exploration, and cognition. These changes improve grounding, latency, cache reuse, and token efficiency, but this alpha does not claim that arbitrary modpacks, competitive servers, or autonomous full-game completion have been validated.
+Rules are scoped to a fingerprint of Minecraft, loader, loaded mod versions, and observable registries. A changed environment marks old rules stale until revalidated. Version 9 memory remains backward-compatible with v1-v8 files and restores compatible knowledge without restoring an in-flight experiment or body ownership. Goal-conditioned recall exposes only a small relevant rule subset to limit prompt tokens.
+
+The release includes 59 passing Fabric regression tests. These cover causal baselines, independent support, contradictions, stale-environment revalidation, compensation requirements, structured GUI transitions, restart behavior, probe selection, planning, memory, skills, and realtime cognition. This is black-box adaptation to observable game contracts; it does not claim universal support for arbitrary private mod APIs, all modpacks, competitive servers, or autonomous full-game completion.
 
 ## Downloads
 
-- `mineagent-fabric-0.2.6.jar`: supported build. Requires Fabric Loader and Fabric API for Minecraft 1.21.1.
-- `mineagent-neoforge-0.2.6.jar`: experimental build. Requires NeoForge 21.1.x and should be tested in a backed-up world.
+- `mineagent-fabric-0.3.0.jar`: supported build. Requires Fabric Loader and Fabric API for Minecraft 1.21.1.
+- `mineagent-neoforge-0.3.0.jar`: experimental build. Requires NeoForge 21.1.x and should be tested in a backed-up world.
 
 Install exactly one JAR matching your mod loader. Do not install the Fabric and NeoForge artifacts together.
 

@@ -453,7 +453,11 @@ public final class SemanticWorldModel {
                         && !fact.subject().equals("environment")
                         && !fact.subject().startsWith("actor:")
                         && !fact.subject().startsWith("inventory:")
-                        && !fact.subject().startsWith("asset:"))
+                        && !fact.subject().startsWith("asset:")
+                        // MechanismExplorer performs goal-conditioned profile
+                        // recall; repeating the latest GUI fields here would
+                        // waste tokens and reduce prompt-cache stability.
+                        && !fact.subject().startsWith("profile:"))
                 .sorted(Comparator.comparingLong(SemanticFact::observedTick).reversed())
                 .limit(8).toList();
         if (active.isEmpty()) return "Semantic world model: no active facts\n";

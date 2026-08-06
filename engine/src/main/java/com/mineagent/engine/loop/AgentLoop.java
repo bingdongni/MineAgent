@@ -27,6 +27,7 @@ import com.mineagent.engine.planning.IntentContract;
 import com.mineagent.engine.planning.HierarchicalRollingPlanner;
 import com.mineagent.engine.planning.PlanGraph;
 import com.mineagent.engine.exploration.MechanismExplorer;
+import com.mineagent.engine.exploration.EnvironmentFingerprint;
 import com.mineagent.engine.task.TaskContext;
 import com.mineagent.engine.world.BeliefState;
 import com.mineagent.engine.world.WorldAssetIndex;
@@ -338,7 +339,9 @@ public class AgentLoop {
                 (experiment, supported, evidence, gameTick) ->
                         beliefState.observeRuleOutcome(experiment.subject(),
                                 experiment.probeTool(), experiment.hypothesis(),
-                                supported, evidence, gameTick));
+                                supported, evidence, gameTick),
+                skillLib, EnvironmentFingerprint.capture(),
+                this::dispatchExplorationCompensation);
         this.skillRuntime = new SkillRuntime(skillLib, semanticWorldModel,
                 this::dispatchSkillAction, this::onSkillRuntimeCompleted);
         this.realtimeCognition = new RealtimeCognition(companion);
@@ -1051,10 +1054,37 @@ public class AgentLoop {
         }
         mechanismExplorer.onToolDispatched(actionId, toolName,
                 arguments.toString(), currentGameTickSafe());
-        mechanismExplorer.onToolResult(actionId, success, asynchronous,
+        mechanismExplorer.onToolResult(actionId, toolName, success, asynchronous,
                 raw, currentGameTickSafe());
         return new SkillRuntime.DispatchResult(success, asynchronous,
                 success, raw);
+    }
+
+    /**
+     * Controlled exploration can attempt compensation only through the same validated
+     * tool dispatcher used by learned skills.  JSON is parsed structurally and
+     * asynchronous compensation is reported as unverified rather than being
+     * falsely treated as an atomic rollback. A successful result proves that
+     * the compensation tool ran, not that arbitrary mod state is transactional.
+     */
+    private MechanismExplorer.CompensationResult dispatchExplorationCompensation(
+            String actionId, String toolName, String arguments) {
+        com.google.gson.JsonObject parsed;
+        try {
+            var element = com.google.gson.JsonParser.parseString(arguments);
+            if (!element.isJsonObject()) {
+                return new MechanismExplorer.CompensationResult(false, false,
+                        false, "Compensation arguments are not a JSON object");
+            }
+            parsed = element.getAsJsonObject();
+        } catch (RuntimeException malformed) {
+            return new MechanismExplorer.CompensationResult(false, false,
+                    false, "Invalid compensation arguments: " + malformed.getMessage());
+        }
+        SkillRuntime.DispatchResult result = dispatchSkillAction(actionId,
+                toolName, parsed);
+        return new MechanismExplorer.CompensationResult(result.accepted(),
+                result.asynchronous(), result.success(), result.evidence());
     }
 
     private void onSkillRuntimeCompleted(SkillRuntime.Snapshot snapshot) {
@@ -1078,6 +1108,8 @@ public class AgentLoop {
         semanticWorldModel.recordOutcome("execute_skill", success,
                 snapshot.skillName() + ": " + snapshot.lastEvidence(),
                 snapshot.runId(), gameTick, true);
+        mechanismExplorer.onAdapterOutcome(snapshot.skillName(), success,
+                snapshot.lastEvidence(), gameTick);
         onBodyLog("[SKILL_FINISHED] run_id=" + snapshot.runId()
                 + " skill=" + snapshot.skillName() + " state=" + snapshot.status()
                 + " evidence=" + snapshot.lastEvidence());
@@ -1132,6 +1164,12 @@ public class AgentLoop {
         }
         if (containsAny(intent, "mod", "mechanism", "machine", "unknown", "experiment",
                 "模组", "机制", "机器", "陌生", "实验")) {
+            exposeExtraTools(Set.of("explore_mechanism"));
+        }
+        // Once an inspected unfamiliar object is relevant to the new goal,
+        // expose controlled exploration even when the owner's wording does not
+        // literally contain "mod" or "machine".
+        if (mechanismExplorer.hasRelevantNovelty(intent)) {
             exposeExtraTools(Set.of("explore_mechanism"));
         }
         if (!skillLib.retrieve(intent).isEmpty()) {
@@ -2502,7 +2540,7 @@ public class AgentLoop {
                                     safeResult, tc.id(), callbackTick,
                                     durableToolOutcome(tc.name()));
                         }
-                        mechanismExplorer.onToolResult(tc.id(), success, async,
+                        mechanismExplorer.onToolResult(tc.id(), tc.name(), success, async,
                                 safeResult, callbackTick);
                         if (state.compareAndSet(
                                 ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
@@ -2525,7 +2563,7 @@ public class AgentLoop {
                             String.valueOf(t.getMessage()), tc.id(), currentGameTickSafe(),
                             durableToolOutcome(tc.name()));
                     dispatchedActionTools.remove(tc.id());
-                    mechanismExplorer.onToolResult(tc.id(), false, false,
+                    mechanismExplorer.onToolResult(tc.id(), tc.name(), false, false,
                             String.valueOf(t.getMessage()), currentGameTickSafe());
                     if (state.compareAndSet(
                             ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
@@ -2542,6 +2580,9 @@ public class AgentLoop {
                     semanticWorldModel.recordOutcome(tc.name(), false,
                             String.valueOf(schedulingFailure.getMessage()), tc.id(),
                             currentGameTickSafe(), durableToolOutcome(tc.name()));
+                    mechanismExplorer.onToolResult(tc.id(), tc.name(), false,
+                            false, String.valueOf(schedulingFailure.getMessage()),
+                            currentGameTickSafe());
                     resultHolder.set(toolErrorJson(tc.name(), schedulingFailure));
                     latch.countDown();
                 }
@@ -2562,7 +2603,7 @@ public class AgentLoop {
                     semanticWorldModel.recordOutcome(exec.toolName(), false,
                             "Tool execution timed out", exec.toolCallId(),
                             currentGameTickSafe(), durableToolOutcome(exec.toolName()));
-                    mechanismExplorer.onToolResult(exec.toolCallId(), false,
+                    mechanismExplorer.onToolResult(exec.toolCallId(), exec.toolName(), false,
                             false, "Tool execution timed out", currentGameTickSafe());
                     resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
                             "{\"error\":\"Tool execution timed out\"}"));
@@ -2591,7 +2632,7 @@ public class AgentLoop {
                 semanticWorldModel.recordOutcome(exec.toolName(), false,
                         "Interrupted", exec.toolCallId(), currentGameTickSafe(),
                         durableToolOutcome(exec.toolName()));
-                mechanismExplorer.onToolResult(exec.toolCallId(), false,
+                mechanismExplorer.onToolResult(exec.toolCallId(), exec.toolName(), false,
                         false, "Interrupted", currentGameTickSafe());
                 resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
                         "{\"error\":\"Interrupted\"}"));
@@ -2625,7 +2666,7 @@ public class AgentLoop {
         if (lower.contains("look_around")) return 9000;
         if (lower.contains("resolve_need")) return 7000;
         if (lower.contains("inspect_gui") || lower.contains("inspect_block_storage")) {
-            return 5000;
+            return 9000;
         }
         // 感知类：需要完整环境信息，给 1200 字符
         if (lower.contains("look") || lower.contains("scan")
@@ -3034,7 +3075,7 @@ public class AgentLoop {
         sb.append("USE THIS before exploring — you may already know where to find what you need.\n");
         sb.append("- `list_learned_skills`: See skills you've mastered from past successes. ");
         sb.append("Use `execute_skill` to run one through precondition/action/postcondition verification instead of manually replaying every step.\n");
-        sb.append("- `explore_mechanism`: For unfamiliar mod content, arm one low-risk, falsifiable probe with a declared observable postcondition; never infer a permanent rule from one failed or ambiguous action.\n");
+        sb.append("- `explore_mechanism`: For unfamiliar content, compare competing hypotheses, rank bounded probes by information/cost, and arm exactly one reversible falsifiable experiment. State-changing probes require explicit compensation. One success never creates a reusable rule; independent contexts and verified deltas are required.\n");
         sb.append("- `coordinate_team`: Inspect team commitments, claim a role, or request targeted support.\n");
         sb.append("Read tool results carefully. If a tool fails, think about WHY ");
         sb.append("and try a different approach.\n\n");
@@ -3219,7 +3260,7 @@ public class AgentLoop {
         String semanticRecall = semanticWorldModel.recallForPrompt(memoryQuery,
                 liveAssetPosition.get(), liveAssetGameTick.get(), 4);
         if (!semanticRecall.isBlank()) sb.append(semanticRecall);
-        sb.append(mechanismExplorer.summarizeForPrompt());
+        sb.append(mechanismExplorer.summarizeForPrompt(memoryQuery));
         String experienceSummary = experienceStore.summarizeForPrompt(memoryQuery);
         if (!experienceSummary.isBlank()) sb.append(experienceSummary);
         // Reflection: only top 1 lesson
