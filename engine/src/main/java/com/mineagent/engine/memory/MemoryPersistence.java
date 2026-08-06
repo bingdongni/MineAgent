@@ -7,9 +7,12 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mineagent.engine.planning.PlanGraph;
+import com.mineagent.engine.planning.HierarchicalRollingPlanner;
 import com.mineagent.engine.world.BeliefState;
 import com.mineagent.engine.world.WorldAssetIndex;
+import com.mineagent.engine.world.SemanticWorldModel;
 import com.mineagent.engine.skill.SkillLibrary;
+import com.mineagent.engine.exploration.MechanismExplorer;
 import com.mineagent.api.llm.ChatMessage;
 
 import java.io.IOException;
@@ -56,8 +59,11 @@ public class MemoryPersistence {
     private static final String ASSET_FILE = "world_assets.json";
     private static final String EXPERIENCE_FILE = "experiences.json";
     private static final String SKILL_FILE = "learned_skills.json";
+    private static final String SEMANTIC_WORLD_FILE = "semantic_world.json";
+    private static final String ROLLING_PLAN_FILE = "rolling_plan.json";
+    private static final String MECHANISM_FILE = "mechanism_experiments.json";
     private static final String CONVERSATION_FILE = "conversation.json";
-    private static final int FORMAT_VERSION = 6;
+    private static final int FORMAT_VERSION = 7;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 
@@ -74,6 +80,9 @@ public class MemoryPersistence {
     private final WorldAssetIndex worldAssetIndex;
     private final ExperienceStore experienceStore;
     private final SkillLibrary skillLibrary;
+    private final SemanticWorldModel semanticWorldModel;
+    private final HierarchicalRollingPlanner rollingPlanner;
+    private final MechanismExplorer mechanismExplorer;
     private final List<ChatMessage> conversationHistory;
 
     /** 上次保存时间 */
@@ -92,6 +101,9 @@ public class MemoryPersistence {
                              WorldAssetIndex worldAssetIndex,
                              ExperienceStore experienceStore,
                              SkillLibrary skillLibrary,
+                             SemanticWorldModel semanticWorldModel,
+                             HierarchicalRollingPlanner rollingPlanner,
+                             MechanismExplorer mechanismExplorer,
                              List<ChatMessage> conversationHistory) {
         this.memoryDir = memoryDir;
         this.cognitiveMap = cognitiveMap;
@@ -103,6 +115,9 @@ public class MemoryPersistence {
         this.worldAssetIndex = worldAssetIndex;
         this.experienceStore = experienceStore;
         this.skillLibrary = skillLibrary;
+        this.semanticWorldModel = semanticWorldModel;
+        this.rollingPlanner = rollingPlanner;
+        this.mechanismExplorer = mechanismExplorer;
         this.conversationHistory = conversationHistory;
     }
 
@@ -143,6 +158,15 @@ public class MemoryPersistence {
         try { saveSkills(); } catch (Exception e) {
             System.err.println("[MineAgent] Save learned skills failed: " + e.getMessage());
         }
+        try { saveSemanticWorld(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save semantic world failed: " + e.getMessage());
+        }
+        try { saveRollingPlan(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save rolling plan failed: " + e.getMessage());
+        }
+        try { saveMechanisms(); } catch (Exception e) {
+            System.err.println("[MineAgent] Save mechanism experiments failed: " + e.getMessage());
+        }
         try { saveConversation(); } catch (Exception e) {
             System.err.println("[MineAgent] Save conversation failed: " + e.getMessage());
         }
@@ -173,6 +197,9 @@ public class MemoryPersistence {
         loadWithQuarantine(ASSET_FILE, "world assets", this::loadWorldAssets);
         loadWithQuarantine(EXPERIENCE_FILE, "experiences", this::loadExperiences);
         loadWithQuarantine(SKILL_FILE, "learned skills", this::loadSkills);
+        loadWithQuarantine(SEMANTIC_WORLD_FILE, "semantic world", this::loadSemanticWorld);
+        loadWithQuarantine(ROLLING_PLAN_FILE, "rolling plan", this::loadRollingPlan);
+        loadWithQuarantine(MECHANISM_FILE, "mechanism experiments", this::loadMechanisms);
         loadWithQuarantine(CONVERSATION_FILE, "conversation", this::loadConversation);
         // Do not immediately overwrite a quarantined or partially recovered
         // file on the first agent turn. The normal one-minute autosave will
@@ -533,6 +560,75 @@ public class MemoryPersistence {
         skillLibrary.importAll(skills);
     }
 
+    private void saveSemanticWorld() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(semanticWorldModel.exportState()));
+        writeAtomic(memoryDir.resolve(SEMANTIC_WORLD_FILE), GSON.toJson(data));
+    }
+
+    private void loadSemanticWorld() throws IOException {
+        Path file = memoryDir.resolve(SEMANTIC_WORLD_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("semantic world state is missing");
+        }
+        try {
+            semanticWorldModel.importState(GSON.fromJson(
+                    data.get("state"), SemanticWorldModel.State.class));
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid semantic world state", malformed);
+        }
+    }
+
+    private void saveRollingPlan() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(rollingPlanner.exportState()));
+        writeAtomic(memoryDir.resolve(ROLLING_PLAN_FILE), GSON.toJson(data));
+    }
+
+    private void loadRollingPlan() throws IOException {
+        Path file = memoryDir.resolve(ROLLING_PLAN_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("rolling plan state is missing");
+        }
+        try {
+            rollingPlanner.importState(GSON.fromJson(
+                    data.get("state"), HierarchicalRollingPlanner.State.class));
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid rolling plan state", malformed);
+        }
+    }
+
+    private void saveMechanisms() throws IOException {
+        JsonObject data = new JsonObject();
+        data.addProperty("version", FORMAT_VERSION);
+        data.addProperty("timestamp", System.currentTimeMillis());
+        data.add("state", GSON.toJsonTree(mechanismExplorer.exportState()));
+        writeAtomic(memoryDir.resolve(MECHANISM_FILE), GSON.toJson(data));
+    }
+
+    private void loadMechanisms() throws IOException {
+        Path file = memoryDir.resolve(MECHANISM_FILE);
+        if (!Files.exists(file)) return;
+        JsonObject data = readRoot(file);
+        if (!data.has("state") || !data.get("state").isJsonObject()) {
+            throw new IOException("mechanism experiment state is missing");
+        }
+        try {
+            mechanismExplorer.importState(GSON.fromJson(
+                    data.get("state"), MechanismExplorer.State.class));
+        } catch (RuntimeException malformed) {
+            throw new IOException("invalid mechanism experiment state", malformed);
+        }
+    }
+
     private record DialoguePair(String user, String assistant) {}
 
     private void saveConversation() throws IOException {
@@ -680,6 +776,9 @@ public class MemoryPersistence {
             Files.deleteIfExists(memoryDir.resolve(ASSET_FILE));
             Files.deleteIfExists(memoryDir.resolve(EXPERIENCE_FILE));
             Files.deleteIfExists(memoryDir.resolve(SKILL_FILE));
+            Files.deleteIfExists(memoryDir.resolve(SEMANTIC_WORLD_FILE));
+            Files.deleteIfExists(memoryDir.resolve(ROLLING_PLAN_FILE));
+            Files.deleteIfExists(memoryDir.resolve(MECHANISM_FILE));
             Files.deleteIfExists(memoryDir.resolve(CONVERSATION_FILE));
         } catch (IOException e) {
             System.err.println("[MineAgent] Failed to clear memories: " + e.getMessage());

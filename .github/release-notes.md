@@ -1,6 +1,8 @@
-MineAgent 0.2.0 is an alpha release for Minecraft 1.21.1 and requires Java 21.
+MineAgent 0.2.5 is an alpha release for Minecraft 1.21.1 and requires Java 21.
 
-This release introduces a realtime layered cognition architecture: fast local survival and tactical control, executor-evidence-backed rolling plans, owner-scoped team coordination, parameterized skill memory, and lower-overhead dynamic tool schemas. These changes improve responsiveness and grounding, but do not claim that arbitrary modpacks, competitive servers, or full-game completion have been validated autonomously.
+This release completes the L3 closed-loop execution architecture: learned skills now run one verified step at a time; an event-sourced semantic world model supplies temporal evidence; a hierarchical rolling planner repairs invalid plan suffixes; and a risk-bounded mechanism explorer supports falsifiable experiments with unfamiliar mod content. Multi-turn skills are learned only from fully successful verified episodes.
+
+These systems materially improve autonomy, recovery, grounding, and token efficiency, but this alpha does not claim that arbitrary modpacks, competitive servers, or autonomous full-game completion have been validated.
 
 ## Downloads
 

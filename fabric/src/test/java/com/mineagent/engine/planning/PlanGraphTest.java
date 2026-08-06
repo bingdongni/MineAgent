@@ -57,6 +57,41 @@ final class PlanGraphTest {
         assertTrue(graph.currentNode().evidence().isEmpty());
     }
 
+    @Test void synchronousWorldActionCanVerifyCurrentNode() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("goal", List.of(draft("craft", List.of())), List.of());
+        graph.bindToolCall("call");
+        graph.recordToolOutcome("call", "craft", true,
+                "inventory contains the recipe output", 4L);
+        assertEquals(100, graph.progressPercent());
+        assertFalse(graph.hasActivePlan());
+    }
+
+    @Test void synchronousCallsBoundTogetherCannotConsumeNextNode() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("goal", List.of(
+                draft("prepare", List.of()), draft("travel", List.of("prepare"))), List.of());
+        graph.bindToolCall("craft-call");
+        graph.bindToolCall("equip-call");
+        graph.recordToolOutcome("craft-call", "craft", true, "crafted", 1L);
+        graph.recordToolOutcome("equip-call", "equip_item", true, "equipped", 1L);
+
+        assertEquals("travel", graph.currentNode().id());
+        assertEquals(50, graph.progressPercent());
+    }
+
+    @Test void laterSuccessCannotHideFailureInSameSynchronousBatch() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("goal", List.of(draft("prepare", List.of())), List.of());
+        graph.bindToolCall("failed-call");
+        graph.bindToolCall("successful-call");
+        graph.recordToolOutcome("failed-call", "craft", false, "missing input", 1L);
+        graph.recordToolOutcome("successful-call", "equip_item", true, "equipped", 1L);
+        assertTrue(graph.hasActivePlan());
+        assertEquals(PlanGraph.NodeStatus.BLOCKED,
+                graph.exportState().nodes().getFirst().status());
+    }
+
     private static PlanGraph.DraftNode draft(String id, List<String> dependencies) {
         return new PlanGraph.DraftNode(id, id, "executor verifies " + id,
                 "medium", dependencies, PlanGraph.NodeStatus.PENDING);

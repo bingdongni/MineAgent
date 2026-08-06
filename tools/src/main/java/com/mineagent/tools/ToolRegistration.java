@@ -26,8 +26,10 @@ import com.mineagent.tools.perception.RecallMemoryTool;
 import com.mineagent.tools.perception.ScanBlocksTool;
 import com.mineagent.tools.perception.ScanNearbyEntitiesTool;
 import com.mineagent.tools.planning.ResolveNeedTool;
+import com.mineagent.tools.planning.ExploreMechanismTool;
 import com.mineagent.tools.skill.LearnedSkillsTool;
 import com.mineagent.tools.skill.LoadSkillTool;
+import com.mineagent.tools.skill.ExecuteSkillTool;
 
 /**
  * Registers all MineAgent built-in tools. Called at mod initialization.
@@ -48,6 +50,7 @@ public final class ToolRegistration {
         ToolRegistry.register(new ScanNearbyEntitiesTool());
         ToolRegistry.register(new RecallMemoryTool());
         ToolRegistry.register(new ResolveNeedTool());
+        ToolRegistry.register(new ExploreMechanismTool());
 
         // Block
         ToolRegistry.register(new AutoMineTool());
@@ -96,6 +99,7 @@ public final class ToolRegistration {
         // Skills
         ToolRegistry.register(new LoadSkillTool());
         ToolRegistry.register(new LearnedSkillsTool());
+        ToolRegistry.register(new ExecuteSkillTool());
 
         System.out.println("[MineAgent] Registered " + ToolRegistry.size() + " tools");
     }

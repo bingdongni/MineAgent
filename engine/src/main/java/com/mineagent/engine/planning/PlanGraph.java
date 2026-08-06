@@ -64,6 +64,7 @@ public final class PlanGraph {
 
     private final LinkedHashMap<String, PlanNode> nodes = new LinkedHashMap<>();
     private final Map<String, String> taskBindings = new LinkedHashMap<>();
+    private final Map<String, String> toolBindings = new LinkedHashMap<>();
     private List<IntentContract.Constraint> constraints = List.of();
     private String goal = "";
     private long revision;
@@ -145,6 +146,11 @@ public final class PlanGraph {
             PlanNode after = nodes.get(entry.getValue());
             return before == null || after == null || !sameSemantics(before, after);
         });
+        toolBindings.entrySet().removeIf(entry -> {
+            PlanNode before = previousNodes.get(entry.getValue());
+            PlanNode after = nodes.get(entry.getValue());
+            return before == null || after == null || !sameSemantics(before, after);
+        });
         goal = normalize(newGoal, goal.isBlank() ? "Current owner goal" : goal);
         if (newConstraints != null) constraints = List.copyOf(newConstraints);
         revision++;
@@ -203,6 +209,45 @@ public final class PlanGraph {
         revision++;
     }
 
+    /** Bind all synchronous calls in one model response to the same ready node. */
+    public synchronized void bindToolCall(String toolCallId) {
+        if (toolCallId == null || toolCallId.isBlank()) return;
+        PlanNode node = currentNode();
+        if (node != null) toolBindings.put(toolCallId, node.id());
+    }
+
+    /**
+     * Commit a synchronous world-changing tool result as executor evidence.
+     * Query tools never call this path. It prevents verified inventory/GUI
+     * actions such as craft or equip from leaving their plan node pending
+     * forever merely because they complete inside one server callback.
+     */
+    public synchronized boolean recordToolOutcome(String toolCallId, String toolName,
+                                                  boolean success, String evidence,
+                                                  long gameTick) {
+        String boundNodeId = toolBindings.remove(toolCallId);
+        // An absent binding means no plan owned this call, or a newer plan
+        // invalidated the old binding. Never let late evidence verify whatever
+        // node happens to be current now.
+        PlanNode node = boundNodeId == null ? null : nodes.get(boundNodeId);
+        if (node == null) return false;
+        List<Evidence> updated = appendEvidence(node.evidence(), new Evidence(
+                "tool:" + normalize(toolName, "tool") + ":"
+                        + normalize(toolCallId, "call"),
+                normalize(evidence, success ? "verified" : "failed"),
+                success, gameTick));
+        boolean alreadyFailedInBatch = node.status() == NodeStatus.BLOCKED
+                && node.lastFailure() != null;
+        boolean verified = success && !alreadyFailedInBatch;
+        nodes.put(node.id(), replace(node,
+                verified ? NodeStatus.VERIFIED : NodeStatus.BLOCKED,
+                node.attempts() + 1,
+                verified ? null : alreadyFailedInBatch ? node.lastFailure() : evidence,
+                updated));
+        revision++;
+        return true;
+    }
+
     public synchronized PlanNode currentNode() {
         for (PlanNode node : nodes.values()) {
             if (node.status() == NodeStatus.IN_PROGRESS) return node;
@@ -259,6 +304,7 @@ public final class PlanGraph {
     public synchronized void importState(State state) {
         nodes.clear();
         taskBindings.clear();
+        toolBindings.clear();
         if (state == null) return;
         goal = normalize(state.goal(), "Restored goal");
         constraints = state.constraints() == null ? List.of() : List.copyOf(state.constraints());

@@ -172,6 +172,16 @@ public final class TodowriteTool implements Tool {
         String goal = ToolArgs.getString(args, "goal", null);
         PlanGraph.UpdateResult update = state.get().loop.planGraph()
                 .replacePlan(goal, drafts, constraints);
+        if (update.accepted()) {
+            long gameTick;
+            try {
+                gameTick = com.mineagent.engine.task.TaskContext.serverPlayer(player)
+                        .level().getGameTime();
+            } catch (RuntimeException unavailable) {
+                gameTick = 0L;
+            }
+            state.get().loop.rollingPlanner().onPlanReplaced(goal, gameTick);
+        }
 
         JsonObject result = new JsonObject();
         result.addProperty("success", update.accepted());

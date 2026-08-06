@@ -90,9 +90,9 @@ public class LearnedSkillsTool implements Tool {
         }
         result.add("skills", arr);
         result.addProperty("hint",
-                "To reuse a skill, repeat the same tool-call sequence "
-                + "that worked last time. The system will detect the "
-                + "pattern and may shortcut future attempts.");
+                "Call execute_skill with the exact skill name. The closed-loop "
+                + "runtime dispatches one step at a time and verifies executor "
+                + "outcomes before continuing.");
         reply.accept(result.toString());
     }
 }

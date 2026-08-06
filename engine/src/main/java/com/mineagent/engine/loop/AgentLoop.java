@@ -16,6 +16,7 @@ import com.mineagent.engine.memory.ReflectionSystem;
 import com.mineagent.engine.memory.ImportanceEvaluator;
 import com.mineagent.engine.memory.ExperienceStore;
 import com.mineagent.engine.skill.SkillLibrary;
+import com.mineagent.engine.skill.SkillRuntime;
 import com.mineagent.engine.cache.DecisionCache;
 import com.mineagent.engine.cognition.RealtimeCognition;
 import com.mineagent.engine.cognition.SituationSnapshot;
@@ -23,11 +24,14 @@ import com.mineagent.engine.cognition.TeamBlackboard;
 import com.mineagent.engine.theory.TheoryOfMind;
 import com.mineagent.engine.knowledge.MinecraftKnowledgeGraph;
 import com.mineagent.engine.planning.IntentContract;
+import com.mineagent.engine.planning.HierarchicalRollingPlanner;
 import com.mineagent.engine.planning.PlanGraph;
+import com.mineagent.engine.exploration.MechanismExplorer;
 import com.mineagent.engine.task.TaskContext;
 import com.mineagent.engine.world.BeliefState;
 import com.mineagent.engine.world.WorldAssetIndex;
 import com.mineagent.engine.world.WorldAssetObserver;
+import com.mineagent.engine.world.SemanticWorldModel;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -133,12 +137,20 @@ public class AgentLoop {
             "collect_items", "eat_item", "equip_item", "transfer_items",
             "melee_attack", "todowrite", "task_status", "task_stop",
             "query_extra_tools", "list_learned_skills", "load_skill",
-            "coordinate_team");
+            "execute_skill", "explore_mechanism", "coordinate_team");
     private static final Set<String> SKILL_ACTION_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
             "transfer_items", "craft", "interact_at", "interact_entity",
             "close_gui");
+    private static final Set<String> SKILL_TRACE_TOOLS = Set.of(
+            "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
+            "equip_item", "eat_item", "drop_items", "collect_items",
+            "transfer_items", "craft", "interact_at", "interact_entity",
+            "close_gui", "look_around", "scan_blocks", "scan_nearby_entities",
+            "get_self_status", "get_owner_status", "get_world_info",
+            "resolve_need", "lookup_recipe", "inspect_block",
+            "inspect_block_storage", "inspect_gui", "recall_memory");
 
     /** 距上次玩家消息的时间（毫秒）。
      *  如果玩家刚刚说话（<30秒），不使用缓存 — 对话场景需要
@@ -182,6 +194,13 @@ public class AgentLoop {
                                       ChatMessage.ToolCallRef call) {}
     private final ConcurrentMap<String, PendingSkillAction> pendingTaskActions =
             new ConcurrentHashMap<>();
+    /** Correlates executor task IDs with tool names for semantic outcomes. */
+    private final ConcurrentMap<String, String> dispatchedActionTools =
+            new ConcurrentHashMap<>();
+    /** Verified action prefix for learning one reusable multi-step episode. */
+    private final Object verifiedTraceLock = new Object();
+    private final List<ChatMessage.ToolCallRef> verifiedActionTrace = new ArrayList<>();
+    private String verifiedTraceGoal = "";
 
     /**
      * Only populated while this loop thread is blocked inside a provider HTTP
@@ -241,6 +260,14 @@ public class AgentLoop {
      */
     private final WorldAssetIndex worldAssetIndex;
     private final ExperienceStore experienceStore;
+    /** Shared temporal evidence consumed by skills, planning, and exploration. */
+    private final SemanticWorldModel semanticWorldModel;
+    /** Strategic/tactical/execution rolling horizon over the verified PlanGraph. */
+    private final HierarchicalRollingPlanner rollingPlanner;
+    /** One-at-a-time, risk-bounded unfamiliar-mechanism experiments. */
+    private final MechanismExplorer mechanismExplorer;
+    /** Replays learned action sequences only as executor-verified closed loops. */
+    private final SkillRuntime skillRuntime;
     /**
      * Server-thread tactical cognition. It continuously publishes immutable
      * evidence and handles reactions that are too urgent for an HTTP round
@@ -292,6 +319,16 @@ public class AgentLoop {
         this.beliefState = new BeliefState();
         this.worldAssetIndex = new WorldAssetIndex();
         this.experienceStore = new ExperienceStore();
+        this.semanticWorldModel = new SemanticWorldModel();
+        this.rollingPlanner = new HierarchicalRollingPlanner(
+                planner, semanticWorldModel);
+        this.mechanismExplorer = new MechanismExplorer(semanticWorldModel,
+                (experiment, supported, evidence, gameTick) ->
+                        beliefState.observeRuleOutcome(experiment.subject(),
+                                experiment.probeTool(), experiment.hypothesis(),
+                                supported, evidence, gameTick));
+        this.skillRuntime = new SkillRuntime(skillLib, semanticWorldModel,
+                this::dispatchSkillAction, this::onSkillRuntimeCompleted);
         this.realtimeCognition = new RealtimeCognition(companion);
         this.cognitiveMap = new com.mineagent.engine.memory.CognitiveMap();
         // The persistent loader appends validated dialogue after this system
@@ -317,7 +354,8 @@ public class AgentLoop {
             p = new com.mineagent.engine.memory.MemoryPersistence(
                     memDir, cognitiveMap, placeMemory, importance, reflection,
                     planner, beliefState, worldAssetIndex, experienceStore,
-                    skillLib, history);
+                    skillLib, semanticWorldModel, rollingPlanner,
+                    mechanismExplorer, history);
             p.loadAll();
         }
         this.persistence = p;
@@ -378,7 +416,8 @@ public class AgentLoop {
 
     private static boolean reasonAlreadyRecorded(String reason) {
         return "owner_message".equals(reason) || "body_log".equals(reason)
-                || "cognition_decision".equals(reason) || "team_event".equals(reason);
+                || "cognition_decision".equals(reason) || "team_event".equals(reason)
+                || "rolling_replan".equals(reason);
     }
 
     private static boolean shouldInterruptActiveCall(String reason) {
@@ -386,7 +425,8 @@ public class AgentLoop {
         // request. Interrupting the provider call is materially faster than
         // waiting only to discard its stale response afterward.
         return "owner_message".equals(reason) || "body_log".equals(reason)
-                || "cognition_decision".equals(reason) || "team_event".equals(reason);
+                || "cognition_decision".equals(reason) || "team_event".equals(reason)
+                || "rolling_replan".equals(reason);
     }
 
     /**
@@ -475,13 +515,28 @@ public class AgentLoop {
     public void onTaskAccepted(String taskId, String taskName,
                                IntentContract intent, TaskSnapshot snapshot,
                                long gameTick) {
+        boolean skillAction = skillRuntime.ownsAction(taskId);
         liveBodyState.set(new LiveBodyState(taskId, taskName, TaskState.RUNNING,
                 snapshot, snapshot == null ? "Task accepted" : snapshot.summary(), gameTick));
-        planner.bindTask(taskId, taskName, intent, gameTick);
+        // Inner skill actions belong to one plan-level skill run. Binding every
+        // inner task would falsely verify the parent plan after step one.
+        if (!skillAction) {
+            boolean hadPlan = planner.hasActivePlan();
+            planner.bindTask(taskId, taskName, intent, gameTick);
+            if (!hadPlan) {
+                rollingPlanner.onPlanReplaced(intent == null
+                        ? taskName : intent.goal(), gameTick);
+            }
+            rollingPlanner.onTaskAccepted(taskId, taskName, snapshot, gameTick);
+        }
         beliefState.observeFact("body", "current_task",
                 intent == null ? taskName : intent.goal(), 1.0,
                 "scheduler", gameTick);
-        if (snapshot != null) planner.recordProgress(taskId, snapshot, gameTick);
+        if (snapshot != null && !skillAction) {
+            planner.recordProgress(taskId, snapshot, gameTick);
+        }
+        semanticWorldModel.observe("task:" + taskId, "status", "running",
+                null, 1.0, "scheduler", taskId, gameTick, 1_200L, false);
         TeamBlackboard.updateTask(companion.ownerUuid(), companion.companionId(),
                 taskId, intent == null ? taskName : intent.goal(), TaskState.RUNNING,
                 taskTarget(snapshot), gameTick);
@@ -502,7 +557,13 @@ public class AgentLoop {
         liveBodyState.set(new LiveBodyState(taskId, taskName,
                 state == null ? TaskState.RUNNING : state,
                 snapshot, message, gameTick));
-        planner.recordProgress(taskId, snapshot, gameTick);
+        boolean skillAction = skillRuntime.ownsAction(taskId);
+        if (skillAction) skillRuntime.onTaskProgress(taskId,
+                state == null ? TaskState.RUNNING : state, gameTick);
+        if (!skillAction) {
+            planner.recordProgress(taskId, snapshot, gameTick);
+            rollingPlanner.onTaskProgress(taskId, snapshot, gameTick);
+        }
         if (snapshot != null && snapshot.hasTarget()) {
             beliefState.observeFact("body", "task_target",
                     String.valueOf(snapshot.targetX()) + ","
@@ -532,19 +593,34 @@ public class AgentLoop {
                         + (message == null || message.isBlank()
                         ? "" : " message=" + truncateForLog(message, 180)),
                 gameTick));
-        planner.recordOutcome(taskId, state, snapshot, message, gameTick);
+        boolean skillAction = skillRuntime.ownsAction(taskId);
+        PlanGraph.State planBeforeOutcome = planner.exportState();
+        PlanGraph.PlanNode nodeBeforeOutcome = planner.currentNode();
+        String traceGoal = !planBeforeOutcome.goal().isBlank()
+                ? planBeforeOutcome.goal()
+                : nodeBeforeOutcome == null ? taskName : nodeBeforeOutcome.description();
+        if (!skillAction) {
+            planner.recordOutcome(taskId, state, snapshot, message, gameTick);
+            rollingPlanner.onTaskFinished(taskId, state, gameTick);
+        }
         String goal = intent == null ? taskName : intent.goal();
         ExperienceStore.Experience experience = experienceStore.record(
                 taskId, taskName, goal, state, snapshot, message, gameTick);
         PendingSkillAction pendingAction = pendingTaskActions.remove(taskId);
-        if (pendingAction != null) {
-            List<ChatMessage.ToolCallRef> verifiedCalls = List.of(pendingAction.call());
-            List<String> toolNames = List.of(pendingAction.call().name());
-            String skillId = generateSkillId(pendingAction.description(),
-                    pendingAction.call().name(), toolNames);
-            skillLib.registerSequence(skillId, pendingAction.description(),
-                    pendingAction.description(), toolTraceJson(verifiedCalls),
-                    state == TaskState.SUCCESS);
+        if (!skillAction && pendingAction != null) {
+            appendVerifiedTrace(traceGoal, List.of(pendingAction.call()),
+                    state == TaskState.SUCCESS, !planner.hasActivePlan());
+        } else if (!skillAction && state != TaskState.SUCCESS) {
+            appendVerifiedTrace(traceGoal, List.of(), false, false);
+        }
+        String mappedAction = dispatchedActionTools.remove(taskId);
+        String outcomeAction = mappedAction != null ? mappedAction
+                : pendingAction == null ? taskName : pendingAction.call().name();
+        semanticWorldModel.recordOutcome(outcomeAction,
+                state == TaskState.SUCCESS, message, taskId, gameTick);
+        mechanismExplorer.onTaskFinished(taskId, state, message, gameTick);
+        if (skillAction) {
+            skillRuntime.onTaskFinished(taskId, state, message, gameTick);
         }
         beliefState.observeRuleOutcome(goal, taskName,
                 intent == null ? "executor success" : intent.successCriterion(),
@@ -552,6 +628,9 @@ public class AgentLoop {
                 experience.failureKind() + ": " + experience.evidence(), gameTick);
         beliefState.observeFact("body", "current_task", "idle", 1.0,
                 "scheduler", gameTick);
+        semanticWorldModel.observe("task:" + taskId, "status",
+                state.name().toLowerCase(Locale.ROOT), null, 1.0,
+                "scheduler", taskId, gameTick, 2_400L, false);
         TeamBlackboard.updateTask(companion.ownerUuid(), companion.companionId(),
                 taskId, goal, state, taskTarget(snapshot), gameTick);
         // Task completion often changes inventory through mining, pickup,
@@ -573,6 +652,7 @@ public class AgentLoop {
                     ? entity.serverPlayerOwner() : null;
             RealtimeCognition.TickResult result = realtimeCognition.tick(
                     player, owner, toTaskObservation(liveBodyState.get()), gameTick);
+            semanticWorldModel.observeSituation(realtimeCognition.currentFrame());
             if (result.ownerIntent() != null) {
                 var signal = result.ownerIntent();
                 theoryOfMind.observeIntent(signal.intent(), signal.confidence(),
@@ -583,6 +663,27 @@ public class AgentLoop {
                     inbox.add(result.deliberationEvent());
                 }
                 wake("cognition_decision");
+            }
+
+            // Skill and experiment transitions run on the authoritative server
+            // thread. Each transition is bounded to one step per tick.
+            skillRuntime.tick(gameTick);
+            mechanismExplorer.tick(gameTick);
+            if (skillRuntime.active()) {
+                SkillRuntime.Snapshot skill = skillRuntime.snapshot();
+                rollingPlanner.onTaskProgress(skill.runId(),
+                        TaskSnapshot.progress("skill", skill.lastEvidence(),
+                                skill.stepIndex(), skill.stepCount(),
+                                null, null, null, null, skill.lastEvidence(),
+                                skill.stepIndex()), gameTick);
+            }
+            HierarchicalRollingPlanner.ReplanSignal replan =
+                    skillRuntime.active() ? null : rollingPlanner.tick(gameTick);
+            if (replan != null) {
+                synchronized (inboxLock) {
+                    inbox.add(replan.event());
+                }
+                wake("rolling_replan");
             }
         } catch (Throwable failure) {
             // Entity teardown can race the final engine tick. Cognitive
@@ -610,6 +711,8 @@ public class AgentLoop {
     private static boolean isDeliberationEvent(String narrative) {
         String value = narrative.stripLeading();
         return value.startsWith("[TASK_FINISHED]")
+                || value.startsWith("[SKILL_FINISHED]")
+                || value.startsWith("[ROLLING_REPLAN]")
                 || value.startsWith("[COGNITION_DECISION]")
                 || value.startsWith("[TEAM_SUPPORT]");
     }
@@ -632,8 +735,11 @@ public class AgentLoop {
         try {
             var sp = TaskContext.serverPlayer(companion);
             WorldAssetIndex.Position position = WorldAssetObserver.position(sp);
-            worldAssetIndex.observeInventory(position,
-                    WorldAssetObserver.inventory(sp), gameTick);
+            List<WorldAssetIndex.ItemObservation> inventory =
+                    WorldAssetObserver.inventory(sp);
+            worldAssetIndex.observeInventory(position, inventory, gameTick);
+            semanticWorldModel.observeInventory(position, inventory, gameTick);
+            semanticWorldModel.observeAssets(worldAssetIndex.snapshot(), gameTick);
             liveAssetPosition.set(position);
             liveAssetGameTick.set(Math.max(0L, gameTick));
             lastAssetSnapshotTick = gameTick;
@@ -807,6 +913,117 @@ public class AgentLoop {
     public MinecraftKnowledgeGraph knowledgeGraph() { return knowledgeGraph; }
     public DecisionCache decisionCache() { return decisionCache; }
     public RealtimeCognition realtimeCognition() { return realtimeCognition; }
+    public SemanticWorldModel semanticWorldModel() { return semanticWorldModel; }
+    public HierarchicalRollingPlanner rollingPlanner() { return rollingPlanner; }
+    public MechanismExplorer mechanismExplorer() { return mechanismExplorer; }
+    public SkillRuntime skillRuntime() { return skillRuntime; }
+
+    /** Admit a learned sequence as one plan-level action, not N unrelated tasks. */
+    public SkillRuntime.StartResult startSkill(String skillName,
+                                               com.google.gson.JsonObject overrides) {
+        long gameTick = currentGameTickSafe();
+        LiveBodyState body = liveBodyState.get();
+        if (body != null && body.taskId() != null) {
+            return new SkillRuntime.StartResult(false, null,
+                    "Body is busy with task " + body.taskId());
+        }
+        SkillRuntime.StartResult result = skillRuntime.start(
+                skillName, overrides, gameTick);
+        if (result.accepted()) {
+            PlanGraph.PlanNode current = planner.currentNode();
+            boolean hadPlan = planner.hasActivePlan();
+            IntentContract contract = current == null
+                    ? IntentContract.generic("Execute learned skill " + skillName,
+                    "Every skill step and declared effect is verified", null, null, null)
+                    : IntentContract.generic(current.description(),
+                    current.successCriterion(), null, null, null);
+            planner.bindTask(result.runId(), "execute_skill", contract, gameTick);
+            if (!hadPlan) rollingPlanner.onPlanReplaced(contract.goal(), gameTick);
+            rollingPlanner.onTaskAccepted(result.runId(), "execute_skill",
+                    TaskSnapshot.running("skill", result.message()), gameTick);
+            semanticWorldModel.observe("skill:" + result.runId(), "status",
+                    "running", null, 1.0, "skill_runtime", result.runId(),
+                    gameTick, 1_200L, false);
+        }
+        return result;
+    }
+
+    /** Called on the server thread by SkillRuntime; the scheduler still owns body admission. */
+    private SkillRuntime.DispatchResult dispatchSkillAction(
+            String actionId, String toolName, com.google.gson.JsonObject arguments) {
+        Optional<Tool> toolValue = ToolRegistry.get(toolName);
+        if (toolValue.isEmpty()) {
+            return new SkillRuntime.DispatchResult(false, false, false,
+                    "Stored tool is no longer registered: " + toolName);
+        }
+        Tool tool = toolValue.get();
+        LiveBodyState body = liveBodyState.get();
+        if (tool.dispatchesAsyncTask() && body != null && body.taskId() != null) {
+            return new SkillRuntime.DispatchResult(false, true, false,
+                    "Body is busy with task " + body.taskId());
+        }
+        semanticWorldModel.recordAction(toolName, arguments.toString(),
+                actionId, currentGameTickSafe());
+        dispatchedActionTools.put(actionId, toolName);
+        AtomicReference<String> callback = new AtomicReference<>();
+        try {
+            tool.onServerCall(actionId, arguments, companion,
+                    result -> callback.compareAndSet(null, result));
+        } catch (Throwable failure) {
+            String detail = toolErrorJson(toolName, failure);
+            semanticWorldModel.recordOutcome(toolName, false, detail,
+                    actionId, currentGameTickSafe());
+            dispatchedActionTools.remove(actionId);
+            return new SkillRuntime.DispatchResult(false,
+                    tool.dispatchesAsyncTask(), false, detail);
+        }
+        String raw = callback.get();
+        if (raw == null) {
+            String detail = "Tool violated callback contract and returned no result";
+            semanticWorldModel.recordOutcome(toolName, false, detail,
+                    actionId, currentGameTickSafe());
+            dispatchedActionTools.remove(actionId);
+            return new SkillRuntime.DispatchResult(false,
+                    tool.dispatchesAsyncTask(), false, detail);
+        }
+        FailureAnalysis analysis = analyzeFailure(raw);
+        boolean asynchronous = "async_pending".equals(analysis.errorType());
+        boolean success = asynchronous || analysis.isSuccess();
+        if (!asynchronous) {
+            dispatchedActionTools.remove(actionId);
+            semanticWorldModel.recordOutcome(toolName, success, raw,
+                    actionId, currentGameTickSafe());
+        }
+        mechanismExplorer.onToolDispatched(actionId, toolName,
+                arguments.toString(), currentGameTickSafe());
+        mechanismExplorer.onToolResult(actionId, success, asynchronous,
+                raw, currentGameTickSafe());
+        return new SkillRuntime.DispatchResult(success, asynchronous,
+                success, raw);
+    }
+
+    private void onSkillRuntimeCompleted(SkillRuntime.Snapshot snapshot) {
+        long gameTick = snapshot.updatedTick();
+        boolean success = snapshot.status() == SkillRuntime.Status.SUCCEEDED;
+        TaskState taskState = success ? TaskState.SUCCESS
+                : snapshot.status() == SkillRuntime.Status.CANCELLED
+                ? TaskState.CANCELLED : TaskState.FAILED;
+        TaskSnapshot evidence = TaskSnapshot.progress("skill_"
+                        + snapshot.status().name().toLowerCase(Locale.ROOT),
+                snapshot.lastEvidence(), snapshot.stepIndex(), snapshot.stepCount(),
+                null, null, null,
+                success ? null : snapshot.lastEvidence(), snapshot.lastEvidence(),
+                snapshot.stepIndex());
+        planner.recordOutcome(snapshot.runId(), taskState, evidence,
+                snapshot.lastEvidence(), gameTick);
+        rollingPlanner.onTaskFinished(snapshot.runId(), taskState, gameTick);
+        semanticWorldModel.observe("skill:" + snapshot.runId(), "status",
+                snapshot.status().name().toLowerCase(Locale.ROOT), null, 1.0,
+                "skill_runtime", snapshot.runId(), gameTick, 2_400L, false);
+        onBodyLog("[SKILL_FINISHED] run_id=" + snapshot.runId()
+                + " skill=" + snapshot.skillName() + " state=" + snapshot.status()
+                + " evidence=" + snapshot.lastEvidence());
+    }
 
     /** Expose validated specialized tools until the current turn finishes. */
     public void exposeExtraTools(Collection<String> toolNames) {
@@ -1111,6 +1328,11 @@ public class AgentLoop {
             history.addAll(toolResults);
         }
 
+        // Tool callbacks are executor evidence even if a newer owner event
+        // makes the language-model response stale. Commit plan transitions
+        // before deciding whether this turn may recurse.
+        commitSynchronousPlanEvidence(assistantMsg.toolCalls(), toolResults);
+
         // A cancel/new event that arrived while tools were running owns the
         // next decision. Keep the result messages to complete the provider
         // protocol group, but never recurse using the obsolete turn.
@@ -1118,8 +1340,8 @@ public class AgentLoop {
             return;
         }
 
-        // 5b. Cognitive feedback loop — analyze tool results to update
-        //     emotion, reflection, and skill library.
+        // 5b. Cognitive feedback is applied only to the still-current turn;
+        // semantic and plan evidence above remain valid independently.
         analyzeToolResults(assistantMsg.toolCalls(), toolResults);
 
         // 6. Check if any async task was dispatched - if not, loop back
@@ -1131,6 +1353,25 @@ public class AgentLoop {
             executeTurn("tool_results_sync", roundNumber + 1);
         }
         // If async tasks were dispatched, they'll wake the loop when done
+    }
+
+    private void commitSynchronousPlanEvidence(
+            List<ChatMessage.ToolCallRef> toolCalls,
+            List<ChatMessage> toolResults) {
+        for (int index = 0; index < toolCalls.size()
+                && index < toolResults.size(); index++) {
+            ChatMessage.ToolCallRef call = toolCalls.get(index);
+            String content = toolResults.get(index).content();
+            if (content == null || !SKILL_ACTION_TOOLS.contains(call.name())) continue;
+            FailureAnalysis analysis = analyzeFailure(content);
+            if ("async_pending".equals(analysis.errorType())
+                    || (!analysis.isSuccess() && !analysis.isFailure())) continue;
+            long gameTick = currentGameTickSafe();
+            if (planner.recordToolOutcome(call.id(), call.name(),
+                    analysis.isSuccess(), content, gameTick)) {
+                rollingPlanner.onSynchronousOutcome(analysis.isSuccess(), gameTick);
+            }
+        }
     }
 
     /**
@@ -1154,6 +1395,12 @@ public class AgentLoop {
         boolean anySuccess = false;
         int failureCount = 0;
         int successCount = 0;
+        PlanGraph.State tracePlan = planner.exportState();
+        PlanGraph.PlanNode traceNode = planner.currentNode();
+        String traceGoal = !tracePlan.goal().isBlank() ? tracePlan.goal()
+                : traceNode != null ? traceNode.description()
+                : lastOwnerCommand == null || lastOwnerCommand.isBlank()
+                ? "general_task" : lastOwnerCommand;
 
         // 记录情绪变化前的 PAD 值，用于学习重要性
         float pleasureBefore = emotion.pleasure();
@@ -1169,7 +1416,8 @@ public class AgentLoop {
             FailureAnalysis analysis = analyzeFailure(content);
             boolean failed = analysis.isFailure();
             boolean succeeded = analysis.isSuccess();
-            if ("async_pending".equals(analysis.errorType())
+            boolean asyncPending = "async_pending".equals(analysis.errorType());
+            if (asyncPending
                     && SKILL_ACTION_TOOLS.contains(tc.name())) {
                 pendingTaskActions.put(tc.id(),
                         new PendingSkillAction(currentTaskDescription(), tc));
@@ -1235,25 +1483,52 @@ public class AgentLoop {
                 }
             }
 
-            if (successfulCalls.stream().anyMatch(call ->
-                    SKILL_ACTION_TOOLS.contains(call.name()))) {
-                List<String> successfulTools = successfulCalls.stream()
-                        .map(ChatMessage.ToolCallRef::name).toList();
-                // 使用任务描述+工具序列生成稳定的技能ID
-                String taskDesc = currentTaskDescription();
-                // 技能ID：任务类型 + 主要工具 + 工具序列签名。
-                // 序列签名确保不同动作序列生成不同技能ID，
-                // 避免"挖铁矿"的序列被"挖煤矿"覆盖（两者主工具相同）。
-                String primaryTool = successfulTools.get(0);
-                String skillId = generateSkillId(taskDesc, primaryTool, successfulTools);
-
-                skillLib.registerSequence(
-                        skillId,
-                        taskDesc,
-                        taskDesc,
-                        toolTraceJson(successfulCalls),
-                        anySuccess && !anyFailure);
+            boolean containsAction = successfulCalls.stream()
+                    .anyMatch(call -> SKILL_ACTION_TOOLS.contains(call.name()));
+            List<ChatMessage.ToolCallRef> replayCalls = successfulCalls.stream()
+                    .filter(call -> SKILL_TRACE_TOOLS.contains(call.name())).toList();
+            if (containsAction && !replayCalls.isEmpty()) {
+                appendVerifiedTrace(traceGoal, replayCalls, !anyFailure,
+                        !planner.hasActivePlan());
             }
+        }
+        if (anyFailure) {
+            appendVerifiedTrace(traceGoal, List.of(), false, false);
+        }
+    }
+
+    /** Build one skill from a verified episode instead of isolated responses. */
+    private void appendVerifiedTrace(String goal,
+                                     List<ChatMessage.ToolCallRef> calls,
+                                     boolean success, boolean episodeComplete) {
+        synchronized (verifiedTraceLock) {
+            String normalizedGoal = goal == null || goal.isBlank()
+                    ? "general_task" : goal.trim();
+            if (!verifiedTraceGoal.equals(normalizedGoal)) {
+                verifiedActionTrace.clear();
+                verifiedTraceGoal = normalizedGoal;
+            }
+            if (!success) {
+                // A failed episode is useful reflection evidence, but replaying
+                // its partial prefix as a skill would encode an unsafe plan.
+                verifiedActionTrace.clear();
+                return;
+            }
+            for (ChatMessage.ToolCallRef call : calls) {
+                if (call != null && SKILL_TRACE_TOOLS.contains(call.name())
+                        && verifiedActionTrace.size() < 24) {
+                    verifiedActionTrace.add(call);
+                }
+            }
+            if (!episodeComplete || verifiedActionTrace.isEmpty()) return;
+            List<ChatMessage.ToolCallRef> verified = List.copyOf(verifiedActionTrace);
+            List<String> toolNames = verified.stream()
+                    .map(ChatMessage.ToolCallRef::name).toList();
+            String skillId = generateSkillId(normalizedGoal,
+                    toolNames.getFirst(), toolNames);
+            skillLib.registerSequence(skillId, normalizedGoal, normalizedGoal,
+                    toolTraceJson(verified), true);
+            verifiedActionTrace.clear();
         }
     }
 
@@ -2061,15 +2336,38 @@ public class AgentLoop {
                     // This server-thread read also catches inventory changes
                     // made by vanilla between the one-second periodic samples.
                     publishWorldSnapshotNow(true);
+                    long actionTick = currentGameTickSafe();
+                    if (!tool.dispatchesAsyncTask()
+                            && SKILL_ACTION_TOOLS.contains(tc.name())) {
+                        planner.bindToolCall(tc.id());
+                    }
+                    semanticWorldModel.recordAction(tc.name(), args.toString(),
+                            tc.id(), actionTick);
+                    dispatchedActionTools.put(tc.id(), tc.name());
+                    mechanismExplorer.onToolDispatched(tc.id(), tc.name(),
+                            args.toString(), actionTick);
                     tool.onServerCall(tc.id(), args, companion, callbackResult -> {
                         publishWorldSnapshotNow(true);
+                        String safeResult = callbackResult == null
+                                ? errorJson("Tool callback returned null") : callbackResult;
+                        FailureAnalysis outcome = analyzeFailure(safeResult);
+                        boolean async = "async_pending".equals(outcome.errorType());
+                        boolean success = async || outcome.isSuccess();
+                        long callbackTick = currentGameTickSafe();
+                        if (!async) {
+                            dispatchedActionTools.remove(tc.id());
+                            semanticWorldModel.recordOutcome(tc.name(), success,
+                                    safeResult, tc.id(), callbackTick);
+                        }
+                        mechanismExplorer.onToolResult(tc.id(), success, async,
+                                safeResult, callbackTick);
                         if (state.compareAndSet(
                                 ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
                             // Store before releasing the latch so the loop thread
                             // observes a fully published callback result.
                             // The AtomicReference also protects callbacks issued
                             // by tools from a later tick.
-                            resultHolder.set(callbackResult);
+                            resultHolder.set(safeResult);
                             latch.countDown();
                         }
                     });
@@ -2080,6 +2378,11 @@ public class AgentLoop {
                     // meaningful error so the LLM can correct its call.
                     System.err.println("[MineAgent] Tool '" + tc.name()
                             + "' threw: " + t);
+                    semanticWorldModel.recordOutcome(tc.name(), false,
+                            String.valueOf(t.getMessage()), tc.id(), currentGameTickSafe());
+                    dispatchedActionTools.remove(tc.id());
+                    mechanismExplorer.onToolResult(tc.id(), false, false,
+                            String.valueOf(t.getMessage()), currentGameTickSafe());
                     if (state.compareAndSet(
                             ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
                         resultHolder.set(toolErrorJson(tc.name(), t));
@@ -2108,6 +2411,12 @@ public class AgentLoop {
                         && exec.latch().await(remaining, TimeUnit.NANOSECONDS);
                 if (!done) {
                     exec.state().set(ToolExecutionState.EXPIRED);
+                    dispatchedActionTools.remove(exec.toolCallId());
+                    semanticWorldModel.recordOutcome(exec.toolName(), false,
+                            "Tool execution timed out", exec.toolCallId(),
+                            currentGameTickSafe());
+                    mechanismExplorer.onToolResult(exec.toolCallId(), false,
+                            false, "Tool execution timed out", currentGameTickSafe());
                     resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
                             "{\"error\":\"Tool execution timed out\"}"));
                 } else {
@@ -2131,6 +2440,11 @@ public class AgentLoop {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 exec.state().set(ToolExecutionState.EXPIRED);
+                dispatchedActionTools.remove(exec.toolCallId());
+                semanticWorldModel.recordOutcome(exec.toolName(), false,
+                        "Interrupted", exec.toolCallId(), currentGameTickSafe());
+                mechanismExplorer.onToolResult(exec.toolCallId(), false,
+                        false, "Interrupted", currentGameTickSafe());
                 resultsById.put(exec.toolCallId(), ChatMessage.toolResult(exec.toolCallId(),
                         "{\"error\":\"Interrupted\"}"));
             }
@@ -2529,6 +2843,12 @@ public class AgentLoop {
         sb.append("For temporary supports, decide among recover now, defer, or deliberately leave them based on live safety, ");
         sb.append("escape-route value, reachability, scarcity, task delay, and owner intent; never always recover or always leave.\n\n");
 
+        sb.append("### Hierarchical Rolling Planning\n");
+        sb.append("For goals needing multiple dependent actions, call `todowrite` before the first body action. ");
+        sb.append("Keep the stable strategic goal and owner constraints, but plan only the next 3-6 concrete tactical milestones with explicit dependencies and observable success criteria. ");
+        sb.append("Execute one body action or verified learned skill at a time. Preserve verified milestones; when `[ROLLING_REPLAN]` arrives, repair the invalid suffix from current semantic evidence instead of rewriting completed work or repeating the failed call. ");
+        sb.append("Include a reversible observation or contingency when a prerequisite is uncertain.\n\n");
+
         // ── Decision priority ──
         sb.append("## Priority When Multiple Things Compete\n");
         sb.append("1. **Immediate survival** — About to die? Handle that first.\n");
@@ -2557,7 +2877,8 @@ public class AgentLoop {
         sb.append("- `recall_memory` (specialized): Recall places you've discovered (ores, structures, hazards). ");
         sb.append("USE THIS before exploring — you may already know where to find what you need.\n");
         sb.append("- `list_learned_skills`: See skills you've mastered from past successes. ");
-        sb.append("Reuse them instead of re-planning common tasks.\n");
+        sb.append("Use `execute_skill` to run one through precondition/action/postcondition verification instead of manually replaying every step.\n");
+        sb.append("- `explore_mechanism`: For unfamiliar mod content, arm one low-risk, falsifiable probe with a declared observable postcondition; never infer a permanent rule from one failed or ambiguous action.\n");
         sb.append("- `coordinate_team`: Inspect team commitments, claim a role, or request targeted support.\n");
         sb.append("Read tool results carefully. If a tool fails, think about WHY ");
         sb.append("and try a different approach.\n\n");
@@ -2725,15 +3046,15 @@ public class AgentLoop {
         if (skillLib.size() > 0) {
             sb.append("已掌握技能: ").append(skillLib.size()).append("个\n");
         }
-        // Plan: current milestone only, not full plan
-        if (planner.hasActivePlan() && planner.currentNode() != null) {
-            sb.append(planner.summarizeForPrompt());
-        }
+        sb.append(rollingPlanner.summarizeForPrompt());
+        sb.append(skillRuntime.summarizeForPrompt());
         String beliefSummary = beliefState.summarizeForPrompt();
         if (!beliefSummary.isBlank()) sb.append(beliefSummary);
         String assetSummary = worldAssetIndex.summarizeForPrompt(
                 liveAssetPosition.get(), liveAssetGameTick.get());
         if (!assetSummary.isBlank()) sb.append(assetSummary);
+        sb.append(semanticWorldModel.summarizeForPrompt(liveAssetGameTick.get()));
+        sb.append(mechanismExplorer.summarizeForPrompt());
         String experienceSummary = experienceStore.summarizeForPrompt(
                 planner.currentNode() == null ? "" : planner.currentNode().description());
         if (!experienceSummary.isBlank()) sb.append(experienceSummary);
@@ -2877,7 +3198,11 @@ public class AgentLoop {
             eventGeneration.incrementAndGet();
         }
         realtimeCognition.close();
+        long shutdownTick = currentGameTickSafe();
+        skillRuntime.cancel("Agent loop shutdown", shutdownTick);
+        mechanismExplorer.abort(null, "Agent loop shutdown", shutdownTick);
         pendingTaskActions.clear();
+        dispatchedActionTools.clear();
         // Save memories before shutting down so the companion does not
         // "forget" everything on restart. Memory stores are thread-safe,
         // so saving from this thread while a turn is running is safe.

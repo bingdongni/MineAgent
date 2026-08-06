@@ -2,6 +2,31 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.2.5] - 2026-08-06
+
+### Added
+
+- Add a closed-loop learned-skill runtime with sequential dispatch, semantic preconditions and postconditions, authoritative asynchronous task verification, bounded timeouts, cancellation, and structured replan outcomes.
+- Add an event-sourced semantic world model with provenance, confidence, temporal expiry, out-of-order observation protection, durable projections, inventory removals, actor identity tracking, and action/result correlation.
+- Add a hierarchical rolling planner spanning strategic goals, a bounded tactical window, and live executor progress, with deduplicated replanning for stalls, blocked windows, repeated failures, and relevant world changes.
+- Add the `execute_skill` tool for verified autonomous replay with per-step argument overrides.
+- Add the `explore_mechanism` tool and persistent risk-bounded hypothesis experiments for unfamiliar blocks, items, GUIs, recipes, machines, and mod rules.
+- Add regression tests for skill sequencing/effect verification, semantic expiry and temporal ordering, rolling-plan stall/block detection, controlled exploration, and synchronous tool evidence.
+
+### Changed
+
+- Consolidate verified actions across multiple model turns into one reusable skill only after the full plan succeeds; failed episodes discard their partial trace without overwriting prior verified skills.
+- Allow synchronous world-changing tools such as crafting, equipment, and inventory transfer to verify plan nodes with grounded tool results.
+- Feed task, inventory, asset, actor, action, and outcome events into one semantic evidence substrate consumed by planning, skill verification, exploration, persistence, and the live prompt.
+- Increment the memory format to version 7 for semantic-world, rolling-plan, and mechanism-experiment persistence.
+
+### Fixed
+
+- Prevent an inner task in a multi-step skill from prematurely verifying the parent plan node.
+- Prevent late observations from rolling the semantic projection back to an older state.
+- Prevent unchanged invalid planning states from repeatedly waking the LLM and wasting tokens.
+- Preserve the actual originating tool name through asynchronous task completion so postcondition and exploration evidence is attributed correctly.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added
