@@ -4,6 +4,7 @@ import com.mineagent.api.agent.tool.ToolRegistry;
 import com.mineagent.api.agent.skill.SkillRegistry;
 import com.mineagent.api.config.MineAgentConfig;
 import com.mineagent.api.entity.AgentPlayer;
+import com.mineagent.api.entity.CompanionGameMode;
 import com.mineagent.api.entity.CompanionLifecycle;
 import com.mineagent.api.llm.provider.LLMProviderRegistry;
 import com.mineagent.api.platform.Services;
@@ -270,6 +271,7 @@ public final class MineAgentEngine {
                 state.loop.getBaseUrl(),
                 state.loop.getTemperature(),
                 state.loop.getReasoningEffort(),
+                state.companion.gameMode().wireName(),
                 skinName != null ? skinName : "",
                 skinValue,
                 skinSignature,
@@ -277,6 +279,13 @@ public final class MineAgentEngine {
         );
 
         com.mineagent.engine.entity.CompanionStore.save(worldDataDir, saved);
+    }
+
+    /** Persist an immediate lifecycle transition such as Hardcore death. */
+    public static void persistCompanionNow(UUID companionId) {
+        if (companionId == null) return;
+        CompanionState state = COMPANIONS.get(companionId);
+        if (state != null) persistCompanion(state);
     }
 
     /** Serialize vanilla-owned body state without persisting entity identity. */
@@ -298,15 +307,23 @@ public final class MineAgentEngine {
         body.putFloat("Yaw", sp.getYRot());
         body.putFloat("Pitch", sp.getXRot());
         body.putString("Mode", getCompanionMode(state.companion.companionId()).name());
+        // Vanilla hardcore is world-scoped, so preserve the equivalent
+        // per-companion permanent-death state explicitly across owner logout.
+        body.putBoolean("HardcoreDead", state.companion.gameMode().isHardcore()
+                && state.lifecycle.isDead());
+        body.putBoolean("HardcoreDeathLocked", state.companion.hardcoreDeathLocked());
         return body.toString();
     }
 
     /** Restore the body snapshot after the fake player has been registered. */
-    private static void restoreCompanionBody(CompanionEntity companion, String bodyData) {
-        if (bodyData == null || bodyData.isBlank()) return; // version-1 save
+    private static boolean restoreCompanionBody(CompanionEntity companion, String bodyData) {
+        if (bodyData == null || bodyData.isBlank()) return false; // version-1 save
         var sp = companion.serverPlayer();
         try {
             var body = net.minecraft.nbt.TagParser.parseTag(bodyData);
+            boolean hardcoreDead = body.getBoolean("HardcoreDeathLocked")
+                    || (companion.gameMode().isHardcore() && body.getBoolean("HardcoreDead"));
+            companion.restoreHardcoreDeathLocked(hardcoreDead);
             if (body.contains("Inventory", net.minecraft.nbt.Tag.TAG_LIST)) {
                 sp.getInventory().load(body.getList(
                         "Inventory", net.minecraft.nbt.Tag.TAG_COMPOUND));
@@ -322,8 +339,9 @@ public final class MineAgentEngine {
             }
             if (body.contains("Health")) {
                 float savedHealth = body.getFloat("Health");
-                sp.setHealth(Float.isFinite(savedHealth) && savedHealth > 0.0f
-                        ? Math.min(savedHealth, sp.getMaxHealth()) : sp.getMaxHealth());
+                sp.setHealth(hardcoreDead ? 0.0f
+                        : Float.isFinite(savedHealth) && savedHealth > 0.0f
+                                ? Math.min(savedHealth, sp.getMaxHealth()) : sp.getMaxHealth());
             }
             sp.getFoodData().readAdditionalSaveData(body);
             sp.experienceLevel = Math.max(0, body.getInt("XpLevel"));
@@ -344,11 +362,13 @@ public final class MineAgentEngine {
             }
             sp.getInventory().setChanged();
             sp.containerMenu.broadcastChanges();
+            return hardcoreDead;
         } catch (Exception invalidBody) {
             // The companion config/skin can still be restored even if one old
             // or manually edited body snapshot is unusable.
             System.err.println("[MineAgent] Could not restore body for '"
                     + companion.companionName() + "': " + invalidBody.getMessage());
+            return false;
         }
     }
 
@@ -453,6 +473,30 @@ public final class MineAgentEngine {
             String reasoningEffort,
             boolean isRestore) {
 
+        return spawnCompanion(owner, name, providerId, apiKey, model, baseUrl,
+                temperature, reasoningEffort, CompanionGameMode.SURVIVAL, isRestore);
+    }
+
+    /**
+     * Canonical spawn path with one explicit, per-companion game mode.
+     * Callers that omit it use the compatibility overload above and therefore
+     * receive the required survival default.
+     */
+    public static CompanionEntity spawnCompanion(
+            ServerPlayer owner,
+            String name,
+            String providerId,
+            String apiKey,
+            String model,
+            String baseUrl,
+            double temperature,
+            String reasoningEffort,
+            CompanionGameMode requestedGameMode,
+            boolean isRestore) {
+
+        CompanionGameMode gameMode = requestedGameMode == null
+                ? CompanionGameMode.SURVIVAL : requestedGameMode;
+
         String invalid = validateSpawnArguments(owner, name, providerId, apiKey,
                 model, baseUrl, temperature, reasoningEffort);
         if (invalid != null) {
@@ -514,7 +558,8 @@ public final class MineAgentEngine {
         final ServerPlayer fakePlayer;
         try {
             fakePlayer = FakePlayerFactory.create(
-                    owner.getServer(), profile, owner.serverLevel(), owner.blockPosition());
+                    owner.getServer(), profile, owner.serverLevel(), owner.blockPosition(),
+                    vanillaGameType(gameMode));
         } catch (RuntimeException spawnError) {
             // The UUID is registered before factory creation so mixins can
             // identify the player during registration. A factory failure must
@@ -539,7 +584,7 @@ public final class MineAgentEngine {
 
         // Create the companion entity wrapping the fake player.
         // companionName stores the FULL name (not truncated) for display.
-        var companion = new CompanionEntity(fakePlayer, owner, name);
+        var companion = new CompanionEntity(fakePlayer, owner, name, gameMode);
         initializingCompanion = companion;
 
         // Registry reflex instances are global but their state is keyed by
@@ -617,6 +662,9 @@ public final class MineAgentEngine {
                 // identity as data so the client can match the actual entity.
                 owner, companion.companionId(), "companion_spawned",
                 fakePlayer.getUUID().toString());
+        sendCompanionModeToOwner(state);
+        com.mineagent.engine.network.MineAgentNetwork.sendUiActionTo(
+                owner, companion.companionId(), "companion_name", name);
 
         // ── Skin loading & persistence ──
         // In restore mode (isRestore=true) the caller (onPlayerJoin) has already
@@ -697,7 +745,17 @@ public final class MineAgentEngine {
             ServerPlayer owner, String name, String providerId, String apiKey,
             boolean reuseStoredApiKey,
             String model, String baseUrl, double temperature,
-        String reasoningEffort) {
+            String reasoningEffort) {
+        return configureAndSpawnCompanion(owner, name, providerId, apiKey,
+                reuseStoredApiKey, model, baseUrl, temperature, reasoningEffort,
+                CompanionGameMode.SURVIVAL.wireName());
+    }
+
+    public static CompanionEntity configureAndSpawnCompanion(
+            ServerPlayer owner, String name, String providerId, String apiKey,
+            boolean reuseStoredApiKey,
+            String model, String baseUrl, double temperature,
+            String reasoningEffort, String requestedGameMode) {
         var previous = config.llm();
         String resolvedProvider = providerId == null ? "" : providerId.trim();
         String resolvedModel = model == null ? "" : model.trim();
@@ -711,11 +769,19 @@ public final class MineAgentEngine {
                 ? resolvedModel : name.trim();
         String resolvedEffort = reasoningEffort == null || reasoningEffort.isBlank()
                 ? null : reasoningEffort.trim().toLowerCase(Locale.ROOT);
+        CompanionGameMode gameMode = CompanionGameMode.parse(requestedGameMode)
+                .orElse(requestedGameMode == null || requestedGameMode.isBlank()
+                        ? CompanionGameMode.SURVIVAL : null);
+        if (gameMode == null) {
+            if (owner != null) owner.sendSystemMessage(Component.literal(
+                    "§c[MineAgent] Cannot spawn companion: invalid game mode."));
+            return null;
+        }
 
         CompanionEntity companion = spawnCompanion(owner, resolvedName,
                 resolvedProvider, resolvedKey, resolvedModel,
                 resolvedBaseUrl.isEmpty() ? null : resolvedBaseUrl,
-                temperature, resolvedEffort, false);
+                temperature, resolvedEffort, gameMode, false);
         if (companion == null) return null;
 
         MineAgentConfig.LLMConfig llm = new MineAgentConfig.LLMConfig(
@@ -865,6 +931,77 @@ public final class MineAgentEngine {
             if (s != null) result.add(s);
         }
         return result;
+    }
+
+    /**
+     * Change one companion's mode through an owner-authorized server path.
+     * No LLM tool calls this method; ownership is checked again here so a
+     * forged companion ID cannot modify another player's AI body.
+     */
+    public static boolean setCompanionGameModeByOwner(ServerPlayer owner,
+                                                       UUID companionId,
+                                                       CompanionGameMode mode) {
+        if (owner == null || companionId == null || mode == null) return false;
+        CompanionState state = COMPANIONS.get(companionId);
+        if (state == null || !state.companion.ownerUuid().equals(owner.getUUID())) {
+            return false;
+        }
+
+        if (state.companion.hardcoreDeathLocked()
+                && state.companion.gameMode() != mode) {
+            owner.sendSystemMessage(Component.literal(
+                    "§c[MineAgent] This Hardcore companion has permanently died. "
+                            + "It cannot change mode or respawn; create a new companion instead."));
+            sendCompanionModeToOwner(state);
+            return false;
+        }
+
+        if (state.companion.gameMode() == mode) {
+            sendCompanionModeToOwner(state);
+            return true;
+        }
+
+        // A body action accepted under the old mode must not complete under a
+        // new permission/resource model. Cancel it before changing abilities.
+        state.auction.cancelTask();
+        state.companion.inputDriver().clear();
+        ServerPlayer body = state.companion.serverPlayer();
+        body.stopUsingItem();
+        if (body.gameMode instanceof FakePlayerGameMode fakeMode) {
+            fakeMode.abortCurrentDestroy();
+        }
+
+        body.setGameMode(vanillaGameType(mode));
+        state.companion.setGameMode(mode);
+        state.loop.onBodyLog("My human owner changed my game mode to "
+                + mode.wireName() + ". I cannot change this setting myself.");
+        persistCompanion(state);
+        sendCompanionModeToOwner(state);
+        owner.sendSystemMessage(Component.translatable(
+                "message.mineagent.game_mode_changed",
+                state.companion.companionName(),
+                Component.translatable("screen.mineagent.game_mode." + mode.wireName())));
+        return true;
+    }
+
+    private static net.minecraft.world.level.GameType vanillaGameType(
+            CompanionGameMode mode) {
+        return switch (mode == null ? CompanionGameMode.SURVIVAL : mode) {
+            case CREATIVE -> net.minecraft.world.level.GameType.CREATIVE;
+            case ADVENTURE -> net.minecraft.world.level.GameType.ADVENTURE;
+            // Hardcore is a per-companion survival body plus the lifecycle's
+            // permanent-death gate; vanilla has no per-player HARDCORE value.
+            case SURVIVAL, HARDCORE -> net.minecraft.world.level.GameType.SURVIVAL;
+        };
+    }
+
+    private static void sendCompanionModeToOwner(CompanionState state) {
+        if (state == null) return;
+        ServerPlayer owner = state.companion.serverPlayerOwner();
+        if (owner == null || owner.connection == null) return;
+        com.mineagent.engine.network.MineAgentNetwork.sendUiActionTo(
+                owner, state.companion.companionId(), "companion_game_mode",
+                state.companion.gameMode().wireName());
     }
 
     /**
@@ -1099,14 +1236,12 @@ public final class MineAgentEngine {
             // forever, and /mineagent respawn was always rejected with
             // "Your companion is not dead." (problems 1 & 2).
             //
-            // onDeath() marks the companion as dead, pauses the agent loop,
-            // and notifies the owner to use /mineagent respawn. The actual
-            // revival is performed by onRespawn() (invoked from the
-            // /mineagent respawn command), which clears negative effects,
-            // restores health/food, and — in FOLLOW mode — teleports the
-            // companion to a safe spot near the owner. A deathProcessed
-            // guard inside onDeath() makes this call idempotent so repeated
-            // ticks at 0 HP do not fire the event multiple times.
+            // onDeath() marks the companion as dead and pauses the agent loop.
+            // Normal modes can later use /mineagent respawn; Hardcore instead
+            // persists an irreversible death lock and requires a new companion.
+            // For normal respawns, onRespawn() clears negative effects,
+            // restores health/food, and — in FOLLOW mode — teleports the body
+            // near the owner. A deathProcessed guard makes this idempotent.
             if (sp.getHealth() <= 0f && !state.lifecycle.isDead()) {
                 state.auction.cancelTask();
                 state.lifecycle.onDeath(state.companion);
@@ -1498,6 +1633,7 @@ public final class MineAgentEngine {
                         baseUrl,
                         saved.temperature(),
                         saved.reasoningEffort(),
+                        CompanionGameMode.orDefault(saved.gameMode()),
                         true
                 );
 
@@ -1506,7 +1642,11 @@ public final class MineAgentEngine {
                 // actually spawned (problem 4 fix: previously "has been restored!"
                 // was sent even on failure).
                 if (companion != null) {
-                    restoreCompanionBody(companion, saved.bodyData());
+                    boolean hardcoreDead = restoreCompanionBody(companion, saved.bodyData());
+                    if (hardcoreDead) {
+                        getCompanion(companion.companionId()).ifPresent(state ->
+                                state.lifecycle.onDeath(companion));
+                    }
                     // Apply cached skin if available (no network request needed!)
                     if (saved.skinValue() != null && !saved.skinValue().isEmpty()) {
                         var sp = companion.serverPlayer();
@@ -1703,6 +1843,13 @@ public final class MineAgentEngine {
                         if (!state.lifecycle.isDead()) {
                             source.sendFailure(Component.literal(
                                     "§c[MineAgent] Your companion is not dead."));
+                            return 0;
+                        }
+                        if (state.companion.hardcoreDeathLocked()
+                                || state.companion.gameMode().isHardcore()) {
+                            source.sendFailure(Component.literal(
+                                    "§c[MineAgent] This companion died in Hardcore mode and "
+                                            + "cannot respawn. Create a new companion instead."));
                             return 0;
                         }
                         state.lifecycle.onRespawn(state.companion);
@@ -2264,7 +2411,8 @@ public final class MineAgentEngine {
         CompanionEntity companion = spawnCompanion(
                 owner, name, cfgProvider, cfgApiKey, cfgModel,
                 config.llm().baseUrl().isEmpty() ? null : config.llm().baseUrl(),
-                config.llm().temperature(), normalizedEffort, false);
+                config.llm().temperature(), normalizedEffort,
+                CompanionGameMode.orDefault(config.companion().gameMode()), false);
         if (companion == null) return 0;
 
         String spawnedName = name;

@@ -4,6 +4,7 @@ import com.mineagent.api.network.payload.ClientUiActionPayload;
 import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.api.network.payload.PathDebugPayload;
 import com.mineagent.api.network.payload.TaskResultPayload;
+import com.mineagent.api.entity.CompanionGameMode;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mineagent.engine.client.render.CompanionLabelRenderer;
@@ -52,6 +53,9 @@ public final class MineAgentClientController {
             new ConcurrentHashMap<>();
     private static final Set<UUID> COMPANION_IDS =
             ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, String> COMPANION_NAMES = new ConcurrentHashMap<>();
+    private static final Map<UUID, CompanionGameMode> COMPANION_GAME_MODES =
+            new ConcurrentHashMap<>();
 
     private static volatile Consumer<ClientUiActionPayload> uiActionSender =
             payload -> System.err.println("[MineAgent] Client network sender is not initialized");
@@ -199,6 +203,23 @@ public final class MineAgentClientController {
             case "companion_status" -> parseAndApplyStatus(payload.data());
             case "companion_spawned" -> handleCompanionSpawned(payload);
             case "companion_despawned" -> handleCompanionDespawned(payload.companionId());
+            case "companion_name" -> {
+                if (payload.companionId() != null && payload.data() != null
+                        && !payload.data().isBlank()) {
+                    COMPANION_NAMES.put(payload.companionId(), payload.data());
+                    if (chatScreen != null) chatScreen.refreshCompanionSelector();
+                }
+            }
+            case "companion_game_mode" -> {
+                CompanionGameMode mode = CompanionGameMode.parse(payload.data())
+                        .orElse(CompanionGameMode.SURVIVAL);
+                if (payload.companionId() != null) {
+                    COMPANION_GAME_MODES.put(payload.companionId(), mode);
+                    if (chatScreen != null) {
+                        chatScreen.setCompanionGameMode(payload.companionId(), mode);
+                    }
+                }
+            }
             case "companion_task" -> {
                 String task = payload.data() == null || payload.data().isBlank()
                         ? "Idle" : payload.data();
@@ -311,6 +332,8 @@ public final class MineAgentClientController {
         companionId = null;
         COMPANION_IDS.clear();
         COMPANION_PLAYER_IDS.clear();
+        COMPANION_NAMES.clear();
+        COMPANION_GAME_MODES.clear();
         companionSpawned = false;
         CompanionStatusPanel.setSpawned(false);
         CompanionStatusPanel.setCurrentTask("Idle");
@@ -320,6 +343,25 @@ public final class MineAgentClientController {
 
     public static UUID getCompanionId() {
         return companionId;
+    }
+
+    /** Keep the human's UI selection stable across closing/reopening screens. */
+    public static void selectCompanion(UUID id) {
+        if (id != null && COMPANION_IDS.contains(id)) companionId = id;
+    }
+
+    public static List<UUID> getCompanionIds() {
+        return COMPANION_IDS.stream().sorted().toList();
+    }
+
+    public static String getCompanionName(UUID id) {
+        return id == null ? "" : COMPANION_NAMES.getOrDefault(id,
+                id.toString().substring(0, 8));
+    }
+
+    public static CompanionGameMode getCompanionGameMode(UUID id) {
+        return id == null ? CompanionGameMode.SURVIVAL
+                : COMPANION_GAME_MODES.getOrDefault(id, CompanionGameMode.SURVIVAL);
     }
 
     public static boolean isCompanionSpawned() {
@@ -352,6 +394,7 @@ public final class MineAgentClientController {
         CompanionStatusPanel.setSpawned(true);
         if (chatScreen != null) {
             chatScreen.setCompanionId(companionId);
+            chatScreen.refreshCompanionSelector();
         }
     }
 
@@ -359,6 +402,8 @@ public final class MineAgentClientController {
         if (removedId == null) return;
         COMPANION_IDS.remove(removedId);
         COMPANION_PLAYER_IDS.remove(removedId);
+        COMPANION_NAMES.remove(removedId);
+        COMPANION_GAME_MODES.remove(removedId);
         ClientPacketHandler.clearCompanion(removedId);
         PathDebugRenderer.clearCompanion(removedId);
 

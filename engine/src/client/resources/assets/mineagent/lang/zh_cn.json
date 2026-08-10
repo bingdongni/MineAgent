@@ -17,6 +17,7 @@
   "screen.mineagent.chat.empty": "暂无消息",
   "screen.mineagent.chat.no_companion": "请先创建伙伴再发送消息。",
   "screen.mineagent.chat.remove_requested": "已请求移除伙伴。",
+  "screen.mineagent.chat.companion": "当前伙伴",
 
   "screen.mineagent.create.title": "配置并创建 AI 伙伴",
   "screen.mineagent.create.save_and_create": "保存并创建",
@@ -41,6 +42,7 @@
   "screen.mineagent.field.provider": "模型提供方",
   "screen.mineagent.field.model": "模型",
   "screen.mineagent.field.effort": "创建时思考强度",
+  "screen.mineagent.field.game_mode": "游戏模式",
   "screen.mineagent.field.apikey": "API Key",
   "screen.mineagent.field.baseurl": "接口地址",
   "screen.mineagent.field.temperature": "温度",
@@ -80,7 +82,7 @@
   "screen.mineagent.help.commands.title": "命令",
   "screen.mineagent.help.commands.quick": "/mineagent quick [名称] [强度] - 使用已保存设置创建伙伴",
   "screen.mineagent.help.commands.remove": "/mineagent remove - 移除主要伙伴",
-  "screen.mineagent.help.commands.respawn": "/mineagent respawn - 复活死亡伙伴",
+  "screen.mineagent.help.commands.respawn": "/mineagent respawn - 复活非极限模式的死亡伙伴",
   "screen.mineagent.help.commands.list": "/mineagent list - 查看在线伙伴",
   "screen.mineagent.help.commands.providers": "/mineagent providers - 查看模型提供方",
   "screen.mineagent.help.commands.models": "/mineagent models [提供方] - 查看可用模型",
@@ -103,6 +105,10 @@
   "screen.mineagent.reflex.auto_eat": "自动进食：%s",
   "screen.mineagent.reflex.fight_back": "自动反击：%s",
   "screen.mineagent.reflex.pickup": "自动拾取：%s",
+  "screen.mineagent.game_mode.survival": "生存",
+  "screen.mineagent.game_mode.creative": "创造",
+  "screen.mineagent.game_mode.adventure": "冒险",
+  "screen.mineagent.game_mode.hardcore": "极限",
   "screen.mineagent.on": "开",
   "screen.mineagent.off": "关",
   "screen.mineagent.hud.companion": "AI 伙伴",
@@ -116,5 +122,6 @@
   "screen.mineagent.error.effort": "[MineAgent] 思考强度必须是 off、low、medium、high、xhigh 或 max。",
   "screen.mineagent.error.temperature": "[MineAgent] 温度必须是 0 到 2 之间的数字。",
   "screen.mineagent.error.no_changes": "[MineAgent] 请至少填写一项需要修改的设置。",
-  "screen.mineagent.error.skin_name": "[MineAgent] 玩家名称只能包含 1-16 个字母、数字或下划线。"
+  "screen.mineagent.error.skin_name": "[MineAgent] 玩家名称只能包含 1-16 个字母、数字或下划线。",
+  "message.mineagent.game_mode_changed": "%s 的游戏模式已切换为 %s。"
 }

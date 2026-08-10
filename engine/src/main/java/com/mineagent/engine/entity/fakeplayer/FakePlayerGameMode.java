@@ -17,16 +17,16 @@ import net.minecraft.world.phys.Vec3;
 /**
  * ServerPlayerGameMode wrapper for fake players.
  * <p>
- * Provides creative-mode-like capabilities for fake players:
+ * Provides fake-client mining support while preserving vanilla game modes:
  * <ul>
- *   <li>Instant block breaking (no mining progress delay)</li>
- *   <li>Extended reach distance for block interaction</li>
- *   <li>Normal survival durability, drops and hunger semantics</li>
+ *   <li>Optional instant block breaking from explicit configuration</li>
+ *   <li>Mode-aware block interaction range</li>
+ *   <li>Vanilla survival, creative, and adventure semantics</li>
  * </ul>
  * <p>
- * The fake player's game mode is set to SURVIVAL by default, but
- * the overrides here give it creative-like block interaction range
- * and instant break capability.
+ * The human owner selects the fake player's game mode. This wrapper must not
+ * override that authoritative value or it would leave abilities and block
+ * restrictions inconsistent with {@link ServerPlayer#setGameMode(GameType)}.
  */
 public class FakePlayerGameMode extends ServerPlayerGameMode {
 
@@ -152,7 +152,7 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
      * Returns creative-mode reach if enabled, otherwise survival reach.
      */
     public double getReachDistance() {
-        return creativeReach ? CREATIVE_REACH : SURVIVAL_REACH;
+        return creativeReach || isCreative() ? CREATIVE_REACH : SURVIVAL_REACH;
     }
 
     /**
@@ -175,37 +175,6 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
     @Override
     public boolean destroyBlock(BlockPos pos) {
         return super.destroyBlock(pos);
-    }
-
-    /**
-     * Get the game type — always reports SURVIVAL for the fake player,
-     * but behavior is augmented by the overrides in this class.
-     */
-    @Override
-    public GameType getGameModeForPlayer() {
-        return GameType.SURVIVAL;
-    }
-
-    /**
-     * Check if the fake player is in creative mode.
-     *
-     * <p><b>CRITICAL FIX</b>: This MUST return {@code false}. The fake
-     * player is in SURVIVAL mode and must be able to take damage and die
-     * like a normal player. Returning {@code true} here causes Minecraft's
-     * {@code ServerPlayer.hurt()} / {@code LivingEntity.actuallyHurt()}
-     * to skip all damage application — the companion appears to "lose HP
-     * but never die" because all damage is silently cancelled.
-     *
-     * <p>The {@link #creativeReach} flag only controls the reach distance
-     * (via {@link #getReachDistance()}), NOT whether the player is in
-     * creative mode. Instant block breaking is handled separately by
-     * {@link #handleBlockBreakAction} and {@link #destroyBlock}.
-     *
-     * @return always {@code false} — survival mode, takes damage, can die
-     */
-    @Override
-    public boolean isCreative() {
-        return false;
     }
 
     /**
@@ -303,6 +272,15 @@ public class FakePlayerGameMode extends ServerPlayerGameMode {
     /** Exposes whether START entered the fake client's progressive state. */
     public boolean isAutomaticallyDestroying(BlockPos pos) {
         return pos != null && pos.equals(automaticDestroyPos);
+    }
+
+    /**
+     * End fake-client mining before a human changes the player's game mode.
+     * Otherwise a START accepted in creative/survival can finish later under
+     * different adventure restrictions.
+     */
+    public void abortCurrentDestroy() {
+        if (automaticDestroyPos != null) abortAutomaticDestroy();
     }
 
     private void abortAutomaticDestroy() {

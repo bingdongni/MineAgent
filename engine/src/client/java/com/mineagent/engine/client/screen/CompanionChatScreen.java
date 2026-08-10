@@ -1,5 +1,6 @@
 package com.mineagent.engine.client.screen;
 
+import com.mineagent.api.entity.CompanionGameMode;
 import com.mineagent.api.network.payload.ClientUiActionPayload;
 import com.mineagent.engine.client.MineAgentClientController;
 import com.mineagent.engine.client.MineAgentKeyMappings;
@@ -8,6 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
@@ -34,6 +36,8 @@ public class CompanionChatScreen extends Screen {
     private Button fightBackButton;
     private Button pickupButton;
     private Button removeButton;
+    private CycleButton<UUID> companionSelector;
+    private CycleButton<CompanionGameMode> gameModeButton;
     private boolean reflexAutoEat = true;
     private boolean reflexFightBack = true;
     private boolean reflexPickupItems = true;
@@ -66,8 +70,28 @@ public class CompanionChatScreen extends Screen {
                 - MineAgentUiComponents.PANEL_PADDING - INPUT_HEIGHT;
         int actionY = inputY - BUTTON_HEIGHT - ROW_GAP;
         int reflexY = actionY - BUTTON_HEIGHT - ROW_GAP;
-        historyTop = statusY + 20;
+        int selectorY = statusY;
+        historyTop = selectorY + BUTTON_HEIGHT + 8;
         historyBottom = reflexY - 8;
+
+        List<UUID> ids = MineAgentClientController.getCompanionIds();
+        if (ids.isEmpty() && companionId != null) ids = List.of(companionId);
+        if (ids.isEmpty()) ids = List.of(new UUID(0L, 0L));
+        companionSelector = CycleButton.<UUID>builder(this::companionLabel)
+                .withValues(ids)
+                .withInitialValue(ids.contains(companionId) ? companionId : ids.get(0))
+                .create(contentX, selectorY, Math.max(80, contentWidth / 2 - ROW_GAP),
+                        BUTTON_HEIGHT,
+                        Component.translatable("screen.mineagent.chat.companion"),
+                        (button, id) -> selectCompanion(id));
+        this.addRenderableWidget(companionSelector);
+
+        gameModeButton = CycleButton.<CompanionGameMode>builder(this::gameModeLabel)
+                .withValues(List.of(CompanionGameMode.values()))
+                .withInitialValue(MineAgentClientController.getCompanionGameMode(companionId))
+                .create(contentX, actionY, contentWidth, BUTTON_HEIGHT,
+                        Component.translatable("screen.mineagent.field.game_mode"),
+                        (button, mode) -> setGameMode(mode));
 
         int sendWidth = Math.min(72, Math.max(52, contentWidth / 5));
         int inputWidth = Math.max(60, contentWidth - sendWidth - ROW_GAP);
@@ -97,17 +121,21 @@ public class CompanionChatScreen extends Screen {
                 .bounds(contentX + (reflexWidth + ROW_GAP) * 2, reflexY,
                         contentWidth - (reflexWidth + ROW_GAP) * 2,
                         BUTTON_HEIGHT).build());
+        this.addRenderableWidget(gameModeButton);
 
-        int actionWidth = (contentWidth - ROW_GAP) / 2;
+        int commandWidth = Math.max(52, (contentWidth - ROW_GAP * 2) / 4);
+        int modeWidth = contentWidth - commandWidth * 2 - ROW_GAP * 2;
         this.addRenderableWidget(Button.builder(
                 Component.translatable("screen.mineagent.menu.create"),
                 ignored -> Minecraft.getInstance().setScreen(new SpawnCompanionScreen()))
-                .bounds(contentX, actionY, actionWidth, BUTTON_HEIGHT).build());
+                .bounds(contentX, actionY, commandWidth, BUTTON_HEIGHT).build());
+        gameModeButton.setX(contentX + commandWidth + ROW_GAP);
+        gameModeButton.setWidth(modeWidth);
         removeButton = this.addRenderableWidget(Button.builder(
                 Component.translatable("screen.mineagent.menu.remove"),
                 ignored -> removeCompanion())
-                .bounds(contentX + actionWidth + ROW_GAP, actionY,
-                        contentWidth - actionWidth - ROW_GAP,
+                .bounds(contentX + commandWidth + ROW_GAP + modeWidth + ROW_GAP,
+                        actionY, commandWidth,
                         BUTTON_HEIGHT).build());
 
         refreshControlState();
@@ -120,14 +148,6 @@ public class CompanionChatScreen extends Screen {
         MineAgentUiComponents.drawPanel(graphics, panel.x(), panel.y(),
                 panel.width(), panel.height(), this.title, true,
                 this.width, this.height);
-
-        boolean online = companionSpawned && companionId != null;
-        Component status = online
-                ? Component.translatable("screen.mineagent.chat.online",
-                        companionId.toString().substring(0, 8))
-                : Component.translatable("screen.mineagent.chat.offline");
-        MineAgentUiComponents.drawStatusIndicator(graphics, contentX, statusY,
-                status, online);
 
         int taskX = contentX + contentWidth / 2;
         int taskWidth = Math.max(40, contentX + contentWidth - taskX);
@@ -258,6 +278,37 @@ public class CompanionChatScreen extends Screen {
         refreshControlState();
     }
 
+    private void selectCompanion(UUID id) {
+        if (id == null || id.getMostSignificantBits() == 0L
+                && id.getLeastSignificantBits() == 0L) return;
+        companionId = id;
+        companionSpawned = true;
+        MineAgentClientController.selectCompanion(id);
+        if (gameModeButton != null) {
+            gameModeButton.setValue(MineAgentClientController.getCompanionGameMode(id));
+        }
+        refreshControlState();
+    }
+
+    private void setGameMode(CompanionGameMode mode) {
+        if (companionId == null || !companionSpawned || mode == null) return;
+        MineAgentClientController.sendUiAction(new ClientUiActionPayload(
+                companionId, "set_game_mode", mode.wireName()));
+    }
+
+    private Component companionLabel(UUID id) {
+        if (id == null || (id.getMostSignificantBits() == 0L
+                && id.getLeastSignificantBits() == 0L)) {
+            return Component.translatable("screen.mineagent.chat.offline");
+        }
+        return Component.literal(MineAgentClientController.getCompanionName(id));
+    }
+
+    private Component gameModeLabel(CompanionGameMode mode) {
+        return Component.translatable("screen.mineagent.game_mode."
+                + (mode == null ? CompanionGameMode.SURVIVAL : mode).wireName());
+    }
+
     private void removeCompanion() {
         if (companionId == null) return;
         MineAgentClientController.sendUiAction(new ClientUiActionPayload(
@@ -284,6 +335,9 @@ public class CompanionChatScreen extends Screen {
             pickupButton.setMessage(toggleLabel("screen.mineagent.reflex.pickup",
                     reflexPickupItems));
         }
+        if (companionSelector != null) companionSelector.active = !MineAgentClientController
+                .getCompanionIds().isEmpty();
+        if (gameModeButton != null) gameModeButton.active = available;
         if (removeButton != null) removeButton.active = available;
     }
 
@@ -309,7 +363,28 @@ public class CompanionChatScreen extends Screen {
     public void setCompanionId(UUID id) {
         companionId = id;
         companionSpawned = id != null;
+        if (companionSelector != null && id != null) {
+            try { companionSelector.setValue(id); } catch (IllegalArgumentException ignored) { }
+        }
+        if (gameModeButton != null) {
+            gameModeButton.setValue(MineAgentClientController.getCompanionGameMode(id));
+        }
         refreshControlState();
+    }
+
+    public void setCompanionGameMode(UUID id, CompanionGameMode mode) {
+        if (id != null && id.equals(companionId) && gameModeButton != null && mode != null) {
+            gameModeButton.setValue(mode);
+        }
+    }
+
+    /** Refresh the selected companion's display label after a server update. */
+    public void refreshCompanionSelector() {
+        if (companionSelector != null && companionId != null) {
+            // setValue rebuilds CycleButton's normal "label: value" message;
+            // setting the raw message would discard the localized field label.
+            companionSelector.setValue(companionId);
+        }
     }
 
     @Override

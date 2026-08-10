@@ -57,6 +57,17 @@ public final class FakePlayerFactory {
      */
     public static ServerPlayer create(MinecraftServer server, GameProfile profile,
                                        ServerLevel level, BlockPos spawnPos) {
+        return create(server, profile, level, spawnPos, GameType.SURVIVAL);
+    }
+
+    /**
+     * Create a fake player in the requested mode before it becomes visible.
+     * Applying the mode before Player Info/entity registration avoids one tick
+     * where observers and mod hooks see an incorrect survival player.
+     */
+    public static ServerPlayer create(MinecraftServer server, GameProfile profile,
+                                       ServerLevel level, BlockPos spawnPos,
+                                       GameType requestedGameType) {
 
         // 1. Create the ServerPlayer using the 1.21.1 constructor
         // In 1.21.1, ServerPlayer requires ClientInformation as the 4th parameter
@@ -82,8 +93,11 @@ public final class FakePlayerFactory {
         FakePlayerGameMode gameMode = new FakePlayerGameMode(player);
         player.gameMode = gameMode;
 
-        // 5. Set game mode to survival (the FakePlayerGameMode augments behavior)
-        player.setGameMode(GameType.SURVIVAL);
+        // A null/omitted mode is explicitly survival. Hardcore is represented
+        // by MineAgent as SURVIVAL plus an independent permanent-death policy.
+        GameType gameType = requestedGameType == null
+                ? GameType.SURVIVAL : requestedGameType;
+        player.setGameMode(gameType);
 
         // 6. Validate the complete two-block body volume and its support.
         // A fixed east offset can be a wall, lava, or open air at a cliff;
@@ -112,7 +126,7 @@ public final class FakePlayerFactory {
         player.setExperiencePoints(0);
 
         // 9. Register with the server's player list
-        registerWithServer(server, player, level);
+        registerWithServer(server, player, level, gameType);
 
             return player;
         } catch (RuntimeException failure) {
@@ -260,7 +274,8 @@ public final class FakePlayerFactory {
      * to the world.
      */
     private static void registerWithServer(MinecraftServer server,
-                                            ServerPlayer player, ServerLevel level) {
+                                            ServerPlayer player, ServerLevel level,
+                                            GameType gameType) {
         PlayerList playerList = server.getPlayerList();
 
         // Add the player to the server's player list
@@ -309,8 +324,10 @@ public final class FakePlayerFactory {
                     + player.getX() + ", " + player.getY() + ", " + player.getZ() + ")");
         }
 
-        // Sync the player's game mode and abilities
-        player.setGameMode(GameType.SURVIVAL);
+        // Re-apply after registration so vanilla publishes the requested mode
+        // and abilities. The former hard-coded SURVIVAL assignment silently
+        // undid every non-survival mode selected during construction.
+        player.setGameMode(gameType == null ? GameType.SURVIVAL : gameType);
 
         System.out.println("[MineAgent] Fake player '" + player.getName().getString()
                 + "' registered with server (UUID: " + player.getUUID() + ")");

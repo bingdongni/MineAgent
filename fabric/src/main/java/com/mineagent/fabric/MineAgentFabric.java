@@ -161,7 +161,8 @@ public class MineAgentFabric implements ModInitializer {
                                                 payload.apiKey(), payload.reuseStoredApiKey(),
                                                 payload.model(),
                                                 payload.baseUrl(), payload.temperature(),
-                                                payload.reasoningEffort()))));
+                                                payload.reasoningEffort(),
+                                                payload.gameMode()))));
 
         // Engine → client push bridge (companion_chat / companion_task / ...)
         MineAgentNetwork.setUiActionSender((player, payload) -> {

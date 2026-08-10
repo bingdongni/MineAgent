@@ -1,5 +1,7 @@
 package com.mineagent.api.network.payload;
 
+import com.mineagent.api.entity.CompanionGameMode;
+
 /**
  * Atomically configures an LLM connection and creates one companion.
  *
@@ -17,7 +19,8 @@ public record CompanionSetupPayload(
         String model,
         String baseUrl,
         double temperature,
-        String reasoningEffort
+        String reasoningEffort,
+        String gameMode
 ) {
     public static final int MAX_NAME = 64;
     public static final int MAX_PROVIDER_ID = 64;
@@ -25,6 +28,16 @@ public record CompanionSetupPayload(
     public static final int MAX_MODEL = 256;
     public static final int MAX_BASE_URL = 2_048;
     public static final int MAX_EFFORT = 16;
+    public static final int MAX_GAME_MODE = 16;
+
+    /** Preserve source compatibility for callers written before v0.3.6. */
+    public CompanionSetupPayload(String name, String providerId, String apiKey,
+                                 boolean reuseStoredApiKey, String model,
+                                 String baseUrl, double temperature,
+                                 String reasoningEffort) {
+        this(name, providerId, apiKey, reuseStoredApiKey, model, baseUrl,
+                temperature, reasoningEffort, CompanionGameMode.SURVIVAL.wireName());
+    }
 
     public CompanionSetupPayload {
         name = valueOrEmpty(name).trim();
@@ -36,6 +49,8 @@ public record CompanionSetupPayload(
         model = valueOrEmpty(model).trim();
         baseUrl = valueOrEmpty(baseUrl).trim();
         reasoningEffort = valueOrEmpty(reasoningEffort).trim();
+        gameMode = valueOrEmpty(gameMode).trim().toLowerCase(java.util.Locale.ROOT);
+        if (gameMode.isEmpty()) gameMode = CompanionGameMode.SURVIVAL.wireName();
 
         if (name.length() > MAX_NAME || containsControl(name)) {
             throw new IllegalArgumentException("invalid companion name");
@@ -58,6 +73,10 @@ public record CompanionSetupPayload(
         }
         if (reasoningEffort.length() > MAX_EFFORT || containsControl(reasoningEffort)) {
             throw new IllegalArgumentException("invalid reasoning effort");
+        }
+        if (gameMode.length() > MAX_GAME_MODE || containsControl(gameMode)
+                || CompanionGameMode.parse(gameMode).isEmpty()) {
+            throw new IllegalArgumentException("invalid companion game mode");
         }
     }
 

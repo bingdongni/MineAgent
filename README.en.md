@@ -7,6 +7,14 @@ English | [简体中文](README.md)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
 
+## v0.3.6: independent game-mode control
+
+- Configure & Create now offers Survival, Creative, Adventure, and Hardcore. Omitted, blank, and legacy setup requests explicitly default to Survival.
+- Companion Chat now includes a companion selector and a live game-mode selector. Up to three companions keep independently persisted modes across screen closes and world rejoins.
+- Survival, Creative, and Adventure use vanilla `GameType`, ability synchronization, and interaction restrictions. The previous fake-player override that always reported Survival has been removed.
+- Vanilla Hardcore is a world rule rather than a per-player game type. MineAgent implements its per-companion equivalent as Survival plus permanent death. A Hardcore death permanently locks that body: neither mode changes nor `/mineagent respawn` can reuse it. The owner must create a new companion instead.
+- Mode changes are accepted only through an owner-authorized server request. No LLM tool exposes this operation: the AI can perceive its current mode but cannot change it.
+
 ## v0.3.5: unified setup and open model connectivity
 
 - Create Companion and Model Connection are now one screen. Name, protocol adapter, arbitrary model ID, API key, base URL, and reasoning effort can be entered once and submitted with Save & Create; the duplicate main-menu entry is gone.
@@ -108,7 +116,7 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 
 ## Quick start
 
-The first launch creates `config/mineagent.json`. Press `M`, open Configure & Create, and enter protocol, model, endpoint, and key once. You can also edit the file first and then run:
+The first launch creates `config/mineagent.json`. Press `M`, open Configure & Create, and enter protocol, model, endpoint, key, and game mode once. Press `C` to select any online companion and change its independent game mode at any time. You can also edit the file first and then run:
 
 ```text
 /mineagent quick
@@ -163,8 +171,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.3.5.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.3.5.jar`
+- `fabric/build/libs/mineagent-fabric-0.3.6.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.3.6.jar`
 
 ## Modules
 

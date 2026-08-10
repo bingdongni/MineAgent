@@ -154,7 +154,7 @@ public class MineAgentNeoForge {
                                         payload.name(), payload.providerId(), payload.apiKey(),
                                         payload.reuseStoredApiKey(), payload.model(),
                                         payload.baseUrl(), payload.temperature(),
-                                        payload.reasoningEffort()));
+                                        payload.reasoningEffort(), payload.gameMode()));
                     }
                 });
         registrar.playToClient(MineAgentNeoForgePayloads.TaskResult.TYPE,

@@ -27,7 +27,8 @@ public final class MineAgentPayloads {
     public record CompanionSetup(String name, String providerId, String apiKey,
                                  boolean reuseStoredApiKey,
                                  String model, String baseUrl, double temperature,
-                                 String reasoningEffort) implements CustomPacketPayload {
+                                 String reasoningEffort,
+                                 String gameMode) implements CustomPacketPayload {
         public static final Type<CompanionSetup> TYPE = new Type<>(id("companion_setup"));
         public static final StreamCodec<FriendlyByteBuf, CompanionSetup> CODEC = StreamCodec.of(
                 (buf, p) -> {
@@ -39,23 +40,26 @@ public final class MineAgentPayloads {
                     buf.writeUtf(p.baseUrl, MAX_BASE_URL);
                     buf.writeDouble(p.temperature);
                     buf.writeUtf(p.reasoningEffort, 16);
+                    buf.writeUtf(p.gameMode, 16);
                 },
                 buf -> new CompanionSetup(buf.readUtf(64), buf.readUtf(64),
                         buf.readUtf(MAX_API_KEY), buf.readBoolean(), buf.readUtf(MAX_MODEL),
-                        buf.readUtf(MAX_BASE_URL), buf.readDouble(), buf.readUtf(16)));
+                        buf.readUtf(MAX_BASE_URL), buf.readDouble(), buf.readUtf(16),
+                        buf.readUtf(16)));
 
         public CompanionSetup {
             // Reuse the loader-neutral constructor so wire and engine limits
             // cannot silently drift apart.
             var checked = new com.mineagent.api.network.payload.CompanionSetupPayload(
                     name, providerId, apiKey, reuseStoredApiKey, model, baseUrl, temperature,
-                    reasoningEffort);
+                    reasoningEffort, gameMode);
             name = checked.name();
             providerId = checked.providerId();
             apiKey = checked.apiKey();
             model = checked.model();
             baseUrl = checked.baseUrl();
             reasoningEffort = checked.reasoningEffort();
+            gameMode = checked.gameMode();
         }
 
         @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }

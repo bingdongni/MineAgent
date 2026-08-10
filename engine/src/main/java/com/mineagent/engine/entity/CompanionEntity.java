@@ -1,6 +1,7 @@
 package com.mineagent.engine.entity;
 
 import com.mineagent.api.entity.AgentPlayer;
+import com.mineagent.api.entity.CompanionGameMode;
 import com.mineagent.api.entity.InputDriver;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
@@ -22,13 +23,27 @@ public class CompanionEntity extends AgentPlayer {
     private volatile String companionName;
     private final ServerPlayer owner;
     private final CompanionInputDriver inputDriver;
+    /** Human-owned mode; no AI/tool path is allowed to mutate this field. */
+    private volatile CompanionGameMode gameMode;
+    /**
+     * Permanent per-body lock set when this companion dies in Hardcore.
+     * It is deliberately separate from gameMode: changing the displayed
+     * Vanilla mode must never turn a Hardcore death into a reusable body.
+     */
+    private volatile boolean hardcoreDeathLocked;
 
     public CompanionEntity(ServerPlayer serverPlayer, ServerPlayer owner, String name) {
+        this(serverPlayer, owner, name, CompanionGameMode.SURVIVAL);
+    }
+
+    public CompanionEntity(ServerPlayer serverPlayer, ServerPlayer owner, String name,
+                           CompanionGameMode gameMode) {
         this.serverPlayer = serverPlayer;
         this.companionId = UUID.randomUUID();
         this.companionName = name;
         this.owner = owner;
         this.inputDriver = new CompanionInputDriver(serverPlayer);
+        this.gameMode = gameMode == null ? CompanionGameMode.SURVIVAL : gameMode;
     }
 
     /**
@@ -55,6 +70,34 @@ public class CompanionEntity extends AgentPlayer {
     /** Get the input driver for this companion. */
     public InputDriver inputDriver() {
         return inputDriver;
+    }
+
+    public CompanionGameMode gameMode() {
+        return gameMode;
+    }
+
+    /**
+     * Set only from the server's owner-authorized mode command. Keeping this
+     * mutation on the entity makes the mode independent for every companion
+     * instead of accidentally consulting the global config singleton.
+     */
+    public void setGameMode(CompanionGameMode mode) {
+        this.gameMode = mode == null ? CompanionGameMode.SURVIVAL : mode;
+    }
+
+    public boolean hardcoreDeathLocked() {
+        return hardcoreDeathLocked;
+    }
+
+    public void markHardcoreDeathLocked() {
+        hardcoreDeathLocked = true;
+    }
+
+    public void restoreHardcoreDeathLocked(boolean locked) {
+        // A Hardcore death is irreversible for this companion identity. The
+        // restore path may set an old/default false value, but must never be
+        // able to clear a lock that was already observed in the live session.
+        hardcoreDeathLocked |= locked;
     }
 
     // ── AgentPlayer abstract method implementations ──

@@ -17,6 +17,7 @@
   "screen.mineagent.chat.empty": "No messages yet",
   "screen.mineagent.chat.no_companion": "Create a companion before sending messages.",
   "screen.mineagent.chat.remove_requested": "Companion removal requested.",
+  "screen.mineagent.chat.companion": "Companion",
 
   "screen.mineagent.create.title": "Configure & Create Companion",
   "screen.mineagent.create.save_and_create": "Save & Create",
@@ -41,6 +42,7 @@
   "screen.mineagent.field.provider": "Provider",
   "screen.mineagent.field.model": "Model",
   "screen.mineagent.field.effort": "Spawn effort",
+  "screen.mineagent.field.game_mode": "Game mode",
   "screen.mineagent.field.apikey": "API key",
   "screen.mineagent.field.baseurl": "Base URL",
   "screen.mineagent.field.temperature": "Temperature",
@@ -80,7 +82,7 @@
   "screen.mineagent.help.commands.title": "Commands",
   "screen.mineagent.help.commands.quick": "/mineagent quick [name] [effort] - create from saved settings",
   "screen.mineagent.help.commands.remove": "/mineagent remove - remove your primary companion",
-  "screen.mineagent.help.commands.respawn": "/mineagent respawn - restore a dead companion",
+  "screen.mineagent.help.commands.respawn": "/mineagent respawn - restore a dead non-Hardcore companion",
   "screen.mineagent.help.commands.list": "/mineagent list - list active companions",
   "screen.mineagent.help.commands.providers": "/mineagent providers - list LLM providers",
   "screen.mineagent.help.commands.models": "/mineagent models [provider] - list models",
@@ -103,6 +105,10 @@
   "screen.mineagent.reflex.auto_eat": "Auto Eat: %s",
   "screen.mineagent.reflex.fight_back": "Fight Back: %s",
   "screen.mineagent.reflex.pickup": "Pickup: %s",
+  "screen.mineagent.game_mode.survival": "Survival",
+  "screen.mineagent.game_mode.creative": "Creative",
+  "screen.mineagent.game_mode.adventure": "Adventure",
+  "screen.mineagent.game_mode.hardcore": "Hardcore",
   "screen.mineagent.on": "On",
   "screen.mineagent.off": "Off",
   "screen.mineagent.hud.companion": "Companion",
@@ -116,5 +122,6 @@
   "screen.mineagent.error.effort": "[MineAgent] Effort must be off, low, medium, high, xhigh or max.",
   "screen.mineagent.error.temperature": "[MineAgent] Temperature must be a number from 0 to 2.",
   "screen.mineagent.error.no_changes": "[MineAgent] Enter at least one setting to change.",
-  "screen.mineagent.error.skin_name": "[MineAgent] Player names use 1-16 letters, numbers or underscores."
+  "screen.mineagent.error.skin_name": "[MineAgent] Player names use 1-16 letters, numbers or underscores.",
+  "message.mineagent.game_mode_changed": "%s game mode changed to %s."
 }

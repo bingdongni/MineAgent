@@ -2,6 +2,26 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.3.6] - 2026-08-10
+
+### Added
+
+- Add Survival, Creative, Adventure, and per-companion Hardcore choices to the unified setup screen, with Survival as the normalized default.
+- Add companion and game-mode selectors to Companion Chat for independent live control of every owned companion.
+- Persist each companion's game mode and Hardcore death state with backward-compatible v1 store loading.
+
+### Changed
+
+- Apply the selected vanilla `GameType` before fake-player registration and publish the resulting abilities and mode to clients.
+- Expose the human-selected mode as trusted live context while explicitly denying the AI authority to change it.
+
+### Fixed
+
+- Stop `FakePlayerGameMode` and fake-player registration from hard-coding every companion back to Survival.
+- Cancel in-flight item use and mining before a human mode transition so an action accepted under one permission model cannot finish under another.
+- Reject non-owner and malformed mode updates on the authoritative server.
+- Permanently lock a companion that dies in Hardcore; mode changes, `/mineagent respawn`, and world rejoin cannot reuse that body, so the owner must create a new companion.
+
 ## [0.3.5] - 2026-08-10
 
 ### Added

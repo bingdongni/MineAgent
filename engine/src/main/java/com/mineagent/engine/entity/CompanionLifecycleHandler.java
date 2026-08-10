@@ -121,12 +121,26 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         // after the body is revived.
         loop.pause();
 
-        // Send a body log to inform the LLM that it died
-        loop.onBodyLog("I died! My health reached zero. I need to be respawned.");
+        boolean hardcore = companion instanceof CompanionEntity entity
+                && (entity.gameMode().isHardcore() || entity.hardcoreDeathLocked());
+        if (hardcore && companion instanceof CompanionEntity entity) {
+            entity.markHardcoreDeathLocked();
+            // Persist immediately. Waiting for shutdown would allow a crash
+            // between death and save to resurrect a Hardcore body on restart.
+            MineAgentEngine.persistCompanionNow(entity.companionId());
+        }
+        // Hardcore is an explicit per-companion permanent-death rule. Tell the
+        // brain and owner the truth instead of advertising a respawn command
+        // that the authoritative engine will reject.
+        loop.onBodyLog(hardcore
+                ? "I died in hardcore mode. This death is permanent; this companion cannot respawn or change mode. My human owner must create a new companion."
+                : "I died! My health reached zero. I need to be respawned.");
 
-        // Notify the owner
-        notifyOwner("§c[MineAgent] " + companion.companionName() + " has died! "
-                + "Use /mineagent respawn to bring them back.");
+        notifyOwner(hardcore
+                ? "§c[MineAgent] " + companion.companionName()
+                        + " died permanently in Hardcore mode. Create a new companion."
+                : "§c[MineAgent] " + companion.companionName() + " has died! "
+                        + "Use /mineagent respawn to bring them back.");
 
         System.out.println("[MineAgent] Companion '" + companion.companionName() + "' died");
     }
@@ -140,6 +154,12 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
     @Override
     public void onRespawn(AgentPlayer companion) {
         if (this.companion != companion) return;
+        if (companion instanceof CompanionEntity entity
+                && (entity.gameMode().isHardcore() || entity.hardcoreDeathLocked())) {
+            notifyOwner("§c[MineAgent] A companion that dies in Hardcore mode "
+                    + "cannot respawn or change mode. Create a new companion.");
+            return;
+        }
 
         dead = false;
         paused = false;

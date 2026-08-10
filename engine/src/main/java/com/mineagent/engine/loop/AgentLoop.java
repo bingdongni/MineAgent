@@ -3173,14 +3173,13 @@ public class AgentLoop {
 
         // ── Your body ──
         sb.append("## Your Body\n");
-        sb.append("You are a full survival-mode player:\n");
-        sb.append("- You take damage from everything: falls, fire, drowning, mobs, starvation\n");
-        sb.append("- You get hungry. Low hunger = no regen. Empty hunger = take damage\n");
+        sb.append("You are a full Minecraft player. The live context states the game mode selected by your human owner. You cannot change it yourself.\n");
+        sb.append("- Survival and hardcore use normal damage, hunger, durability, drops, and resources; a hardcore death permanently locks this companion, so the owner must create a new one\n");
+        sb.append("- Creative uses vanilla creative abilities; adventure obeys vanilla adventure interaction restrictions\n");
         sb.append("- You have a full inventory (36 slots) + hotbar (9) + armor (4) + offhand\n");
         sb.append("- You can equip/unequip armor, switch tools, use items\n");
         sb.append("- Food, potions, totems — everything works on you just like a human\n");
-        sb.append("- Manage your body: eat when hungry, heal when hurt, ");
-        sb.append("equip armor when in danger\n\n");
+        sb.append("- When the selected mode requires it, manage hunger, health, armor, and risk like a human\n\n");
 
         // ── Container interaction workflow ──
         sb.append("## Using Containers (Chests, Furnaces, Crafting Tables)\n");
@@ -3249,6 +3248,9 @@ public class AgentLoop {
         var mode = MineAgentEngine.getCompanionMode(companion.companionId());
         sb.append("模式: ").append(mode == MineAgentEngine.CompanionMode.FOLLOW
                 ? "跟随(距主人2-3格, 不超过16格)" : "自由(可远离主人执行任务)").append("\n");
+        sb.append("游戏模式: ").append(companion instanceof com.mineagent.engine.entity.CompanionEntity entity
+                ? entity.gameMode().wireName() : "survival")
+                .append("（由人类主人控制，不能自行修改）\n");
         appendLiveBodyState(sb, liveBodyState.get());
         sb.append(realtimeCognition.summarizeForPrompt());
         sb.append(TeamBlackboard.summarize(companion.ownerUuid(),

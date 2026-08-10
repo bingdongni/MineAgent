@@ -1,6 +1,7 @@
 package com.mineagent.engine.client.screen;
 
 import com.mineagent.api.llm.model.ThinkingEffortSpec;
+import com.mineagent.api.entity.CompanionGameMode;
 import com.mineagent.api.network.payload.ClientUiActionPayload;
 import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.engine.client.MineAgentClientController;
@@ -44,6 +45,7 @@ public class SpawnCompanionScreen extends Screen {
     private EditBox thinkingEffortField;
     private CycleButton<ProviderPresets.Preset> presetButton;
     private Button revealKeyButton;
+    private CycleButton<CompanionGameMode> gameModeButton;
 
     private MineAgentUiComponents.Rect panel;
     private int leftX;
@@ -87,9 +89,9 @@ public class SpawnCompanionScreen extends Screen {
         // The full panel is 226px tall plus two 10px screen margins. Using the
         // actual fitted requirement prevents the action row from being drawn
         // below a clamped panel at intermediate GUI scales.
-        showPreset = this.height >= 246;
+        showPreset = this.height >= 280;
         fieldStep = showPreset ? STANDARD_FIELD_STEP : COMPACT_FIELD_STEP;
-        int preferredHeight = showPreset ? 226 : 180;
+        int preferredHeight = showPreset ? 260 : 214;
         panel = MineAgentUiComponents.centeredPanel(
                 this.width, this.height, preferredWidth, preferredHeight);
 
@@ -150,6 +152,16 @@ public class SpawnCompanionScreen extends Screen {
                 "screen.mineagent.effort_hint", "");
         updateEffortHint();
 
+        int modeTop = identityTop + fieldStep;
+        gameModeButton = CycleButton.<CompanionGameMode>builder(
+                        this::gameModeLabel)
+                .withValues(List.of(CompanionGameMode.values()))
+                .withInitialValue(CompanionGameMode.SURVIVAL)
+                .create(leftX, modeTop + 11, innerWidth, BUTTON_HEIGHT,
+                        Component.translatable("screen.mineagent.field.game_mode"),
+                        (button, mode) -> { /* selection is local until submit */ });
+        this.addRenderableWidget(gameModeButton);
+
         // Responders are attached after initial values so only actual user
         // input can suppress a late server summary from overwriting edits.
         modelField.setResponder(ignored -> {
@@ -163,7 +175,7 @@ public class SpawnCompanionScreen extends Screen {
             if (!applyingServerConfig) baseUrlEdited = true;
         });
 
-        actionY = identityTop + fieldStep + (showPreset ? 7 : 5);
+        actionY = modeTop + fieldStep + (showPreset ? 7 : 5);
         int actionGap = 5;
         int actionWidth = (innerWidth - actionGap) / 2;
         this.addRenderableWidget(Button.builder(
@@ -277,6 +289,9 @@ public class SpawnCompanionScreen extends Screen {
                 Component.translatable("screen.mineagent.field.name"), leftX, identityTop);
         MineAgentUiComponents.drawFieldLabel(graphics,
                 Component.translatable("screen.mineagent.field.effort"), rightX, identityTop);
+        MineAgentUiComponents.drawFieldLabel(graphics,
+                Component.translatable("screen.mineagent.field.game_mode"),
+                leftX, identityTop + fieldStep);
 
         super.render(graphics, mouseX, mouseY, partialTick);
     }
@@ -335,11 +350,17 @@ public class SpawnCompanionScreen extends Screen {
             MineAgentClientController.sendCompanionSetup(new CompanionSetupPayload(
                     nameField.getValue(), protocolField.getValue(), apiKey,
                     reuseStoredKey,
-                    model, baseUrl, temperature, effort));
+                    model, baseUrl, temperature, effort,
+                    gameModeButton.getValue().wireName()));
             this.onClose();
         } catch (IllegalArgumentException invalidInput) {
             showError("screen.mineagent.error.setup");
         }
+    }
+
+    private Component gameModeLabel(CompanionGameMode mode) {
+        return Component.translatable("screen.mineagent.game_mode."
+                + (mode == null ? CompanionGameMode.SURVIVAL : mode).wireName());
     }
 
     private static boolean isValidBaseUrl(String value) {

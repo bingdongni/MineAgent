@@ -127,7 +127,8 @@ public record MineAgentConfig(
                 ? loaded.companion : CompanionConfig.DEFAULTS;
         CompanionConfig companion = new CompanionConfig(
                 nonBlank(rawCompanion.name, CompanionConfig.DEFAULTS.name),
-                nonBlank(rawCompanion.gameMode, CompanionConfig.DEFAULTS.gameMode),
+                com.mineagent.api.entity.CompanionGameMode.orDefault(
+                        rawCompanion.gameMode).wireName(),
                 nonNull(rawCompanion.skinName), rawCompanion.instantBreak,
                 rawCompanion.creativeReach);
 

@@ -49,6 +49,7 @@ public final class CompanionStore {
             String baseUrl,
             double temperature,
             String reasoningEffort,
+            String gameMode,
             String skinName,
             String skinValue,
             String skinSignature,
@@ -68,7 +69,7 @@ public final class CompanionStore {
             Path file = worldDataDir.resolve(FILE_NAME);
 
             JsonObject root = new JsonObject();
-            root.addProperty("version", 1);
+            root.addProperty("version", 2);
             JsonArray arr = new JsonArray();
             for (var c : companions) {
                 JsonObject obj = new JsonObject();
@@ -81,6 +82,7 @@ public final class CompanionStore {
                 obj.addProperty("baseUrl", c.baseUrl() != null ? c.baseUrl() : "");
                 obj.addProperty("temperature", c.temperature());
                 obj.addProperty("reasoningEffort", c.reasoningEffort() != null ? c.reasoningEffort() : "");
+                obj.addProperty("gameMode", c.gameMode() != null ? c.gameMode() : "survival");
                 obj.addProperty("skinName", c.skinName() != null ? c.skinName() : "");
                 obj.addProperty("skinValue", c.skinValue() != null ? c.skinValue() : "");
                 obj.addProperty("skinSignature", c.skinSignature() != null ? c.skinSignature() : "");
@@ -221,6 +223,8 @@ public final class CompanionStore {
                 optionalString(obj, "baseUrl", ""),
                 temperature,
                 emptyToNull(optionalString(obj, "reasoningEffort", null)),
+                com.mineagent.api.entity.CompanionGameMode.orDefault(
+                        optionalString(obj, "gameMode", "survival")).wireName(),
                 optionalString(obj, "skinName", ""),
                 emptyToNull(optionalString(obj, "skinValue", null)),
                 emptyToNull(optionalString(obj, "skinSignature", null)),

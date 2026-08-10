@@ -10,6 +10,7 @@ import com.mineagent.api.task.reflex.ReflexRegistry;
 import com.mineagent.engine.MineAgentEngine;
 import com.mineagent.engine.network.MineAgentNetwork;
 import com.mineagent.engine.entity.CompanionEntity;
+import com.mineagent.api.entity.CompanionGameMode;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.server.MinecraftServer;
@@ -169,7 +170,7 @@ public final class ServerPacketHandler {
                 payload.providerId(), payload.apiKey(), payload.reuseStoredApiKey(),
                 payload.model(),
                 payload.baseUrl(), payload.temperature(),
-                payload.reasoningEffort());
+                payload.reasoningEffort(), payload.gameMode());
     }
 
     private static void sendToolResult(ServerPlayer sender, ExecuteToolPayload request,
@@ -249,7 +250,8 @@ public final class ServerPacketHandler {
                 MineAgentEngine.spawnCompanion(sender, name, cfg.llm().provider(),
                         apiKey, cfg.llm().model(),
                         cfg.llm().baseUrl().isEmpty() ? null : cfg.llm().baseUrl(),
-                        cfg.llm().temperature(), null, false);
+                        cfg.llm().temperature(), null,
+                        CompanionGameMode.orDefault(cfg.companion().gameMode()), false);
                 return;
             }
             case "request_llm_config" -> {
@@ -275,6 +277,12 @@ public final class ServerPacketHandler {
                     MineAgentNetwork.sendUiActionTo(sender,
                             owned.companion.companionId(), "companion_spawned",
                             owned.companion.serverPlayer().getUUID().toString());
+                    MineAgentNetwork.sendUiActionTo(sender,
+                            owned.companion.companionId(), "companion_name",
+                            owned.companion.companionName());
+                    MineAgentNetwork.sendUiActionTo(sender,
+                            owned.companion.companionId(), "companion_game_mode",
+                            owned.companion.gameMode().wireName());
                 }
                 return;
             }
@@ -301,6 +309,18 @@ public final class ServerPacketHandler {
         }
 
         switch (action) {
+            case "set_game_mode" -> {
+                CompanionGameMode mode = CompanionGameMode.parse(data).orElse(null);
+                if (mode == null) {
+                    System.err.println("[MineAgent] Invalid companion game mode: " + data);
+                    return;
+                }
+                if (!MineAgentEngine.setCompanionGameModeByOwner(sender,
+                        payload.companionId(), mode)) {
+                    System.err.println("[MineAgent] Game mode change rejected for companion "
+                            + payload.companionId());
+                }
+            }
             case "open_chat" -> {
                 // The client handles opening the chat UI; this is a no-op on
                 // the server side but we log it for awareness
