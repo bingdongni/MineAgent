@@ -17,8 +17,49 @@ public final class MineAgentPayloads {
     private static final int MAX_JSON = 32_768;
     private static final int MAX_MESSAGE = 4_096;
     private static final int MAX_PATH_NODES = 4_096;
+    private static final int MAX_API_KEY = 16_384;
+    private static final int MAX_MODEL = 256;
+    private static final int MAX_BASE_URL = 2_048;
 
     private MineAgentPayloads() {}
+
+    /** Dedicated credential-bearing request; credentials never enter chat commands. */
+    public record CompanionSetup(String name, String providerId, String apiKey,
+                                 boolean reuseStoredApiKey,
+                                 String model, String baseUrl, double temperature,
+                                 String reasoningEffort) implements CustomPacketPayload {
+        public static final Type<CompanionSetup> TYPE = new Type<>(id("companion_setup"));
+        public static final StreamCodec<FriendlyByteBuf, CompanionSetup> CODEC = StreamCodec.of(
+                (buf, p) -> {
+                    buf.writeUtf(p.name, 64);
+                    buf.writeUtf(p.providerId, 64);
+                    buf.writeUtf(p.apiKey, MAX_API_KEY);
+                    buf.writeBoolean(p.reuseStoredApiKey);
+                    buf.writeUtf(p.model, MAX_MODEL);
+                    buf.writeUtf(p.baseUrl, MAX_BASE_URL);
+                    buf.writeDouble(p.temperature);
+                    buf.writeUtf(p.reasoningEffort, 16);
+                },
+                buf -> new CompanionSetup(buf.readUtf(64), buf.readUtf(64),
+                        buf.readUtf(MAX_API_KEY), buf.readBoolean(), buf.readUtf(MAX_MODEL),
+                        buf.readUtf(MAX_BASE_URL), buf.readDouble(), buf.readUtf(16)));
+
+        public CompanionSetup {
+            // Reuse the loader-neutral constructor so wire and engine limits
+            // cannot silently drift apart.
+            var checked = new com.mineagent.api.network.payload.CompanionSetupPayload(
+                    name, providerId, apiKey, reuseStoredApiKey, model, baseUrl, temperature,
+                    reasoningEffort);
+            name = checked.name();
+            providerId = checked.providerId();
+            apiKey = checked.apiKey();
+            model = checked.model();
+            baseUrl = checked.baseUrl();
+            reasoningEffort = checked.reasoningEffort();
+        }
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
 
     public record ExecuteTool(UUID companionId, String toolCallId, String toolName,
                               String arguments) implements CustomPacketPayload {

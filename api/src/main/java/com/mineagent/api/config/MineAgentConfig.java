@@ -183,7 +183,7 @@ public record MineAgentConfig(
      *
      * @param configDir the platform config directory
      */
-    public void save(Path configDir) {
+    public boolean save(Path configDir) {
         Path configFile = configDir.resolve("mineagent.json");
         try {
             Files.createDirectories(configFile.getParent());
@@ -191,8 +191,10 @@ public record MineAgentConfig(
                 GSON.toJson(this, writer);
             }
             System.out.println("[MineAgent] Config saved to " + configFile);
+            return true;
         } catch (Exception e) {
             System.err.println("[MineAgent] Failed to save config: " + e.getMessage());
+            return false;
         }
     }
 }

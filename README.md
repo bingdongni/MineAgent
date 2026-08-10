@@ -7,6 +7,25 @@
 
 MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服务端创建无真实网络连接的假玩家，并让 AI 通过移动、采集、挖掘、建造、战斗、合成、物品管理和生存本能与世界交互。
 
+## v0.3.5：统一配置与开放模型接入
+
+- “创建 AI 伙伴”和“模型连接”已合并为一个页面，可一次填写伙伴名称、协议适配器、任意模型 ID、API Key、Base URL 和思考强度后保存并创建；主菜单不再保留重复入口。
+- 厂商按钮改为一个紧凑的可选预设菜单。预设只负责填充字段，不是模型白名单；模型 ID、接口地址和已注册适配器 ID 始终可以自由输入。
+- 新增 `openai-compatible`、`anthropic-compatible` 和 `gemini-compatible` 三个稳定协议 ID，原有九个厂商 ID 继续作为兼容别名，旧配置和已保存伙伴无需迁移。
+- 配置与创建通过专用网络 payload 原子提交，不再把 API Key 放进 slash 命令。服务端只向页面返回非敏感摘要，创建失败不会留下半更新配置；连接目标改变时也不会把旧密钥自动发送到新地址。
+- OpenAI 兼容适配器支持无鉴权的本地 Ollama、LM Studio、vLLM 等服务；官方或中转端点仍会按自身鉴权规则拒绝缺失/错误密钥，Anthropic 与 Gemini 原生协议会在请求前校验密钥。完整 endpoint、`/v1` 根地址和主机根地址都会规范化为唯一请求路径。
+
+### 模型与 API 兼容范围
+
+| 适配器 ID | 内置协议 | 可接入范围 |
+| --- | --- | --- |
+| `openai-compatible` | Chat Completions + function calling | OpenAI 兼容的官方接口、中转、聚合平台和本地服务 |
+| `anthropic-compatible` | Anthropic Messages + tools | Anthropic 官方接口及保持该协议与鉴权语义的中转 |
+| `gemini-compatible` | Gemini `generateContent` + function calling | Google 官方接口及保持该协议语义的中转 |
+| 自定义注册 ID | `LLMProviderRegistry` 扩展 | 由其他模组或后续版本提供的私有/新协议适配器 |
+
+MineAgent 不按型号维护允许列表，因此兼容端点发布的新模型通常只需输入新模型 ID。尚未公开、与三种内置协议不兼容的未来私有 API 无法被当前版本预先保证，必须注册对应 `LLMProvider` 适配器；这是协议事实边界，不是厂商名称限制。
+
 ## v0.3.1：复杂单人任务闭环稳定性
 
 - 长程计划现在区分战术步骤完成与战略目标验收。`goal_conditions` 使用实时语义世界事实验证库存、状态或其他可观察后置条件；缺少最终证据时计划保持在 `verifying`，不会因为最后一个动作返回成功就提前宣布整个目标完成。
@@ -69,7 +88,7 @@ MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服�
 - 统一世界资产索引：追踪背包、装备、已检查容器、掉落物和已知设施，并按物品或能力决定复用、取回或制造
 - 基于游戏实时注册表的配方发现与模组物品兼容，不依赖固定的原版物品清单
 - 多伴游管理、皮肤、状态 HUD、路径与视觉调试
-- OpenAI、DeepSeek、Qwen、GLM、Moonshot、Grok、MiniMax、Anthropic 和 Gemini
+- 任意模型 ID，以及 OpenAI Chat Completions、Anthropic Messages、Gemini `generateContent` 兼容接口和可注册的第三方协议适配器
 
 ## 安装
 
@@ -89,7 +108,7 @@ MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服�
 
 ## 快速开始
 
-首次启动会生成 `config/mineagent.json`。填写 LLM 提供者、模型和 API Key 后，可在游戏内运行：
+首次启动会生成 `config/mineagent.json`。按 `M` 打开主菜单，进入“配置并创建 AI 伙伴”，一次填写协议、模型、接口和密钥即可创建。也可以先手动配置文件，再在游戏内运行：
 
 ```text
 /mineagent quick
@@ -152,8 +171,8 @@ Linux/macOS：
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.3.1.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.3.1.jar`
+- `fabric/build/libs/mineagent-fabric-0.3.5.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.3.5.jar`
 
 ## 项目结构
 

@@ -134,6 +134,18 @@ public final class MineAgentEngine {
         LLMProviderRegistry.register(OpenAICompatibleProvider.minimax());
         LLMProviderRegistry.register(new AnthropicProvider());
         LLMProviderRegistry.register(new GeminiProvider());
+        // Vendor-neutral aliases are the public compatibility boundary. Old
+        // vendor ids above remain registered so existing configs and stored
+        // companions keep working after the v0.3.5 migration.
+        LLMProviderRegistry.register(new ProtocolAliasProvider(
+                "openai-compatible", "OpenAI Chat Completions compatible",
+                OpenAICompatibleProvider.openai(), false));
+        LLMProviderRegistry.register(new ProtocolAliasProvider(
+                "anthropic-compatible", "Anthropic Messages compatible",
+                new AnthropicProvider()));
+        LLMProviderRegistry.register(new ProtocolAliasProvider(
+                "gemini-compatible", "Gemini generateContent compatible",
+                new GeminiProvider()));
 
         // Register survival instinct chains (H1 fix)
         // Build SurvivalConfig from the loaded MineAgentConfig
@@ -668,6 +680,89 @@ public final class MineAgentEngine {
                     + initializationError);
             return null;
         }
+    }
+
+    /**
+     * Create a companion and persist its complete connection configuration as
+     * one server-thread operation.
+     *
+     * <p>The config is replaced only after {@link #spawnCompanion} succeeds,
+     * so duplicate names, owner limits, malformed endpoints, or fake-player
+     * failures cannot leave a partially applied provider/model/key tuple.
+     * A blank API key can reuse the stored secret only when the caller asks to
+     * do so and the server independently proves that protocol, model, and
+     * effective endpoint are unchanged.
+     */
+    public static CompanionEntity configureAndSpawnCompanion(
+            ServerPlayer owner, String name, String providerId, String apiKey,
+            boolean reuseStoredApiKey,
+            String model, String baseUrl, double temperature,
+        String reasoningEffort) {
+        var previous = config.llm();
+        String resolvedProvider = providerId == null ? "" : providerId.trim();
+        String resolvedModel = model == null ? "" : model.trim();
+        String resolvedBaseUrl = baseUrl == null ? "" : baseUrl.trim();
+        boolean mayReuseStoredKey = reuseStoredApiKey
+                && sameConnection(previous, resolvedProvider,
+                        resolvedModel, resolvedBaseUrl);
+        String resolvedKey = apiKey == null || apiKey.isBlank()
+                ? (mayReuseStoredKey ? previous.apiKey() : "") : apiKey;
+        String resolvedName = name == null || name.isBlank()
+                ? resolvedModel : name.trim();
+        String resolvedEffort = reasoningEffort == null || reasoningEffort.isBlank()
+                ? null : reasoningEffort.trim().toLowerCase(Locale.ROOT);
+
+        CompanionEntity companion = spawnCompanion(owner, resolvedName,
+                resolvedProvider, resolvedKey, resolvedModel,
+                resolvedBaseUrl.isEmpty() ? null : resolvedBaseUrl,
+                temperature, resolvedEffort, false);
+        if (companion == null) return null;
+
+        MineAgentConfig.LLMConfig llm = new MineAgentConfig.LLMConfig(
+                resolvedProvider, resolvedKey, resolvedModel, resolvedBaseUrl,
+                temperature, previous.maxTokens());
+        config = new MineAgentConfig(llm, config.companion(),
+                config.survival(), config.pathfinding());
+        if (configDirPath != null && !config.save(configDirPath)) {
+            owner.sendSystemMessage(Component.literal(
+                    "[MineAgent] Companion created, but the connection settings "
+                            + "could not be saved to disk."));
+        }
+        return companion;
+    }
+
+    private static boolean sameConnection(MineAgentConfig.LLMConfig previous,
+                                          String providerId, String model,
+                                          String baseUrl) {
+        if (previous == null || !Objects.equals(previous.model(), model)) return false;
+        if (!canonicalProtocol(previous.provider())
+                .equals(canonicalProtocol(providerId))) {
+            return false;
+        }
+        return effectiveBaseUrl(previous.provider(), previous.baseUrl())
+                .equals(effectiveBaseUrl(providerId, baseUrl));
+    }
+
+    private static String canonicalProtocol(String providerId) {
+        if (providerId == null) return "";
+        return switch (providerId.trim().toLowerCase(Locale.ROOT)) {
+            case "openai", "deepseek", "qwen", "glm", "moonshot", "grok",
+                    "minimax", "openai-compatible" -> "openai-compatible";
+            case "anthropic", "anthropic-compatible" -> "anthropic-compatible";
+            case "gemini", "gemini-compatible" -> "gemini-compatible";
+            default -> providerId.trim().toLowerCase(Locale.ROOT);
+        };
+    }
+
+    private static String effectiveBaseUrl(String providerId, String configured) {
+        String base = configured == null ? "" : configured.trim();
+        if (base.isEmpty()) {
+            base = LLMProviderRegistry.get(providerId)
+                    .map(com.mineagent.api.llm.provider.LLMProvider::defaultBaseUrl)
+                    .orElse("");
+        }
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        return base;
     }
 
     /**
@@ -1647,7 +1742,8 @@ public final class MineAgentEngine {
                             sb.append("§e  - ").append(p.providerId())
                               .append("§7 (").append(p.displayName()).append(")§r\n");
                         }
-                        sb.append("\n§7Use §e/mineagent models [provider]§7 to see models.");
+                        sb.append("\n§7Use §e/mineagent models [provider]§7 to see example model IDs.");
+                        sb.append("\n§7Compatible adapters also accept model IDs not listed here.");
                         source.sendSuccess(() -> Component.literal(sb.toString()), false);
                         return providers.size();
                     })
@@ -1658,7 +1754,7 @@ public final class MineAgentEngine {
                         // No argument → show all providers and their models
                         var source = ctx.getSource();
                         var providers = LLMProviderRegistry.all();
-                        StringBuilder sb = new StringBuilder("§6[MineAgent] All Models:\n");
+                        StringBuilder sb = new StringBuilder("§6[MineAgent] Example Models:\n");
                         for (var p : providers) {
                             sb.append("\n§e").append(p.providerId())
                               .append("§7 (").append(p.displayName()).append("):§r\n");
@@ -1687,12 +1783,14 @@ public final class MineAgentEngine {
                             }
                             var p = providerOpt.get();
                             StringBuilder sb = new StringBuilder();
-                            sb.append("§6[MineAgent] Models for §e").append(p.displayName()).append("§r:\n");
+                            sb.append("§6[MineAgent] Example models for §e")
+                                    .append(p.displayName()).append("§r:\n");
                             var models = p.defaultModels();
                             for (int i = 0; i < models.size(); i++) {
                                 sb.append("  §7").append(models.get(i));
                                 if (i < models.size() - 1) sb.append("\n");
                             }
+                            sb.append("\n§7Any model ID accepted by this endpoint may be entered directly.");
                             source.sendSuccess(() -> Component.literal(sb.toString()), false);
                             return 1;
                         })
@@ -2163,13 +2261,6 @@ public final class MineAgentEngine {
                     "§c[MineAgent] Invalid effort. Use: off, low, medium, high, xhigh, max"));
             return 0;
         }
-        if (cfgApiKey == null || cfgApiKey.isBlank()) {
-            source.sendFailure(Component.literal(
-                    "§c[MineAgent] No API key in config! Edit mineagent.json or use /mineagent spawn."));
-            source.sendFailure(Component.literal("§7Config file: config/mineagent.json"));
-            return 0;
-        }
-
         CompanionEntity companion = spawnCompanion(
                 owner, name, cfgProvider, cfgApiKey, cfgModel,
                 config.llm().baseUrl().isEmpty() ? null : config.llm().baseUrl(),
@@ -2225,8 +2316,13 @@ public final class MineAgentEngine {
                 || LLMProviderRegistry.get(providerId).isEmpty()) {
             return "unknown LLM provider '" + providerId + "'";
         }
-        if (apiKey == null || apiKey.isBlank() || apiKey.length() > 16384) {
-            return "API key is missing or too long";
+        var provider = LLMProviderRegistry.get(providerId).orElse(null);
+        if (apiKey != null && apiKey.length() > 16384) {
+            return "API key is too long";
+        }
+        if (provider != null && provider.requiresApiKey()
+                && (apiKey == null || apiKey.isBlank())) {
+            return "API key is missing";
         }
         if (model == null || model.isBlank() || model.length() > 256) {
             return "model must be 1-256 characters";

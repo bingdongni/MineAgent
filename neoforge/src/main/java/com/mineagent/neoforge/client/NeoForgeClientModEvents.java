@@ -21,7 +21,11 @@ public final class NeoForgeClientModEvents {
     }
 
     public static void onClientSetup(FMLClientSetupEvent event) {
-        event.enqueueWork(() -> MineAgentClientController.setUiActionSender(
-                NeoForgeClientPayloadHandler::sendUiAction));
+        event.enqueueWork(() -> {
+            MineAgentClientController.setUiActionSender(
+                    NeoForgeClientPayloadHandler::sendUiAction);
+            MineAgentClientController.setCompanionSetupSender(
+                    NeoForgeClientPayloadHandler::sendCompanionSetup);
+        });
     }
 }

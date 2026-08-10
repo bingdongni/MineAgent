@@ -71,7 +71,7 @@ public class OpenAICompatibleProvider implements LLMProvider {
                                  double temperature, int maxTokens,
                                  String reasoningEffort) {
         ProviderSupport.validateRequest(
-                providerId, apiKey, model, messages, temperature, maxTokens);
+                providerId, apiKey, model, messages, temperature, maxTokens, false);
         String resolvedBaseUrl = ProviderSupport.validatedBaseUrl(
                 baseUrl, defaultBaseUrl, providerId);
         try {
@@ -87,13 +87,18 @@ public class OpenAICompatibleProvider implements LLMProvider {
             String url = ProviderSupport.endpoint(
                     resolvedBaseUrl, "/v1/chat/completions");
 
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + apiKey)
                     .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
-                    .timeout(Duration.ofSeconds(120))
-                    .build();
+                    .timeout(Duration.ofSeconds(120));
+            // Local OpenAI-compatible servers commonly run without auth. Do
+            // not emit an empty Bearer header; hosted vendor aliases still
+            // reject a missing key during spawn validation.
+            if (apiKey != null && !apiKey.isBlank()) {
+                requestBuilder.header("Authorization", "Bearer " + apiKey);
+            }
+            HttpRequest request = requestBuilder.build();
 
             HttpResponse<String> response = HTTP_CLIENT.send(request,
                     HttpResponse.BodyHandlers.ofString());

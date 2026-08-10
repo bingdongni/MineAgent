@@ -7,6 +7,25 @@ English | [简体中文](README.md)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
 
+## v0.3.5: unified setup and open model connectivity
+
+- Create Companion and Model Connection are now one screen. Name, protocol adapter, arbitrary model ID, API key, base URL, and reasoning effort can be entered once and submitted with Save & Create; the duplicate main-menu entry is gone.
+- The vendor button grid is now one compact optional preset selector. Presets only fill fields and never form a model allow-list; model IDs, endpoints, and registered adapter IDs remain editable.
+- Stable `openai-compatible`, `anthropic-compatible`, and `gemini-compatible` protocol IDs are built in. The previous nine vendor IDs remain compatibility aliases, so old configuration and stored companions continue to work.
+- Setup uses a dedicated atomic network payload instead of slash commands containing credentials. The server returns only a non-secret summary, failed creation cannot leave a partially updated tuple, and a saved key is not reused after the connection target changes.
+- The OpenAI-compatible adapter supports unauthenticated local Ollama, LM Studio, and vLLM endpoints. Official and relay endpoints still reject missing/invalid credentials according to their own auth rules, while native Anthropic and Gemini adapters validate the key before a request. Host roots, `/v1` roots, and complete endpoints are normalized without duplicated paths.
+
+### Model and API compatibility
+
+| Adapter ID | Built-in protocol | Connection scope |
+| --- | --- | --- |
+| `openai-compatible` | Chat Completions + function calling | Compatible official APIs, relays, aggregators, and local servers |
+| `anthropic-compatible` | Anthropic Messages + tools | Anthropic and relays preserving its protocol/auth semantics |
+| `gemini-compatible` | Gemini `generateContent` + function calling | Google and relays preserving its protocol semantics |
+| Custom registered ID | `LLMProviderRegistry` extension | Private or new protocols supplied by another mod or a later release |
+
+MineAgent does not maintain a model-name allow-list, so a compatible endpoint's new model normally works by entering its new ID. A future private API that has not been published and is incompatible with all three built-in protocols cannot truthfully be guaranteed in advance; it requires an `LLMProvider` adapter. This is a protocol boundary, not a vendor-name restriction.
+
 ## v0.3.1: complex single-player task closure
 
 - Long-horizon plans now distinguish tactical completion from strategic acceptance. `goal_conditions` verify inventory, state, or other observable postconditions against the live semantic world model; without final evidence the plan remains `verifying` instead of declaring the owner's goal complete after one successful action.
@@ -69,7 +88,7 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 - A unified world-asset index for inventory, equipment, inspected storage, drops, and known facilities, supporting reuse/retrieve/produce decisions by item or capability
 - Live registry-backed recipe discovery for vanilla and modded items instead of a fixed vanilla item list
 - Multi-companion management, skins, status HUD, and path/vision debugging
-- OpenAI, DeepSeek, Qwen, GLM, Moonshot, Grok, MiniMax, Anthropic, and Gemini providers
+- Arbitrary model IDs through OpenAI Chat Completions, Anthropic Messages, Gemini `generateContent`, and registrable third-party protocol adapters
 
 ## Installation
 
@@ -89,7 +108,7 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 
 ## Quick start
 
-The first launch creates `config/mineagent.json`. Set the LLM provider, model, and API key, then run:
+The first launch creates `config/mineagent.json`. Press `M`, open Configure & Create, and enter protocol, model, endpoint, and key once. You can also edit the file first and then run:
 
 ```text
 /mineagent quick
@@ -144,8 +163,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.3.1.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.3.1.jar`
+- `fabric/build/libs/mineagent-fabric-0.3.5.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.3.5.jar`
 
 ## Modules
 

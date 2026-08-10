@@ -7,12 +7,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A provider for LLM completions — implements the wire protocol for a
- * specific model family (OpenAI, Anthropic, Google, etc.).
+ * A provider for LLM completions. Implementations translate MineAgent's
+ * unified messages and tool schemas to one concrete wire protocol.
  *
- * <p>All providers use the OpenAI-compatible chat completions API format
- * (most providers now support this), but each has its own endpoint, auth,
- * and quirks that this interface abstracts away.
+ * <p>The registry is intentionally open: built-in adapters cover OpenAI Chat
+ * Completions, Anthropic Messages, and Gemini generateContent, while another
+ * mod can register a provider for a private or future protocol.
  */
 public interface LLMProvider {
 
@@ -24,6 +24,18 @@ public interface LLMProvider {
 
     /** The default base URL for this provider's API. */
     String defaultBaseUrl();
+
+    /**
+     * Whether companion creation must reject an empty API key.
+     *
+     * <p>Official hosted adapters require authentication by default. Local or
+     * custom adapters may override this for endpoints such as Ollama, LM
+     * Studio, or vLLM that intentionally expose an unauthenticated compatible
+     * API on the user's own machine.
+     */
+    default boolean requiresApiKey() {
+        return true;
+    }
 
     /**
      * Execute a chat completion request.

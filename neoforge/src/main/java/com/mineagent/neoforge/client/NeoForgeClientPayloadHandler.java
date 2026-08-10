@@ -1,6 +1,7 @@
 package com.mineagent.neoforge.client;
 
 import com.mineagent.api.network.payload.ClientUiActionPayload;
+import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.api.network.payload.PathDebugPayload;
 import com.mineagent.api.network.payload.TaskResultPayload;
 import com.mineagent.engine.client.MineAgentClientController;
@@ -38,5 +39,13 @@ public final class NeoForgeClientPayloadHandler {
     public static void sendUiAction(ClientUiActionPayload payload) {
         PacketDistributor.sendToServer(new MineAgentNeoForgePayloads.UiAction(
                 payload.companionId(), payload.action(), payload.data()));
+    }
+
+    public static void sendCompanionSetup(CompanionSetupPayload payload) {
+        PacketDistributor.sendToServer(new MineAgentNeoForgePayloads.CompanionSetup(
+                payload.name(), payload.providerId(), payload.apiKey(),
+                payload.reuseStoredApiKey(), payload.model(), payload.baseUrl(),
+                payload.temperature(),
+                payload.reasoningEffort()));
     }
 }

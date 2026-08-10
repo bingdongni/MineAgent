@@ -42,6 +42,10 @@ final class ProviderSupport {
 
     /** Append an API path without duplicating a user-supplied /v1 segment. */
     static String endpoint(String base, String apiPath) {
+        // Some relay dashboards expose a complete endpoint while others expose
+        // only the host or version root. Accept all three forms without ever
+        // duplicating /v1/chat/completions or /v1/messages.
+        if (base.endsWith(apiPath)) return base;
         int nextSlash = apiPath.indexOf('/', 1);
         String versionPrefix = nextSlash > 0
                 ? apiPath.substring(0, nextSlash) : apiPath;
@@ -53,7 +57,14 @@ final class ProviderSupport {
     static void validateRequest(String provider, String apiKey, String model,
                                 List<ChatMessage> messages, double temperature,
                                 int maxTokens) {
-        if (apiKey == null || apiKey.isBlank()) {
+        validateRequest(provider, apiKey, model, messages, temperature,
+                maxTokens, true);
+    }
+
+    static void validateRequest(String provider, String apiKey, String model,
+                                List<ChatMessage> messages, double temperature,
+                                int maxTokens, boolean apiKeyRequired) {
+        if (apiKeyRequired && (apiKey == null || apiKey.isBlank())) {
             throw new IllegalArgumentException(provider + " API key is not configured");
         }
         if (model == null || model.isBlank()) {

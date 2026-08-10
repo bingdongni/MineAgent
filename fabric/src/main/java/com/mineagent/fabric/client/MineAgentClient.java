@@ -1,6 +1,7 @@
 package com.mineagent.fabric.client;
 
 import com.mineagent.api.network.payload.ClientUiActionPayload;
+import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.api.network.payload.PathDebugPayload;
 import com.mineagent.api.network.payload.TaskResultPayload;
 import com.mineagent.engine.client.MineAgentClientController;
@@ -29,6 +30,7 @@ public final class MineAgentClient implements ClientModInitializer {
 
         // Screens send API payloads through this injected Fabric transport.
         MineAgentClientController.setUiActionSender(MineAgentClient::sendUiAction);
+        MineAgentClientController.setCompanionSetupSender(MineAgentClient::sendCompanionSetup);
 
         ClientTickEvents.END_CLIENT_TICK.register(
                 MineAgentClientController::onClientTick);
@@ -97,5 +99,19 @@ public final class MineAgentClient implements ClientModInitializer {
         }
         throw new IllegalStateException(
                 "server did not register MineAgent UI payloads");
+    }
+
+    private static void sendCompanionSetup(CompanionSetupPayload payload) {
+        var type = MineAgentPayloads.CompanionSetup.TYPE;
+        if (ClientPlayNetworking.canSend(type)) {
+            ClientPlayNetworking.send(new MineAgentPayloads.CompanionSetup(
+                    payload.name(), payload.providerId(), payload.apiKey(),
+                    payload.reuseStoredApiKey(), payload.model(), payload.baseUrl(),
+                    payload.temperature(),
+                    payload.reasoningEffort()));
+            return;
+        }
+        throw new IllegalStateException(
+                "server did not register MineAgent setup payloads");
     }
 }

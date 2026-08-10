@@ -114,6 +114,9 @@ public class MineAgentFabric implements ModInitializer {
         net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playC2S()
                 .register(com.mineagent.fabric.network.MineAgentPayloads.CancelTasks.TYPE,
                         com.mineagent.fabric.network.MineAgentPayloads.CancelTasks.CODEC);
+        net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playC2S()
+                .register(com.mineagent.fabric.network.MineAgentPayloads.CompanionSetup.TYPE,
+                        com.mineagent.fabric.network.MineAgentPayloads.CompanionSetup.CODEC);
         net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playS2C()
                 .register(com.mineagent.fabric.network.MineAgentPayloads.TaskResult.TYPE,
                         com.mineagent.fabric.network.MineAgentPayloads.TaskResult.CODEC);
@@ -148,6 +151,17 @@ public class MineAgentFabric implements ModInitializer {
                                 context.server(), context.player(),
                                 new com.mineagent.api.network.payload.CancelTasksPayload(
                                         payload.companionId()))));
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.mineagent.fabric.network.MineAgentPayloads.CompanionSetup.TYPE,
+                (payload, context) -> context.server().execute(() ->
+                        com.mineagent.engine.network.handler.ServerPacketHandler
+                                .onCompanionSetup(context.server(), context.player(),
+                                        new com.mineagent.api.network.payload.CompanionSetupPayload(
+                                                payload.name(), payload.providerId(),
+                                                payload.apiKey(), payload.reuseStoredApiKey(),
+                                                payload.model(),
+                                                payload.baseUrl(), payload.temperature(),
+                                                payload.reasoningEffort()))));
 
         // Engine → client push bridge (companion_chat / companion_task / ...)
         MineAgentNetwork.setUiActionSender((player, payload) -> {

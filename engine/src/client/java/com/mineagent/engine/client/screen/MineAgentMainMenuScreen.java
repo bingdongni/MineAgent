@@ -47,18 +47,16 @@ public class MineAgentMainMenuScreen extends Screen {
         chatButton = addMenuButton("screen.mineagent.menu.chat", 1, 0, columnWidth,
                 ignored -> Minecraft.getInstance().setScreen(new CompanionChatScreen(
                         MineAgentClientController.getCompanionId())));
-        addMenuButton("screen.mineagent.menu.connection", 0, 1, columnWidth,
-                ignored -> Minecraft.getInstance().setScreen(new ModelSelectScreen()));
-        addMenuButton("screen.mineagent.menu.runtime", 1, 1, columnWidth,
+        addMenuButton("screen.mineagent.menu.runtime", 0, 1, columnWidth,
                 ignored -> Minecraft.getInstance().setScreen(new ConfigEditScreen()));
-        addMenuButton("screen.mineagent.menu.appearance", 0, 2, columnWidth,
+        addMenuButton("screen.mineagent.menu.appearance", 1, 1, columnWidth,
                 ignored -> Minecraft.getInstance().setScreen(new SkinSelectScreen()));
-        addMenuButton("screen.mineagent.menu.list", 1, 2, columnWidth,
+        addMenuButton("screen.mineagent.menu.list", 0, 2, columnWidth,
                 ignored -> requestCompanionList());
-        addMenuButton("screen.mineagent.menu.help", 0, 3, columnWidth,
+        addMenuButton("screen.mineagent.menu.help", 1, 2, columnWidth,
                 ignored -> Minecraft.getInstance().setScreen(new HelpScreen()));
-        removeButton = addMenuButton("screen.mineagent.menu.remove", 1, 3,
-                columnWidth, ignored -> removeCompanion());
+        removeButton = addMenuButton("screen.mineagent.menu.remove", 0, 3,
+                innerWidth, ignored -> removeCompanion());
 
         int closeY = buttonsY + 4 * BUTTON_HEIGHT + 3 * ROW_GAP + 8;
         this.addRenderableWidget(Button.builder(Component.translatable("gui.done"),

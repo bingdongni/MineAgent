@@ -1,14 +1,18 @@
 package com.mineagent.engine.client;
 
 import com.mineagent.api.network.payload.ClientUiActionPayload;
+import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.api.network.payload.PathDebugPayload;
 import com.mineagent.api.network.payload.TaskResultPayload;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.mineagent.engine.client.render.CompanionLabelRenderer;
 import com.mineagent.engine.client.render.CompanionVisionRenderer;
 import com.mineagent.engine.client.render.PathDebugRenderer;
 import com.mineagent.engine.client.screen.CompanionChatScreen;
 import com.mineagent.engine.client.screen.CompanionStatusPanel;
 import com.mineagent.engine.client.screen.MineAgentMainMenuScreen;
+import com.mineagent.engine.client.screen.SpawnCompanionScreen;
 import com.mineagent.engine.network.handler.ClientPacketHandler;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.ChatFormatting;
@@ -51,6 +55,8 @@ public final class MineAgentClientController {
 
     private static volatile Consumer<ClientUiActionPayload> uiActionSender =
             payload -> System.err.println("[MineAgent] Client network sender is not initialized");
+    private static volatile Consumer<CompanionSetupPayload> companionSetupSender =
+            payload -> System.err.println("[MineAgent] Client setup sender is not initialized");
     private static volatile UUID companionId;
     private static volatile boolean companionSpawned;
     private static CompanionChatScreen chatScreen;
@@ -66,6 +72,13 @@ public final class MineAgentClientController {
     public static void setUiActionSender(Consumer<ClientUiActionPayload> sender) {
         uiActionSender = sender == null
                 ? payload -> System.err.println("[MineAgent] Client network sender is not initialized")
+                : sender;
+    }
+
+    /** Install the loader-specific transport for the credential-bearing setup request. */
+    public static void setCompanionSetupSender(Consumer<CompanionSetupPayload> sender) {
+        companionSetupSender = sender == null
+                ? payload -> System.err.println("[MineAgent] Client setup sender is not initialized")
                 : sender;
     }
 
@@ -194,6 +207,7 @@ public final class MineAgentClientController {
                     chatScreen.updateCurrentAction(task);
                 }
             }
+            case "llm_config" -> applyLlmConfigSummary(client, payload.data());
             default -> {
                 // Forward compatibility: older clients safely ignore new UI
                 // actions instead of disconnecting from a newer server.
@@ -253,6 +267,26 @@ public final class MineAgentClientController {
         } catch (RuntimeException transportFailure) {
             System.err.println("[MineAgent] Failed to send UI action '"
                     + payload.action() + "': " + transportFailure.getMessage());
+        }
+    }
+
+    /** Send a complete setup request without exposing its API key to commands or logs. */
+    public static void sendCompanionSetup(CompanionSetupPayload payload) {
+        if (payload == null) return;
+        Minecraft client = Minecraft.getInstance();
+        if (client.getConnection() == null) {
+            if (client.player != null) {
+                client.player.displayClientMessage(Component.literal(
+                        "MineAgent is not connected to a server")
+                        .withStyle(ChatFormatting.RED), false);
+            }
+            return;
+        }
+        try {
+            companionSetupSender.accept(payload);
+        } catch (RuntimeException transportFailure) {
+            System.err.println("[MineAgent] Failed to send companion setup: "
+                    + transportFailure.getMessage());
         }
     }
 
@@ -361,6 +395,26 @@ public final class MineAgentClientController {
         } catch (NumberFormatException malformedStatus) {
             // A malformed optional status update must not disconnect or crash
             // the client; the tracked entity remains the fallback data source.
+        }
+    }
+
+    private static void applyLlmConfigSummary(Minecraft client, String data) {
+        if (!(client.screen instanceof SpawnCompanionScreen setupScreen)
+                || data == null || data.isBlank()) {
+            return;
+        }
+        try {
+            JsonObject object = JsonParser.parseString(data).getAsJsonObject();
+            setupScreen.applyServerConfig(
+                    object.has("provider") ? object.get("provider").getAsString() : "",
+                    object.has("model") ? object.get("model").getAsString() : "",
+                    object.has("baseUrl") ? object.get("baseUrl").getAsString() : "",
+                    object.has("temperature") ? object.get("temperature").getAsDouble() : 0.7,
+                    object.has("apiKeyConfigured")
+                            && object.get("apiKeyConfigured").getAsBoolean());
+        } catch (RuntimeException malformedSummary) {
+            // The summary is display-only. Never destroy in-progress edits or
+            // disconnect a player because an older server sent malformed data.
         }
     }
 

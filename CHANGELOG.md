@@ -2,6 +2,31 @@
 
 All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
 
+## [0.3.5] - 2026-08-10
+
+### Added
+
+- Add vendor-neutral `openai-compatible`, `anthropic-compatible`, and `gemini-compatible` protocol IDs while retaining all legacy provider IDs.
+- Add a dedicated credential-bearing `companion_setup` payload on Fabric and NeoForge, with shared field limits, control-character rejection, and server-authoritative validation.
+- Add arbitrary model-ID and custom registered-adapter entry, compact vendor presets, hidden/revealable API-key input, and non-secret server configuration summaries.
+- Add no-auth OpenAI-compatible support for local Ollama, LM Studio, vLLM, and similar endpoints.
+- Add regression tests for arbitrary future model IDs, setup validation, protocol aliases, and endpoint path normalization.
+
+### Changed
+
+- Merge Create Companion and Model Connection into one responsive two-column page and remove the duplicate control-panel route.
+- Treat provider presets and `/mineagent models` output as examples rather than an allow-list.
+- Persist a complete connection tuple only after companion creation succeeds.
+- Reuse a stored API key only when protocol, model, and endpoint still match the server summary, preventing credential forwarding after a target change.
+- Accept host roots, version roots, and complete OpenAI/Anthropic endpoint paths without duplicating API suffixes.
+
+### Fixed
+
+- Prevent invalid effort or connection fields from partially updating global configuration through a sequence of slash commands.
+- Prevent API keys from entering command history, chat feedback, or ordinary server logs during visual setup.
+- Prevent the global API-key requirement from rejecting intentionally unauthenticated local adapters.
+- Preserve third-party provider IDs returned by the server instead of silently remapping them to OpenAI compatibility.
+
 ## [0.3.1] - 2026-08-06
 
 ### Added

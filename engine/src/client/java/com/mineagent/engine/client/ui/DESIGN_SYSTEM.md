@@ -26,8 +26,8 @@ Minecraft 原生像素风格，同时避免在世界画面上叠加多个同权�
 
 - 所有面板通过 `centeredPanel` 先限制尺寸，再计算坐标。
 - 标准外边距为 10px，面板内边距为 12px，按钮/输入框高度为 20px。
-- 创建、连接和运行设置使用两栏字段，字段标签与输入框之间保留 2px。
-- Provider 快选只在高度足够时显示；小 GUI 高度仍保留全部必填字段和操作。
+- 统一创建与连接页面使用两栏字段，字段标签与输入框之间保留 2px。
+- 厂商预设使用一个紧凑循环选择器，并且只在高度足够时显示；小 GUI 高度仍保留协议、模型、密钥、地址、身份和操作。
 - 帮助页使用 scissor 裁剪和统一滚动偏移，禁止分别 clamp 每一行文字。
 - 聊天页底部固定为“反射开关、伙伴操作、输入”三行，任何宽度下都不使用左右悬浮按钮组。
 
@@ -36,8 +36,7 @@ Minecraft 原生像素风格，同时避免在世界画面上叠加多个同权�
 | 页面 | 职责 |
 |---|---|
 | Control Panel | 状态与一级导航 |
-| Create Companion | 名称、Provider、模型和本次创建的思考强度 |
-| Model Connection | 全局 Provider、模型、API Key 和 Base URL |
+| Configure & Create | 名称、协议适配器、任意模型 ID、API Key、Base URL 和本次创建的思考强度 |
 | Runtime Settings | 温度、默认名称和在线伙伴思考强度 |
 | Appearance | 内置皮肤与玩家皮肤 |
 | Companion Chat | 对话、反射开关和伙伴移除 |

@@ -4,6 +4,7 @@ import com.mineagent.api.agent.tool.Tool;
 import com.mineagent.api.agent.tool.ToolRegistry;
 import com.mineagent.api.network.payload.CancelTasksPayload;
 import com.mineagent.api.network.payload.ClientUiActionPayload;
+import com.mineagent.api.network.payload.CompanionSetupPayload;
 import com.mineagent.api.network.payload.ExecuteToolPayload;
 import com.mineagent.api.task.reflex.ReflexRegistry;
 import com.mineagent.engine.MineAgentEngine;
@@ -155,6 +156,22 @@ public final class ServerPacketHandler {
                 + payload.companionId());
     }
 
+    /**
+     * Apply one complete connection tuple and create its companion.
+     *
+     * <p>The engine owns validation and commit ordering. The packet handler
+     * never logs the payload because it contains a credential.
+     */
+    public static void onCompanionSetup(MinecraftServer server, ServerPlayer sender,
+                                        CompanionSetupPayload payload) {
+        if (server == null || sender == null || payload == null) return;
+        MineAgentEngine.configureAndSpawnCompanion(sender, payload.name(),
+                payload.providerId(), payload.apiKey(), payload.reuseStoredApiKey(),
+                payload.model(),
+                payload.baseUrl(), payload.temperature(),
+                payload.reasoningEffort());
+    }
+
     private static void sendToolResult(ServerPlayer sender, ExecuteToolPayload request,
                                        boolean success, String message) {
         com.mineagent.engine.network.MineAgentNetwork.sendTaskResultTo(sender,
@@ -226,11 +243,6 @@ public final class ServerPacketHandler {
                 // config (provider/model/apiKey), model name as display name.
                 var cfg = MineAgentEngine.getConfig();
                 String apiKey = cfg.llm().apiKey();
-                if (apiKey == null || apiKey.isBlank()) {
-                    sender.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                            "§c[MineAgent] No API key in config! Edit mineagent.json first."));
-                    return;
-                }
                 String rawName = cfg.companion().name();
                 String name = (rawName == null || rawName.isBlank() || "MineAgent".equals(rawName))
                         ? cfg.llm().model() : rawName;
@@ -238,6 +250,22 @@ public final class ServerPacketHandler {
                         apiKey, cfg.llm().model(),
                         cfg.llm().baseUrl().isEmpty() ? null : cfg.llm().baseUrl(),
                         cfg.llm().temperature(), null, false);
+                return;
+            }
+            case "request_llm_config" -> {
+                // Return only non-secret fields. The client needs to display
+                // the active protocol/endpoint but must never receive a saved
+                // API key merely because a settings screen was opened.
+                var llm = MineAgentEngine.getConfig().llm();
+                JsonObject summary = new JsonObject();
+                summary.addProperty("provider", llm.provider());
+                summary.addProperty("model", llm.model());
+                summary.addProperty("baseUrl", llm.baseUrl());
+                summary.addProperty("temperature", llm.temperature());
+                summary.addProperty("apiKeyConfigured",
+                        llm.apiKey() != null && !llm.apiKey().isBlank());
+                MineAgentNetwork.sendUiActionTo(sender, new UUID(0L, 0L),
+                        "llm_config", summary.toString());
                 return;
             }
             case "request_companions" -> {

@@ -146,6 +146,17 @@ public class MineAgentNeoForge {
                                         payload.companionId()));
                     }
                 });
+        registrar.playToServer(MineAgentNeoForgePayloads.CompanionSetup.TYPE,
+                MineAgentNeoForgePayloads.CompanionSetup.CODEC, (payload, context) -> {
+                    if (context.player() instanceof ServerPlayer sender) {
+                        ServerPacketHandler.onCompanionSetup(sender.getServer(), sender,
+                                new com.mineagent.api.network.payload.CompanionSetupPayload(
+                                        payload.name(), payload.providerId(), payload.apiKey(),
+                                        payload.reuseStoredApiKey(), payload.model(),
+                                        payload.baseUrl(), payload.temperature(),
+                                        payload.reasoningEffort()));
+                    }
+                });
         registrar.playToClient(MineAgentNeoForgePayloads.TaskResult.TYPE,
                 MineAgentNeoForgePayloads.TaskResult.CODEC,
                 (payload, context) -> NeoForgeClientPayloadHandler.handleTaskResult(payload));
