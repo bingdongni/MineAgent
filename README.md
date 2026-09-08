@@ -5,7 +5,7 @@
 [![Build](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml/badge.svg)](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml)
 [![License: LGPL-3.0-only](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 
-MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动 AI 伴游模组。它在服务端创建无真实网络连接的假玩家，并让 AI 通过移动、采集、挖掘、建造、战斗、合成、物品管理和生存本能与世界交互。
+MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动的 AI 伴游模组。它在服务端创建无真实网络连接的假玩家，并让 AI 通过移动、采集、挖掘、建造、战斗、合成、物品管理和生存本能与世界交互。
 
 ## v0.4.0：阶段 0–9 认知、执行与协作闭环
 
