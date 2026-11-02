@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** Baidu Qianfan ERNIE native RPC chat adapter with OAuth client credentials. */
 public final class BaiduQianfanProvider implements LLMProvider {
+    @Override public BaiduQianfanProvider newSession() { return new BaiduQianfanProvider(); }
     private static final String TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token";
     private static final Map<String, Token> TOKENS = new ConcurrentHashMap<>();
     @Override public String providerId() { return "baidu-qianfan"; }

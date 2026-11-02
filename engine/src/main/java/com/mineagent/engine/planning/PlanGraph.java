@@ -20,11 +20,27 @@ import java.util.Set;
  * completion while the body is still blocked or has failed.
  */
 public final class PlanGraph {
+    private static final int MAX_DRAFT_NODES = 64;
+    private static final int MAX_PREREQUISITES = 16;
     public enum NodeStatus { PENDING, IN_PROGRESS, VERIFIED, INVALIDATED, BLOCKED }
 
     public enum GoalStatus { UNPLANNED, ACTIVE, VERIFYING, VERIFIED, BLOCKED }
 
     public enum Comparison { EQUALS, AT_LEAST, AT_MOST, PRESENT }
+
+    public enum PrerequisiteStatus { UNKNOWN, CONTRADICTED }
+
+    public record PrerequisiteGap(String nodeId, GoalCondition condition,
+                                  PrerequisiteStatus status, String actualValue) {
+        /** Observation values/ticks do not create a new paid wake for the same unmet requirement. */
+        public String eventKey() { return nodeId + "|" + status + "|" + condition.describe(); }
+        public String message() {
+            return "Step '" + nodeId + "' requires " + condition.describe()
+                    + (status == PrerequisiteStatus.UNKNOWN
+                    ? "; obtain fresh observation evidence first"
+                    : "; observed " + actualValue + "; repair the affected suffix or restore this prerequisite");
+        }
+    }
 
     /** A top-level acceptance condition grounded in the semantic world model. */
     public record GoalCondition(String subject, String predicate, String value,
@@ -78,7 +94,14 @@ public final class PlanGraph {
     public record PlanNode(String id, String description, String successCriterion,
                            String priority, List<String> dependsOn,
                            NodeStatus status, int attempts,
-                           String lastFailure, List<Evidence> evidence) {
+                           String lastFailure, List<Evidence> evidence,
+                           List<GoalCondition> prerequisites) {
+        public PlanNode(String id, String description, String successCriterion,
+                        String priority, List<String> dependsOn, NodeStatus status,
+                        int attempts, String lastFailure, List<Evidence> evidence) {
+            this(id, description, successCriterion, priority, dependsOn, status,
+                    attempts, lastFailure, evidence, List.of());
+        }
         public PlanNode {
             id = normalize(id, "step");
             description = normalize(description, "Unspecified step");
@@ -90,14 +113,21 @@ public final class PlanGraph {
             attempts = Math.max(0, attempts);
             lastFailure = blankToNull(lastFailure);
             evidence = evidence == null ? List.of() : List.copyOf(evidence);
+            prerequisites = checkedPrerequisites(prerequisites);
         }
     }
 
     public record DraftNode(String id, String description, String successCriterion,
                             String priority, List<String> dependsOn,
-                            NodeStatus requestedStatus) {
+                            NodeStatus requestedStatus, List<GoalCondition> prerequisites) {
+        public DraftNode(String id, String description, String successCriterion,
+                         String priority, List<String> dependsOn, NodeStatus requestedStatus) {
+            this(id, description, successCriterion, priority, dependsOn, requestedStatus, List.of());
+        }
         public DraftNode {
+            id = id == null ? null : id.trim();
             dependsOn = normalizeDependencies(dependsOn);
+            prerequisites = checkedPrerequisites(prerequisites);
         }
     }
 
@@ -122,6 +152,8 @@ public final class PlanGraph {
     private final LinkedHashMap<String, PlanNode> nodes = new LinkedHashMap<>();
     private final Map<String, String> taskBindings = new LinkedHashMap<>();
     private final Map<String, String> toolBindings = new LinkedHashMap<>();
+    /** Transient readiness; a checkpoint cannot restore stale permission to act. */
+    private final Map<String, List<PrerequisiteGap>> prerequisiteGaps = new LinkedHashMap<>();
     private List<IntentContract.Constraint> constraints = List.of();
     private List<GoalCondition> goalConditions = List.of();
     private GoalStatus goalStatus = GoalStatus.UNPLANNED;
@@ -138,19 +170,9 @@ public final class PlanGraph {
                                                   List<IntentContract.Constraint> newConstraints,
                                                   List<GoalCondition> newGoalConditions) {
         List<String> warnings = new ArrayList<>();
+        boolean sameGoal = normalize(newGoal, goal).equals(goal);
         LinkedHashMap<String, PlanNode> previousNodes = new LinkedHashMap<>(nodes);
-        LinkedHashMap<String, DraftNode> validated = new LinkedHashMap<>();
-        if (drafts != null) {
-            for (DraftNode draft : drafts) {
-                if (draft == null || draft.id() == null || draft.id().isBlank()) {
-                    warnings.add("Plan contains a node without an id");
-                    continue;
-                }
-                if (validated.putIfAbsent(draft.id(), draft) != null) {
-                    warnings.add("Duplicate step id '" + draft.id() + "'");
-                }
-            }
-        }
+        LinkedHashMap<String, DraftNode> validated = validateDrafts(drafts, warnings);
         for (DraftNode draft : validated.values()) {
             for (String dependency : draft.dependsOn()) {
                 if (!validated.containsKey(dependency)) {
@@ -172,7 +194,7 @@ public final class PlanGraph {
         if (drafts != null) {
             for (DraftNode draft : validated.values()) {
                 PlanNode previous = previousNodes.get(draft.id());
-                boolean sameSemantics = sameSemantics(previous, draft);
+                boolean sameSemantics = sameGoal && sameSemantics(previous, draft);
                 List<Evidence> evidence = sameSemantics
                         ? previous.evidence() : List.of();
                 NodeStatus requested = draft.requestedStatus() == null
@@ -192,7 +214,7 @@ public final class PlanGraph {
                 replacement.put(draft.id(), new PlanNode(draft.id(), draft.description(),
                         draft.successCriterion(), draft.priority(), draft.dependsOn(), committed,
                         sameSemantics ? previous.attempts() : 0,
-                        sameSemantics ? previous.lastFailure() : null, evidence));
+                        sameSemantics ? previous.lastFailure() : null, evidence, draft.prerequisites()));
             }
         }
         for (Map.Entry<String, PlanNode> entry : replacement.entrySet()) {
@@ -207,15 +229,16 @@ public final class PlanGraph {
         }
         nodes.clear();
         nodes.putAll(replacement);
+        prerequisiteGaps.clear();
         taskBindings.entrySet().removeIf(entry -> {
             PlanNode before = previousNodes.get(entry.getValue());
             PlanNode after = nodes.get(entry.getValue());
-            return before == null || after == null || !sameSemantics(before, after);
+            return !sameGoal || before == null || after == null || !sameSemantics(before, after);
         });
         toolBindings.entrySet().removeIf(entry -> {
             PlanNode before = previousNodes.get(entry.getValue());
             PlanNode after = nodes.get(entry.getValue());
-            return before == null || after == null || !sameSemantics(before, after);
+            return !sameGoal || before == null || after == null || !sameSemantics(before, after);
         });
         String previousGoal = goal;
         goal = normalize(newGoal, goal.isBlank() ? "Current owner goal" : goal);
@@ -250,6 +273,7 @@ public final class PlanGraph {
         Set<String> available = new LinkedHashSet<>(validated.keySet());
         nodes.values().stream().filter(node -> node.status() == NodeStatus.VERIFIED)
                 .map(PlanNode::id).forEach(available::add);
+        if (available.size() > MAX_DRAFT_NODES) warnings.add("Plan may contain at most " + MAX_DRAFT_NODES + " nodes after repair");
         for (DraftNode draft : validated.values()) {
             for (String dependency : draft.dependsOn()) {
                 if (!available.contains(dependency)) {
@@ -268,7 +292,7 @@ public final class PlanGraph {
                     && !validated.containsKey(node.id())) {
                 combined.put(node.id(), new DraftNode(node.id(), node.description(),
                         node.successCriterion(), node.priority(), node.dependsOn(),
-                        NodeStatus.VERIFIED));
+                        NodeStatus.VERIFIED, node.prerequisites()));
             }
         }
         combined.putAll(validated);
@@ -311,7 +335,7 @@ public final class PlanGraph {
             replacement.put(draft.id(), new PlanNode(draft.id(), draft.description(),
                     draft.successCriterion(), draft.priority(), draft.dependsOn(),
                     committed, same ? before.attempts() : 0,
-                    same ? before.lastFailure() : null, evidence));
+                    same ? before.lastFailure() : null, evidence, draft.prerequisites()));
         }
         for (Map.Entry<String, PlanNode> entry : replacement.entrySet()) {
             PlanNode node = entry.getValue();
@@ -324,6 +348,7 @@ public final class PlanGraph {
 
         nodes.clear();
         nodes.putAll(replacement);
+        prerequisiteGaps.clear();
         taskBindings.clear();
         toolBindings.clear();
         if (newConstraints != null) constraints = List.copyOf(newConstraints);
@@ -340,6 +365,7 @@ public final class PlanGraph {
         if (taskId == null || taskId.isBlank()) return;
         PlanNode node = nodeForAction();
         if (node == null) {
+            if (hasActivePlan()) return;
             String id = "body-" + Math.max(1L, revision + 1L);
             node = new PlanNode(id,
                     contract == null ? normalize(toolName, "Body task") : contract.goal(),
@@ -445,13 +471,10 @@ public final class PlanGraph {
 
     public synchronized PlanNode currentNode() {
         for (PlanNode node : nodes.values()) {
-            if (node.status() == NodeStatus.IN_PROGRESS) return node;
+            if (node.status() == NodeStatus.IN_PROGRESS
+                    && (ownsExecution(node) || prerequisitesReady(node))) return node;
         }
-        for (PlanNode node : nodes.values()) {
-            if (node.status() == NodeStatus.PENDING
-                    && dependenciesVerified(node.dependsOn(), nodes)) return node;
-        }
-        return null;
+        return bestReady(NodeStatus.PENDING);
     }
 
     /**
@@ -465,11 +488,89 @@ public final class PlanGraph {
     public synchronized PlanNode nodeForAction() {
         PlanNode ready = currentNode();
         if (ready != null) return ready;
+        return bestReady(NodeStatus.BLOCKED);
+    }
+
+    /** Recheck live requirements, without rewriting historical achievements or executor ownership. */
+    public synchronized void refreshReadiness(SemanticWorldModel worldModel, long gameTick) {
+        prerequisiteGaps.clear();
         for (PlanNode node : nodes.values()) {
-            if (node.status() == NodeStatus.BLOCKED
-                    && dependenciesVerified(node.dependsOn(), nodes)) return node;
+            if (node.prerequisites().isEmpty() || node.status() == NodeStatus.VERIFIED
+                    || node.status() == NodeStatus.INVALIDATED || ownsExecution(node)) continue;
+            List<PrerequisiteGap> gaps = new ArrayList<>();
+            for (GoalCondition condition : node.prerequisites()) {
+                var fact = worldModel == null ? null : worldModel.find(condition.subject(), condition.predicate(), gameTick)
+                        .filter(found -> found.confidenceAt(gameTick) >= condition.minimumConfidence()).orElse(null);
+                if (fact == null) gaps.add(new PrerequisiteGap(node.id(), condition, PrerequisiteStatus.UNKNOWN, null));
+                else if (!condition.matches(worldModel, gameTick)) gaps.add(new PrerequisiteGap(node.id(), condition,
+                        PrerequisiteStatus.CONTRADICTED, fact.value()));
+            }
+            prerequisiteGaps.put(node.id(), List.copyOf(gaps));
+        }
+    }
+
+    public synchronized PrerequisiteGap prerequisiteGap() {
+        for (PlanNode node : nodes.values()) {
+            if ((node.status() != NodeStatus.PENDING && node.status() != NodeStatus.BLOCKED
+                    && node.status() != NodeStatus.IN_PROGRESS) || ownsExecution(node)
+                    || node.prerequisites().isEmpty() || !dependenciesVerified(node.dependsOn(), nodes)) continue;
+            List<PrerequisiteGap> gaps = prerequisiteGaps.get(node.id());
+            if (gaps == null) return new PrerequisiteGap(node.id(), node.prerequisites().getFirst(),
+                    PrerequisiteStatus.UNKNOWN, null);
+            if (!gaps.isEmpty()) return gaps.getFirst();
         }
         return null;
+    }
+
+    /** Server-side admission gate. Queries and normal survival scheduling remain outside this gate. */
+    public synchronized String actionBlocker(SemanticWorldModel worldModel, long gameTick) {
+        refreshReadiness(worldModel, gameTick);
+        if (!hasActivePlan() || nodeForAction() != null) return null;
+        PrerequisiteGap gap = prerequisiteGap();
+        return gap == null ? "No dependency-ready milestone remains; observe or repair the plan before another world-changing action"
+                : gap.message();
+    }
+
+    private boolean prerequisitesReady(PlanNode node) {
+        return ownsExecution(node) || node.prerequisites().isEmpty() || prerequisiteGaps.containsKey(node.id())
+                && prerequisiteGaps.get(node.id()).isEmpty();
+    }
+
+    private boolean ownsExecution(PlanNode node) {
+        return taskBindings.containsValue(node.id()) || toolBindings.containsValue(node.id());
+    }
+
+    private PlanNode bestReady(NodeStatus status) {
+        PlanNode best = null;
+        Map<String, Integer> depths = new java.util.HashMap<>();
+        for (PlanNode candidate : nodes.values()) {
+            if (candidate.status() != status || !dependenciesVerified(candidate.dependsOn(), nodes)
+                    || !prerequisitesReady(candidate)) continue;
+            if (best == null || priorityRank(candidate) > priorityRank(best)
+                    || priorityRank(candidate) == priorityRank(best)
+                    && remainingDepth(candidate.id(), depths, new HashSet<>())
+                    > remainingDepth(best.id(), depths, new HashSet<>())) best = candidate;
+        }
+        return best;
+    }
+
+    /** Unit-duration critical path estimate, not a claim about actual task latency. */
+    private int remainingDepth(String id, Map<String, Integer> memo, Set<String> visiting) {
+        if (memo.containsKey(id)) return memo.get(id);
+        if (visiting.size() >= MAX_DRAFT_NODES || !visiting.add(id)) return 0;
+        int depth = 1;
+        for (PlanNode node : nodes.values()) {
+            if (node.status() != NodeStatus.VERIFIED && node.status() != NodeStatus.INVALIDATED
+                    && node.dependsOn().contains(id)) depth = Math.max(depth,
+                    1 + remainingDepth(node.id(), memo, visiting));
+        }
+        visiting.remove(id);
+        memo.put(id, depth);
+        return depth;
+    }
+
+    private static int priorityRank(PlanNode node) {
+        return switch (node.priority()) { case "high" -> 2; case "low" -> 0; default -> 1; };
     }
 
     public synchronized boolean hasActivePlan() {
@@ -506,6 +607,24 @@ public final class PlanGraph {
         return goalConditions;
     }
 
+    /** Only explicitly watched carried-item counts receive negative evidence from a full inventory scan. */
+    public synchronized Set<String> watchedInventoryItems() {
+        LinkedHashSet<String> items = new LinkedHashSet<>();
+        List<GoalCondition> conditions = new ArrayList<>(goalConditions);
+        for (PlanNode node : nodes.values()) {
+            if (node.status() != NodeStatus.VERIFIED && node.status() != NodeStatus.INVALIDATED) {
+                conditions.addAll(node.prerequisites());
+            }
+        }
+        for (GoalCondition condition : conditions) {
+            if (condition.subject().startsWith("inventory:") && condition.predicate().equals("count")) {
+                String id = condition.subject().substring("inventory:".length());
+                if (!id.isBlank() && id.length() <= 256) items.add(id);
+            }
+        }
+        return java.util.Collections.unmodifiableSet(items);
+    }
+
     public synchronized GoalStatus goalStatus() {
         return goalStatus;
     }
@@ -524,6 +643,8 @@ public final class PlanGraph {
                 out.append(" | depends_on=").append(String.join(",", node.dependsOn()));
             }
             if (node.lastFailure() != null) out.append(" | blocker=").append(node.lastFailure());
+            if (!node.prerequisites().isEmpty()) out.append(" | prerequisites=")
+                    .append(node.prerequisites().stream().limit(2).map(GoalCondition::describe).toList());
             out.append('\n');
         }
         if (!constraints.isEmpty()) {
@@ -539,6 +660,8 @@ public final class PlanGraph {
                 out.append("- ").append(condition.describe()).append('\n');
             }
         }
+        PrerequisiteGap gap = prerequisiteGap();
+        if (gap != null) out.append("Live prerequisite: ").append(gap.message()).append('\n');
         return out.toString();
     }
 
@@ -551,6 +674,7 @@ public final class PlanGraph {
         nodes.clear();
         taskBindings.clear();
         toolBindings.clear();
+        prerequisiteGaps.clear();
         if (state == null) {
             // clearAll() deliberately uses the same import boundary as file
             // restore. Returning here would leave the old goal and verified
@@ -620,7 +744,7 @@ public final class PlanGraph {
     private static PlanNode replace(PlanNode node, NodeStatus status, int attempts,
                                     String failure, List<Evidence> evidence) {
         return new PlanNode(node.id(), node.description(), node.successCriterion(),
-                node.priority(), node.dependsOn(), status, attempts, failure, evidence);
+                node.priority(), node.dependsOn(), status, attempts, failure, evidence, node.prerequisites());
     }
 
     private static boolean dependenciesVerified(List<String> dependencies,
@@ -637,20 +761,26 @@ public final class PlanGraph {
                 && previous.description().equals(normalize(draft.description(), "Unspecified step"))
                 && previous.successCriterion().equals(normalize(draft.successCriterion(),
                 "A body task reports verified success"))
-                && previous.dependsOn().equals(draft.dependsOn());
+                && previous.dependsOn().equals(draft.dependsOn())
+                && previous.prerequisites().equals(draft.prerequisites());
     }
 
     private static boolean sameSemantics(PlanNode first, PlanNode second) {
         return first != null && second != null
                 && first.description().equals(second.description())
                 && first.successCriterion().equals(second.successCriterion())
-                && first.dependsOn().equals(second.dependsOn());
+                && first.dependsOn().equals(second.dependsOn())
+                && first.prerequisites().equals(second.prerequisites());
     }
 
     private static LinkedHashMap<String, DraftNode> validateDrafts(
             List<DraftNode> drafts, List<String> warnings) {
         LinkedHashMap<String, DraftNode> validated = new LinkedHashMap<>();
         if (drafts == null) return validated;
+        if (drafts.size() > MAX_DRAFT_NODES) {
+            warnings.add("Plan may contain at most " + MAX_DRAFT_NODES + " nodes");
+            return validated;
+        }
         for (DraftNode draft : drafts) {
             if (draft == null || draft.id() == null || draft.id().isBlank()) {
                 warnings.add("Plan contains a node without an id");
@@ -661,6 +791,12 @@ public final class PlanGraph {
             }
         }
         return validated;
+    }
+
+    private static List<GoalCondition> checkedPrerequisites(List<GoalCondition> values) {
+        if (values == null) return List.of();
+        if (values.size() > MAX_PREREQUISITES) throw new IllegalArgumentException("A step may have at most " + MAX_PREREQUISITES + " prerequisites");
+        return List.copyOf(values);
     }
 
     private static boolean containsCycle(Map<String, DraftNode> graph) {

@@ -48,6 +48,14 @@ public class OpenAICompatibleProvider implements LLMProvider {
     public String providerId() { return providerId; }
 
     @Override
+    public LLMProvider newSession() {
+        // Preserve unknown subclass protocol overrides instead of silently slicing them.
+        return getClass() == OpenAICompatibleProvider.class
+                ? new OpenAICompatibleProvider(providerId, displayName, defaultBaseUrl,
+                        defaultModels, modelPrefixes) : this;
+    }
+
+    @Override
     public LLMCapabilities capabilities() {
         java.util.EnumSet<LLMCapabilities.Feature> features = java.util.EnumSet.of(
                 LLMCapabilities.Feature.CHAT_COMPLETIONS,
@@ -812,6 +820,7 @@ public class OpenAICompatibleProvider implements LLMProvider {
             int promptTokens = usageObj.has("prompt_tokens")
                     ? usageObj.get("prompt_tokens").getAsInt() : 0;
             int cachedTokens = 0;
+            int writtenTokens = 0;
             // OpenAI reports cached input inside prompt_tokens_details;
             // DeepSeek-compatible APIs expose equivalent hit/miss counters
             // at the usage root. Normalize both so runtime logs can measure
@@ -821,6 +830,9 @@ public class OpenAICompatibleProvider implements LLMProvider {
                 JsonObject details = usageObj.getAsJsonObject("prompt_tokens_details");
                 if (details.has("cached_tokens")) {
                     cachedTokens = details.get("cached_tokens").getAsInt();
+                }
+                if (details.has("cache_write_tokens") && !details.get("cache_write_tokens").isJsonNull()) {
+                    writtenTokens = details.get("cache_write_tokens").getAsInt();
                 }
             }
             if (usageObj.has("prompt_cache_hit_tokens")) {
@@ -837,7 +849,7 @@ public class OpenAICompatibleProvider implements LLMProvider {
                     usageObj.has("completion_tokens") ? usageObj.get("completion_tokens").getAsInt() : 0,
                     usageObj.has("total_tokens") ? usageObj.get("total_tokens").getAsInt() : 0,
                     cachedTokens,
-                    0
+                    writtenTokens
             );
         }
 

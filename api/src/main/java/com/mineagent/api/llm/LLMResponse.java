@@ -37,6 +37,15 @@ public record LLMResponse(
      */
     public record Usage(int promptTokens, int completionTokens, int totalTokens,
                         int cachedPromptTokens, int cacheCreationPromptTokens) {
+        public Usage {
+            promptTokens = Math.max(0, promptTokens);
+            completionTokens = Math.max(0, completionTokens);
+            cachedPromptTokens = Math.max(0, Math.min(promptTokens, cachedPromptTokens));
+            cacheCreationPromptTokens = Math.max(0,
+                    Math.min(promptTokens - cachedPromptTokens, cacheCreationPromptTokens));
+            totalTokens = (int) Math.min(Integer.MAX_VALUE,
+                    Math.max((long) totalTokens, (long) promptTokens + completionTokens));
+        }
         /** Source-compatible constructor for providers without cache metrics. */
         public Usage(int promptTokens, int completionTokens, int totalTokens) {
             this(promptTokens, completionTokens, totalTokens, 0, 0);

@@ -55,7 +55,7 @@ public final class UseItemTool implements Tool {
             itemId = id.toString();
         }
         Integer holdTicks = ToolArgs.has(args, "hold_ticks")
-                ? ToolArgs.getIntOrNull(args, "hold_ticks") : 0;
+                ? ToolArgs.getIntOrNull(args, "hold_ticks") : Integer.valueOf(0);
         if (holdTicks == null || holdTicks < 0 || holdTicks > 1200) {
             reply.accept(ToolArgs.errorJson("'hold_ticks' must be an integer from 0 to 1200."));
             return;

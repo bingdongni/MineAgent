@@ -89,6 +89,13 @@ public class LearnedSkillsTool implements Tool {
             s.addProperty("success_rate",
                     String.format(Locale.ROOT, "%.0f%%", skill.successRate() * 100));
             s.addProperty("invocations", skill.invocations());
+            try {
+                var sequence = com.google.gson.JsonParser.parseString(skill.actionSequence()).getAsJsonArray();
+                var bindings = com.mineagent.engine.skill.SkillBindings.defaults(sequence);
+                if (!bindings.isEmpty()) s.add("bindings", bindings);
+            } catch (RuntimeException invalidLegacyTemplate) {
+                s.addProperty("binding_error", "Skill template requires revalidation");
+            }
             arr.add(s);
         }
         result.add("skills", arr);

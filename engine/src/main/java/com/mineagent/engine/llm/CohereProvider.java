@@ -19,6 +19,7 @@ import java.util.Map;
 
 /** Cohere native Chat API v2 adapter. */
 public final class CohereProvider implements LLMProvider {
+    @Override public CohereProvider newSession() { return new CohereProvider(); }
     @Override public String providerId() { return "cohere"; }
     @Override public String displayName() { return "Cohere Command"; }
     @Override public String defaultBaseUrl() { return "https://api.cohere.com"; }

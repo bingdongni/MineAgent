@@ -61,7 +61,7 @@ public final class LookAroundTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer agent,
                              Consumer<String> reply) {
         Integer radius = ToolArgs.has(args, "radius")
-                ? ToolArgs.getIntOrNull(args, "radius") : 8;
+                ? ToolArgs.getIntOrNull(args, "radius") : Integer.valueOf(8);
         if (radius == null || radius < 4 || radius > 16) {
             reply.accept(ToolArgs.errorJson("'radius' must be an integer from 4 to 16."));
             return;

@@ -66,7 +66,7 @@ public final class PlanAcquisitionTool implements Tool {
         }
         Integer desired = ToolArgs.getIntOrNull(args, "desired_count");
         Integer depth = ToolArgs.has(args, "max_depth")
-                ? ToolArgs.getIntOrNull(args, "max_depth") : 6;
+                ? ToolArgs.getIntOrNull(args, "max_depth") : Integer.valueOf(6);
         if (desired == null || desired < 1 || desired > 4096) {
             reply.accept(ToolArgs.errorJson("'desired_count' must be an integer from 1 to 4096."));
             return;

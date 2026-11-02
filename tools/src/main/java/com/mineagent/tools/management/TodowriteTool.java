@@ -39,11 +39,13 @@ public final class TodowriteTool implements Tool {
     @Override public String description() {
         return "Create or repair the verifier-backed long-horizon plan. Use update_mode=repair "
                 + "after a blocker so verified checkpoints are retained. Completed steps and "
-                + "top-level goal acceptance require observed executor/world evidence.";
+                + "top-level goal acceptance require observed executor/world evidence. Attach prerequisites "
+                + "to steps for resources or state that must still hold when execution starts.";
     }
 
     @Override
     public Map<String, Object> parameterSchema() {
+        Map<String, Object> conditionItem = conditionSchema();
         Map<String, Object> todoItem = objectSchema(Map.of(
                 "id", Map.of("type", "string", "description", "Stable step ID"),
                 "content", Map.of("type", "string", "description", "Concrete subgoal"),
@@ -52,6 +54,9 @@ public final class TodowriteTool implements Tool {
                 "depends_on", Map.of("type", "array",
                         "description", "Step IDs that must be verified first",
                         "items", Map.of("type", "string"), "maxItems", MAX_ITEMS),
+                "prerequisites", Map.of("type", "array", "items", conditionItem,
+                        "maxItems", MAX_GOAL_CONDITIONS, "description",
+                        "Live facts required at admission; missing evidence requires observation, contradiction requires repair"),
                 "priority", Map.of("type", "string", "enum", List.of("high", "medium", "low")),
                 "status", Map.of("type", "string", "enum",
                         List.of("pending", "in_progress", "completed", "blocked", "invalidated"))
@@ -62,7 +67,19 @@ public final class TodowriteTool implements Tool {
                 "description", Map.of("type", "string"),
                 "scope", Map.of("type", List.of("string", "null"))
         ), List.of("id", "kind", "description"));
-        Map<String, Object> conditionItem = objectSchema(Map.of(
+        return Schema.object()
+                .optionalString("goal", "The owner's current top-level goal")
+                .optionalString("update_mode", "Plan update: 'replace' for a new goal or 'repair' for the invalid suffix")
+                .array("todos", "Complete ordered plan; replaces prior nodes", todoItem, 0)
+                .optionalArray("constraints", "Hard constraints and owner preferences; omitted preserves existing constraints",
+                        constraintItem, 0)
+                .optionalArray("goal_conditions", "Machine-checkable top-level acceptance conditions; omitted preserves them during repair",
+                        conditionItem, 0)
+                .build();
+    }
+
+    private static Map<String, Object> conditionSchema() {
+        return objectSchema(Map.of(
                 "subject", Map.of("type", "string",
                         "description", "Semantic subject, e.g. inventory:minecraft:iron_ingot"),
                 "predicate", Map.of("type", "string",
@@ -74,15 +91,6 @@ public final class TodowriteTool implements Tool {
                 "minimum_confidence", Map.of("type", List.of("number", "null"),
                         "minimum", 0.0, "maximum", 1.0)
         ), List.of("subject", "predicate", "value", "comparison"));
-        return Schema.object()
-                .optionalString("goal", "The owner's current top-level goal")
-                .optionalString("update_mode", "Plan update: 'replace' for a new goal or 'repair' for the invalid suffix")
-                .array("todos", "Complete ordered plan; replaces prior nodes", todoItem, 0)
-                .optionalArray("constraints", "Hard constraints and owner preferences; omitted preserves existing constraints",
-                        constraintItem, 0)
-                .optionalArray("goal_conditions", "Machine-checkable top-level acceptance conditions; omitted preserves them during repair",
-                        conditionItem, 0)
-                .build();
     }
 
     @Override
@@ -145,9 +153,14 @@ public final class TodowriteTool implements Tool {
                     dependencies.add(dependencyValue.getAsString());
                 }
             }
-            drafts.add(new PlanGraph.DraftNode(id, content, criterion, priority,
-                    dependencies,
-                    parseStatus(status)));
+            try {
+                List<PlanGraph.GoalCondition> prerequisites = parseConditions(value, "prerequisites");
+                drafts.add(new PlanGraph.DraftNode(id, content, criterion, priority,
+                        dependencies, parseStatus(status), prerequisites));
+            } catch (IllegalArgumentException invalid) {
+                reply.accept(ToolArgs.errorJson("Todo item '" + id + "': " + invalid.getMessage()));
+                return;
+            }
         }
 
         List<IntentContract.Constraint> constraints = null;
@@ -181,54 +194,11 @@ public final class TodowriteTool implements Tool {
             }
         }
 
-        List<PlanGraph.GoalCondition> goalConditions = null;
-        if (args.has("goal_conditions") && !args.get("goal_conditions").isJsonNull()) {
-            JsonArray values = ToolArgs.getArray(args, "goal_conditions");
-            if (values == null || values.size() > MAX_GOAL_CONDITIONS) {
-                reply.accept(ToolArgs.errorJson("'goal_conditions' must contain at most "
-                        + MAX_GOAL_CONDITIONS + " objects."));
-                return;
-            }
-            goalConditions = new ArrayList<>();
-            for (int index = 0; index < values.size(); index++) {
-                if (!values.get(index).isJsonObject()) {
-                    reply.accept(ToolArgs.errorJson("Goal condition " + index
-                            + " must be an object."));
-                    return;
-                }
-                JsonObject value = values.get(index).getAsJsonObject();
-                String subject = ToolArgs.getString(value, "subject");
-                String predicate = ToolArgs.getString(value, "predicate");
-                String expected = ToolArgs.getString(value, "value");
-                String comparison = ToolArgs.getString(value, "comparison", "equals");
-                Double confidence = ToolArgs.has(value, "minimum_confidence")
-                        ? ToolArgs.getDoubleOrNull(value, "minimum_confidence") : 0.6;
-                if (!validText(subject, 256) || !validText(predicate, 128)
-                        || !validText(expected, 256) || confidence == null
-                        || confidence < 0.0 || confidence > 1.0) {
-                    reply.accept(ToolArgs.errorJson("Goal condition " + index
-                            + " contains invalid fields."));
-                    return;
-                }
-                PlanGraph.Comparison parsedComparison;
-                try {
-                    parsedComparison = PlanGraph.Comparison.valueOf(
-                            comparison.trim().toUpperCase(Locale.ROOT));
-                } catch (IllegalArgumentException invalidComparison) {
-                    reply.accept(ToolArgs.errorJson("Goal condition " + index
-                            + " has invalid comparison '" + comparison + "'."));
-                    return;
-                }
-                if ((parsedComparison == PlanGraph.Comparison.AT_LEAST
-                        || parsedComparison == PlanGraph.Comparison.AT_MOST)
-                        && !finiteNumber(expected)) {
-                    reply.accept(ToolArgs.errorJson("Goal condition " + index
-                            + " requires a finite numeric value for " + comparison + "."));
-                    return;
-                }
-                goalConditions.add(new PlanGraph.GoalCondition(subject, predicate,
-                        expected, parsedComparison, confidence));
-            }
+        List<PlanGraph.GoalCondition> goalConditions;
+        try { goalConditions = parseConditions(args, "goal_conditions"); }
+        catch (IllegalArgumentException invalid) {
+            reply.accept(ToolArgs.errorJson(invalid.getMessage()));
+            return;
         }
 
         var state = MineAgentEngine.getCompanion(player.companionId());
@@ -266,6 +236,7 @@ public final class TodowriteTool implements Tool {
                 gameTick = 0L;
             }
             state.get().loop.rollingPlanner().onPlanReplaced(goal, gameTick);
+            state.get().loop.planGraph().refreshReadiness(state.get().loop.semanticWorldModel(), gameTick);
         }
 
         JsonObject result = new JsonObject();
@@ -305,6 +276,36 @@ public final class TodowriteTool implements Tool {
         } catch (NumberFormatException invalid) {
             return false;
         }
+    }
+
+    private static List<PlanGraph.GoalCondition> parseConditions(JsonObject source, String field) {
+        if (!source.has(field) || source.get(field).isJsonNull()) return null;
+        JsonArray values = ToolArgs.getArray(source, field);
+        if (values == null || values.size() > MAX_GOAL_CONDITIONS) {
+            throw new IllegalArgumentException(field + " must contain at most " + MAX_GOAL_CONDITIONS + " conditions");
+        }
+        List<PlanGraph.GoalCondition> result = new ArrayList<>();
+        for (int index = 0; index < values.size(); index++) {
+            if (!values.get(index).isJsonObject()) throw new IllegalArgumentException(field + " contains a non-object");
+            JsonObject value = values.get(index).getAsJsonObject();
+            String subject = ToolArgs.getString(value, "subject");
+            String predicate = ToolArgs.getString(value, "predicate");
+            String expected = ToolArgs.getString(value, "value");
+            Double confidence = ToolArgs.has(value, "minimum_confidence")
+                    ? ToolArgs.getDoubleOrNull(value, "minimum_confidence") : Double.valueOf(0.6);
+            if (!validText(subject, 256) || !validText(predicate, 128) || !validText(expected, 256)
+                    || confidence == null || !Double.isFinite(confidence) || confidence < 0 || confidence > 1) {
+                throw new IllegalArgumentException(field + " condition " + index + " contains invalid fields");
+            }
+            PlanGraph.Comparison comparison;
+            try { comparison = PlanGraph.Comparison.valueOf(ToolArgs.getString(value, "comparison", "equals")
+                    .trim().toUpperCase(Locale.ROOT)); }
+            catch (IllegalArgumentException invalid) { throw new IllegalArgumentException(field + " has an invalid comparison"); }
+            if ((comparison == PlanGraph.Comparison.AT_LEAST || comparison == PlanGraph.Comparison.AT_MOST)
+                    && !finiteNumber(expected)) throw new IllegalArgumentException(field + " requires a finite numeric value");
+            result.add(new PlanGraph.GoalCondition(subject, predicate, expected, comparison, confidence));
+        }
+        return List.copyOf(result);
     }
 
     private static Map<String, Object> objectSchema(

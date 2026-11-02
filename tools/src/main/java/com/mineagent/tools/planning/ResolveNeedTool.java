@@ -62,7 +62,7 @@ public final class ResolveNeedTool implements Tool {
             return;
         }
         Integer desired = ToolArgs.has(args, "desired_count")
-                ? ToolArgs.getIntOrNull(args, "desired_count") : 1;
+                ? ToolArgs.getIntOrNull(args, "desired_count") : Integer.valueOf(1);
         if (desired == null || desired < 1 || desired > 4096) {
             reply.accept(ToolArgs.errorJson("'desired_count' must be an integer from 1 to 4096."));
             return;

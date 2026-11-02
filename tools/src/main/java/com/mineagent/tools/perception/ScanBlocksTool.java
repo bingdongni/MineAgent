@@ -46,7 +46,7 @@ public class ScanBlocksTool implements Tool {
             return;
         }
         Integer radius = ToolArgs.has(args, "radius")
-                ? ToolArgs.getIntOrNull(args, "radius") : 16;
+                ? ToolArgs.getIntOrNull(args, "radius") : Integer.valueOf(16);
         if (radius == null || radius < 1 || radius > 32) {
             reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to 32."));
             return;

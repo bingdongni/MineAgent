@@ -21,7 +21,7 @@ import java.util.Locale;
 public final class HierarchicalRollingPlanner {
     public enum Reason {
         NEW_GOAL, PLAN_MISSING, ACTIVE_STEP_BLOCKED, EXECUTOR_STALLED,
-        REPEATED_FAILURE, WORLD_CHANGED, WINDOW_EXHAUSTED
+        REPEATED_FAILURE, WORLD_CHANGED, WINDOW_EXHAUSTED, PREREQUISITE_UNKNOWN, PREREQUISITE_CHANGED
     }
 
     public record ReplanSignal(Reason reason, String detail, String goal,
@@ -152,8 +152,10 @@ public final class HierarchicalRollingPlanner {
 
     /** Return a deduplicated replan signal only when the current window is invalid. */
     public synchronized ReplanSignal tick(long gameTick) {
+        graph.refreshReadiness(worldModel, gameTick);
         PlanGraph.State state = graph.exportState();
         PlanGraph.PlanNode current = graph.currentNode();
+        PlanGraph.PrerequisiteGap gap = graph.prerequisiteGap();
         PlanGraph.PlanNode blocked = state.nodes().stream()
                 .filter(node -> node.status() == PlanGraph.NodeStatus.BLOCKED)
                 .findFirst().orElse(null);
@@ -168,6 +170,10 @@ public final class HierarchicalRollingPlanner {
         if (!strategicGoal.isBlank() && state.nodes().isEmpty()) {
             reason = Reason.PLAN_MISSING;
             detail = "The strategic goal has no verifier-backed decomposition";
+        } else if (!taskActive && current == null && gap != null) {
+            reason = gap.status() == PlanGraph.PrerequisiteStatus.UNKNOWN
+                    ? Reason.PREREQUISITE_UNKNOWN : Reason.PREREQUISITE_CHANGED;
+            detail = gap.message();
         } else if (blocked != null && current == null) {
             reason = Reason.ACTIVE_STEP_BLOCKED;
             current = blocked;
@@ -197,11 +203,17 @@ public final class HierarchicalRollingPlanner {
 
         observedPlanRevision = Math.max(observedPlanRevision, state.revision());
         observedWorldRevision = Math.max(observedWorldRevision, worldRevision);
-        if (reason == null) return null;
-        String active = current == null ? null : current.id();
+        if (reason == null) {
+            lastSignalSignature = "";
+            return null;
+        }
+        String active = current == null ? gap == null ? null : gap.nodeId() : current.id();
         String decisionEvidence = current == null ? null : current.lastFailure();
         String signature = reason + "|" + goalEpoch + "|" + active + "|"
                 + normalize(decisionEvidence, "") + "|" + consecutiveFailures;
+        if (reason == Reason.PREREQUISITE_UNKNOWN || reason == Reason.PREREQUISITE_CHANGED) {
+            signature += "|" + gap.eventKey();
+        }
         // Graph revisions include progress/UI bookkeeping and are not decision
         // evidence. Keying the gate by revision caused one paid LLM wake per
         // repeated blocked snapshot. Display-only elapsed ticks also change on

@@ -61,13 +61,13 @@ public class CollectItemsTool implements Tool {
             itemId = id.toString();
         }
         Integer radius = ToolArgs.has(args, "radius")
-                ? ToolArgs.getIntOrNull(args, "radius") : DEFAULT_RADIUS;
+                ? ToolArgs.getIntOrNull(args, "radius") : Integer.valueOf(DEFAULT_RADIUS);
         if (radius == null || radius < 1 || radius > MAX_RADIUS) {
             reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to " + MAX_RADIUS + "."));
             return;
         }
         Integer count = ToolArgs.has(args, "count")
-                ? ToolArgs.getIntOrNull(args, "count") : 16;
+                ? ToolArgs.getIntOrNull(args, "count") : Integer.valueOf(16);
         if (count == null || count < 1 || count > 64) {
             reply.accept(ToolArgs.errorJson("'count' must be an integer from 1 to 64."));
             return;

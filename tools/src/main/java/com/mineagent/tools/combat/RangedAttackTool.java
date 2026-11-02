@@ -57,7 +57,7 @@ public class RangedAttackTool implements Tool {
             return;
         }
         Integer chargeTicks = ToolArgs.has(args, "charge_ticks")
-                ? ToolArgs.getIntOrNull(args, "charge_ticks") : 20;
+                ? ToolArgs.getIntOrNull(args, "charge_ticks") : Integer.valueOf(20);
         // A bow released before three ticks has zero vanilla shooting power,
         // so accepting 1-2 advertised a shot that could never be produced.
         if (chargeTicks == null || chargeTicks < 3 || chargeTicks > 60) {

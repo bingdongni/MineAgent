@@ -57,6 +57,7 @@ import javax.crypto.spec.SecretKeySpec;
  * <p>Secrets are never included in exceptions, response objects or logs.</p>
  */
 public final class BedrockConverseProvider implements LLMProvider {
+    @Override public BedrockConverseProvider newSession() { return new BedrockConverseProvider(); }
 
     private static final Gson GSON = new GsonBuilder().create();
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()

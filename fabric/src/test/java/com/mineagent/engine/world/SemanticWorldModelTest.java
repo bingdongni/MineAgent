@@ -10,6 +10,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SemanticWorldModelTest {
+    @Test void fullInventoryObservationProvidesNegativeEvidenceOnlyForWatchedMissingItems() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        world.observeInventory(null, List.of(), 1, Set.of("mod:input"));
+        assertEquals("0", world.find("inventory:mod:input", "count", 1).orElseThrow().value());
+        assertFalse(world.find("inventory:mod:unwatched", "count", 1).isPresent());
+        assertFalse(world.find("inventory:mod:input", "count", 10_000).isPresent());
+        world.observeInventory(null, null, 10_001, Set.of("mod:never_observed"));
+        assertFalse(world.find("inventory:mod:never_observed", "count", 10_001).isPresent());
+    }
     @Test void lateObservationCannotRollbackCurrentProjection() {
         SemanticWorldModel model = new SemanticWorldModel();
         model.observe("machine:a", "state", "ready", null,

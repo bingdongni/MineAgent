@@ -31,12 +31,7 @@ jobs:
       - name: Build both loader artifacts
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :fabric:build :neoforge:build
-
-      - name: Verify release JARs
-        run: |
-          find fabric/build/libs -maxdepth 1 -name 'mineagent-fabric-*.jar' ! -name '*-sources.jar' | grep -q .
-          find neoforge/build/libs -maxdepth 1 -name 'mineagent-neoforge-*.jar' ! -name '*-sources.jar' | grep -q .
+          ./gradlew --no-daemon prepareReleaseNotes verifyReleaseArtifacts
 
       - name: Upload Fabric artifact
         uses: actions/upload-artifact@v4

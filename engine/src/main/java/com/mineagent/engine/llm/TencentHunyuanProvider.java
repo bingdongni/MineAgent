@@ -26,6 +26,7 @@ import java.util.Map;
 
 /** Tencent Hunyuan ChatCompletions adapter with official TC3-HMAC-SHA256 auth. */
 public final class TencentHunyuanProvider implements LLMProvider {
+    @Override public TencentHunyuanProvider newSession() { return new TencentHunyuanProvider(); }
     private static final String HOST = "hunyuan.tencentcloudapi.com";
     private static final String SERVICE = "hunyuan";
     private static final String VERSION = "2023-09-01";

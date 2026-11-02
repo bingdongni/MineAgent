@@ -10,6 +10,30 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class LLMContractTest {
+    @Test void cacheBoundaryIsExplicitBoundedAndOptInForLegacyCallers() {
+        var messages = List.of(ChatMessage.system("static"), ChatMessage.user("live"));
+        var legacy = new LLMRequest("https://example.test", "key", "model", messages, messages,
+                List.of(), List.of(), 0, 10, null, null, null, null, Duration.ofSeconds(1), false);
+        assertEquals(0, legacy.cacheableMessageCount());
+        var current = new LLMRequest("https://example.test", "key", "model", messages, messages,
+                List.of(), List.of(), 0, 10, null, null, null, null, Duration.ofSeconds(1), false, 1);
+        assertEquals(1, current.cacheableMessageCount());
+        var excessive = new LLMRequest("https://example.test", "key", "model", messages, messages,
+                List.of(), List.of(), 0, 10, null, null, null, null, Duration.ofSeconds(1), false, 99);
+        assertEquals(2, excessive.cacheableMessageCount());
+    }
+    @Test
+    void malformedRelayUsageCannotCreateNegativeOrOverlappingCacheAccounting() {
+        var empty = new LLMResponse.Usage(-10, -20, -30, 100, 100);
+        assertEquals(new LLMResponse.Usage(0, 0, 0, 0, 0), empty);
+        var overlap = new LLMResponse.Usage(100, 25, 1, 80, 80);
+        assertEquals(80, overlap.cachedPromptTokens());
+        assertEquals(20, overlap.cacheCreationPromptTokens());
+        assertEquals(125, overlap.totalTokens());
+        assertEquals(Integer.MAX_VALUE,
+                new LLMResponse.Usage(Integer.MAX_VALUE, Integer.MAX_VALUE, 0).totalTokens());
+    }
+
     @Test
     void requestNormalizesUnsafeAndMissingValues() {
         LLMRequest request = new LLMRequest("https://example.test", "key", "model",

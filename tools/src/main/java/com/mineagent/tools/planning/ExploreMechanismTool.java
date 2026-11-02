@@ -19,15 +19,19 @@ public final class ExploreMechanismTool implements Tool {
     @Override public String name() { return "explore_mechanism"; }
 
     @Override public String description() {
-        return "Propose, rank, inspect, or abort a budgeted experiment for an unfamiliar "
-                + "block, item, GUI, recipe, or mod rule. State-changing probes require "
+        return "Learn an unfamiliar block, item, GUI, recipe, or mod rule: predict outcomes, "
+                + "compose a bounded plan from verified transitions, find goal-relevant learning gaps, "
+                + "propose/rank/inspect/abort experiments, or inspect cost and action metrics. State-changing probes require "
                 + "an explicit reversible compensation. Rules need two independent "
                 + "supporting contexts before they become reusable verified adapters.";
     }
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("mode", "propose, recommend, status, or abort")
+                .string("mode", "propose, recommend, predict, plan, curriculum, metrics, status, or abort")
+                .optionalInteger("max_steps", "For plan: maximum learned transitions to compose", 1, 6)
+                .optionalString("query", "For curriculum: current objective; blank explores observed knowledge gaps")
+                .optionalString("before_value", "For predict/plan: observed pre-action value; plan requires a concrete observed state")
                 .optionalString("experiment_id", "Experiment ID for status or abort")
                 .optionalString("subject", "Registered ID or concise identity of the unfamiliar mechanism")
                 .optionalString("hypothesis", "One falsifiable behavior hypothesis")
@@ -68,6 +72,67 @@ public final class ExploreMechanismTool implements Tool {
         switch (mode) {
             case "propose" -> propose(args, loop.mechanismExplorer(), gameTick, reply);
             case "recommend" -> recommend(args, loop.mechanismExplorer(), gameTick, reply);
+            case "predict" -> {
+                String subject = ToolArgs.getString(args, "subject", null);
+                String tool = ToolArgs.getString(args, "probe_tool", null);
+                String predicate = ToolArgs.getString(args, "expected_predicate", null);
+                if (subject == null || tool == null || predicate == null) {
+                    reply.accept(ToolArgs.errorJson("predict requires subject, probe_tool and expected_predicate."));
+                    return;
+                }
+                try {
+                    var prediction = loop.mechanismExplorer().predict(subject, tool,
+                            ToolArgs.getString(args, "probe_arguments", "{}"), predicate,
+                            ToolArgs.getString(args, "before_value", "<absent>"));
+                    JsonObject result = new JsonObject();
+                    result.addProperty("success", true);
+                    result.add("prediction", new com.google.gson.Gson().toJsonTree(prediction));
+                    result.addProperty("authority", "Prediction is evidence for planning, not action permission or proof of causation");
+                    if (prediction.independentContexts() == 0) result.addProperty("warning",
+                            "No empirical data: entropy/gain are unestimated (0), not confidence. Observe or propose a bounded experiment.");
+                    reply.accept(result.toString());
+                } catch (IllegalArgumentException invalid) {
+                    reply.accept(ToolArgs.errorJson(invalid.getMessage()));
+                }
+            }
+            case "plan" -> {
+                try {
+                    var plan = loop.mechanismExplorer().plan(ToolArgs.getString(args, "subject", null),
+                            ToolArgs.getString(args, "expected_predicate", null),
+                            ToolArgs.getString(args, "before_value", null),
+                            ToolArgs.getString(args, "expected_value", null),
+                            ToolArgs.getInt(args, "max_steps", 4));
+                    JsonObject result = new JsonObject();
+                    result.addProperty("success", true);
+                    result.add("plan", new com.google.gson.Gson().toJsonTree(plan));
+                    reply.accept(result.toString());
+                } catch (IllegalArgumentException invalid) {
+                    reply.accept(ToolArgs.errorJson(invalid.getMessage()));
+                }
+            }
+            case "curriculum" -> {
+                JsonObject result = new JsonObject();
+                result.addProperty("success", true);
+                result.add("opportunities", new com.google.gson.Gson().toJsonTree(
+                        loop.mechanismExplorer().curriculum(ToolArgs.getString(args, "query", ""), gameTick, 5)));
+                result.addProperty("hint", "Select an owner-relevant gap, predict, then propose one bounded experiment. No action was dispatched.");
+                reply.accept(result.toString());
+            }
+            case "metrics" -> {
+                JsonObject result = new JsonObject();
+                result.addProperty("success", true);
+                var metrics = loop.metricsSnapshot();
+                result.addProperty("llm_calls", metrics.llmCalls());
+                result.addProperty("input_tokens", metrics.inputTokens());
+                result.addProperty("cached_input_tokens", metrics.cachedInputTokens());
+                result.addProperty("cache_write_tokens", metrics.cacheWriteTokens());
+                result.addProperty("output_tokens", metrics.outputTokens());
+                result.addProperty("provider_cache_hit_rate", metrics.providerCacheHitRate());
+                result.addProperty("verified_action_successes", metrics.successfulActions());
+                result.addProperty("action_failures", metrics.failedActions());
+                result.add("operations", new com.google.gson.Gson().toJsonTree(loop.metricOperations()));
+                reply.accept(result.toString());
+            }
             case "abort" -> {
                 boolean aborted = loop.mechanismExplorer().abort(
                         ToolArgs.getString(args, "experiment_id", null),
@@ -80,7 +145,7 @@ public final class ExploreMechanismTool implements Tool {
             case "status" -> status(loop.mechanismExplorer(),
                     ToolArgs.getString(args, "experiment_id", null), reply);
             default -> reply.accept(ToolArgs.errorJson(
-                    "mode must be propose, recommend, status, or abort."));
+                    "mode must be propose, recommend, predict, plan, curriculum, metrics, status, or abort."));
         }
     }
 

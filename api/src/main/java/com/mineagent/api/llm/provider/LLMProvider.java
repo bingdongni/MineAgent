@@ -21,6 +21,12 @@ import java.util.Map;
 public interface LLMProvider {
 
     /**
+     * Create a companion-owned transport. Legacy extensions retain their shared,
+     * synchronized instance until they explicitly implement session isolation.
+     */
+    default LLMProvider newSession() { return this; }
+
+    /**
      * Advertise protocol features without requiring callers to inspect model
      * names.  Legacy providers remain chat-completions providers by default.
      */

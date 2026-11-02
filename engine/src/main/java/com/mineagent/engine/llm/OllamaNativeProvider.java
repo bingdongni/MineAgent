@@ -12,6 +12,7 @@ import java.util.Map;
 
 /** Ollama's native /api/chat protocol, including its non-streaming tool shape. */
 public final class OllamaNativeProvider extends OpenAICompatibleProvider {
+    @Override public OllamaNativeProvider newSession() { return new OllamaNativeProvider(); }
     private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
     public OllamaNativeProvider() {
         super("ollama", "Ollama Native", "http://127.0.0.1:11434",

@@ -50,7 +50,7 @@ public class ScanNearbyEntitiesTool implements Tool {
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                               Consumer<String> reply) {
         Integer radius = ToolArgs.has(args, "radius")
-                ? ToolArgs.getIntOrNull(args, "radius") : DEFAULT_RADIUS;
+                ? ToolArgs.getIntOrNull(args, "radius") : Integer.valueOf(DEFAULT_RADIUS);
         if (radius == null || radius < 1 || radius > MAX_RADIUS) {
             reply.accept(ToolArgs.errorJson("'radius' must be an integer from 1 to " + MAX_RADIUS + "."));
             return;

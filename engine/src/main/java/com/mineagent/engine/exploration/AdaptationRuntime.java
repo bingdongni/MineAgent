@@ -3,6 +3,7 @@ package com.mineagent.engine.exploration;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mineagent.engine.skill.SkillLibrary;
+import com.mineagent.engine.skill.SkillBindings;
 
 import java.util.Collection;
 import java.util.Locale;
@@ -64,20 +65,30 @@ public final class AdaptationRuntime {
     private static String sequence(MechanismKnowledgeBase.Rule rule) {
         JsonObject step = new JsonObject();
         step.addProperty("tool", rule.probeTool());
+        JsonObject bindings = new JsonObject();
         try {
-            step.add("args", com.google.gson.JsonParser.parseString(rule.probeArguments())
-                    .getAsJsonObject());
+            JsonObject arguments = com.google.gson.JsonParser.parseString(rule.probeArguments())
+                    .getAsJsonObject();
+            for (String coordinate : java.util.List.of("x", "y", "z")) {
+                if (arguments.has(coordinate)) {
+                    bindings.add("target_" + coordinate, arguments.get(coordinate).deepCopy());
+                    arguments.add(coordinate, SkillBindings.reference("target_" + coordinate));
+                }
+            }
+            step.add("args", arguments);
         } catch (RuntimeException malformed) {
             step.add("args", new JsonObject());
         }
         JsonArray effects = new JsonArray();
         JsonObject effect = new JsonObject();
-        effect.addProperty("subject", rule.expectedSubject());
+        bindings.addProperty("effect_subject", rule.expectedSubject());
+        effect.add("subject", SkillBindings.reference("effect_subject"));
         effect.addProperty("predicate", rule.expectedPredicate());
         effect.addProperty("value", rule.expectedValue());
         effect.addProperty("minimum_confidence", 0.7);
         effects.add(effect);
         step.add("expected_effects", effects);
+        step.add("bindings", bindings);
         step.addProperty("on_failure", "replan");
         step.addProperty("max_attempts", 1);
         step.addProperty("timeout_ticks", 6400);

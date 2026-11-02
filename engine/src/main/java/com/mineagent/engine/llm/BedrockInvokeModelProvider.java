@@ -26,6 +26,7 @@ import java.util.Map;
  * available; this adapter exists for models that expose only InvokeModel.
  */
 public final class BedrockInvokeModelProvider implements LLMProvider {
+    @Override public BedrockInvokeModelProvider newSession() { return new BedrockInvokeModelProvider(); }
     @Override public String providerId() { return "aws-bedrock-invoke"; }
     @Override public String displayName() { return "AWS Bedrock InvokeModel"; }
     @Override public String defaultBaseUrl() { return "https://bedrock-runtime.us-east-1.amazonaws.com"; }

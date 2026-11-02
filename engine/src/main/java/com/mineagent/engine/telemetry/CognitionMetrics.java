@@ -15,6 +15,13 @@ import java.util.concurrent.atomic.LongAdder;
  * and memory recall without changing gameplay behavior.</p>
  */
 public final class CognitionMetrics {
+    public enum ActionOutcome { SUCCEEDED, FAILED, INVALID, CANCELLED, UNVERIFIED }
+    private static final int MAX_TRACKED_ACTIONS = 2_048;
+    private final java.util.LinkedHashSet<String> pendingActions = new java.util.LinkedHashSet<>();
+    private final java.util.LinkedHashSet<String> terminalActions = new java.util.LinkedHashSet<>();
+    private final LongAdder toolCalls = new LongAdder();
+    private final LongAdder cancelledActions = new LongAdder();
+    private final LongAdder unverifiedActions = new LongAdder();
     private final LongAdder llmCalls = new LongAdder();
     private final LongAdder llmFailures = new LongAdder();
     private final LongAdder llmLatencyNanos = new LongAdder();
@@ -54,10 +61,47 @@ public final class CognitionMetrics {
         if (accepted && success) successfulActions.increment();
         if (!success) failedActions.increment();
         if (invalid) invalidActions.increment();
-        if (failureKind != null && !failureKind.isBlank()) {
+        if (!success && failureKind != null && !failureKind.isBlank()) {
             failureKinds.computeIfAbsent(failureKind.trim(), ignored -> new LongAdder())
                     .increment();
         }
+    }
+
+    public void recordToolCall() { toolCalls.increment(); }
+
+    public synchronized void recordActionDispatched(String actionId) {
+        if (actionId == null || actionId.isBlank() || terminalActions.contains(actionId)) return;
+        pendingActions.add(actionId);
+        while (pendingActions.size() > MAX_TRACKED_ACTIONS) {
+            pendingActions.remove(pendingActions.iterator().next());
+        }
+    }
+
+    /** Count authoritative action terminals once; dispatch/query success is not body success. */
+    public synchronized boolean recordActionOutcome(String actionId, ActionOutcome outcome,
+                                                     String failureKind) {
+        if (actionId == null || actionId.isBlank() || outcome == null
+                || !terminalActions.add(actionId)) return false;
+        pendingActions.remove(actionId);
+        while (terminalActions.size() > MAX_TRACKED_ACTIONS) {
+            terminalActions.remove(terminalActions.iterator().next());
+        }
+        switch (outcome) {
+            case SUCCEEDED -> recordAction(true, true, false, null);
+            case FAILED -> recordAction(true, false, false, failureKind);
+            case INVALID -> recordAction(false, false, true, failureKind);
+            case CANCELLED -> cancelledActions.increment();
+            case UNVERIFIED -> unverifiedActions.increment();
+        }
+        return true;
+    }
+
+    public record Operations(long toolCalls, int pendingActions, long cancelledActions,
+                             long unverifiedActions) {}
+
+    public synchronized Operations operations() {
+        return new Operations(toolCalls.sum(), pendingActions.size(),
+                cancelledActions.sum(), unverifiedActions.sum());
     }
 
     public void recordMemoryQuery(boolean useful) {

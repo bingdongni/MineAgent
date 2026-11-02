@@ -18,7 +18,9 @@ public final class ExecuteSkillTool implements Tool {
     @Override public String description() {
         return "Execute a learned skill autonomously, one verified step at a time. "
                 + "Use optional overrides_json such as {\"0\":{\"x\":10}} to adapt "
-                + "stored step arguments. The runtime stops and requests replanning if a "
+                + "stored step arguments. Transferable adapters accept {\"bindings\":{\"target_x\":10,"
+                + "\"target_y\":64,\"target_z\":5,\"effect_subject\":\"machine:new\"}} so actions and "
+                + "verification refer to the same target. The runtime stops and requests replanning if a "
                 + "precondition, task result, or declared postcondition fails.";
     }
 
@@ -26,7 +28,7 @@ public final class ExecuteSkillTool implements Tool {
         return Schema.object()
                 .string("skill_name", "Exact learned skill name")
                 .optionalString("overrides_json",
-                        "Optional JSON object keyed by zero-based step index; each value patches that step's arguments")
+                        "Optional JSON object: bindings supplies typed template parameters; numeric step keys patch legacy arguments")
                 .build();
     }
 

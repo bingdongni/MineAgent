@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** Google Vertex AI Gemini adapter with OAuth access-token and service-account JWT auth. */
 public final class VertexAIProvider implements LLMProvider {
+    @Override public VertexAIProvider newSession() { return new VertexAIProvider(); }
     private static final String TOKEN_URL = "https://oauth2.googleapis.com/token";
     private static final String SCOPE = "https://www.googleapis.com/auth/cloud-platform";
     private static final Map<String, Token> TOKEN_CACHE = new ConcurrentHashMap<>();

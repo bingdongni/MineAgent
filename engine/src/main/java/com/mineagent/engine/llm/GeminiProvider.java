@@ -20,6 +20,9 @@ import java.util.*;
  * function calling.
  */
 public class GeminiProvider implements LLMProvider {
+    @Override public LLMProvider newSession() {
+        return getClass() == GeminiProvider.class ? new GeminiProvider() : this;
+    }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()

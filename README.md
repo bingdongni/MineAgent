@@ -1,5 +1,7 @@
 # MineAgent
 
+> **v0.5.0** 加入经验条件预测、短程转换组合、长程计划的实时前提与局部修复、技能目标绑定和伙伴独立会话。[下载本版](https://github.com/bingdongni/MineAgent/releases/tag/v0.5.0)，或查看 [持续学习说明](docs/research/continual-learning.md) 与 [版本验证记录](docs/research/validation-0.5.0.md)。实机学习与成本收益仍需测量。
+
 [English](README.en.md) | 简体中文
 
 [![Build](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml/badge.svg)](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml)
@@ -207,8 +209,8 @@ Linux/macOS：
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.4.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.4.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.5.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.5.0.jar`
 
 ## 项目结构
 

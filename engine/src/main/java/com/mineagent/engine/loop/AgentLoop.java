@@ -177,6 +177,7 @@ public class AgentLoop {
 
     private final AgentPlayer companion;
     private final String providerId;
+    private volatile LLMProvider companionProvider;
     private final String apiKey;
     private final String model;  // final — model switching is not allowed at runtime
     private final String baseUrl;
@@ -779,6 +780,11 @@ public class AgentLoop {
                         : state == TaskState.CANCELLED ? ActionTransactionLedger.Status.CANCELLED
                         : ActionTransactionLedger.Status.FAILED,
                 message, semanticWorldModel, gameTick);
+        metrics.recordActionOutcome(transactionId,
+                state == TaskState.SUCCESS ? CognitionMetrics.ActionOutcome.SUCCEEDED
+                        : state == TaskState.CANCELLED ? CognitionMetrics.ActionOutcome.CANCELLED
+                        : CognitionMetrics.ActionOutcome.FAILED,
+                experience.failureKind().name().toLowerCase(Locale.ROOT));
         mechanismExplorer.onTaskFinished(taskId, state, message, gameTick);
         if (skillAction) {
             skillRuntime.onTaskFinished(taskId, state, message, gameTick);
@@ -919,7 +925,7 @@ public class AgentLoop {
             List<WorldAssetIndex.ItemObservation> inventory =
                     WorldAssetObserver.inventory(sp);
             worldAssetIndex.observeInventory(position, inventory, gameTick);
-            semanticWorldModel.observeInventory(position, inventory, gameTick);
+            semanticWorldModel.observeInventory(position, inventory, gameTick, planner.watchedInventoryItems());
             semanticWorldModel.observeAssets(worldAssetIndex.snapshot(), gameTick);
             liveAssetPosition.set(position);
             liveAssetGameTick.set(Math.max(0L, gameTick));
@@ -1107,6 +1113,7 @@ public class AgentLoop {
     public CognitionMetrics.Snapshot metricsSnapshot() {
         return metrics.snapshot();
     }
+    public CognitionMetrics.Operations metricOperations() { return metrics.operations(); }
     public RealtimeCognition realtimeCognition() { return realtimeCognition; }
     public SemanticWorldModel semanticWorldModel() { return semanticWorldModel; }
     public ActionTransactionLedger actionLedger() { return actionLedger; }
@@ -1125,6 +1132,8 @@ public class AgentLoop {
             return new SkillRuntime.StartResult(false, null,
                     "Body is busy with task " + body.taskId());
         }
+        String prerequisiteBlocker = planner.actionBlocker(semanticWorldModel, gameTick);
+        if (prerequisiteBlocker != null) return new SkillRuntime.StartResult(false, null, prerequisiteBlocker);
         SkillRuntime.StartResult result = skillRuntime.start(
                 skillName, overrides, gameTick);
         if (result.accepted()) {
@@ -1160,6 +1169,8 @@ public class AgentLoop {
             return new SkillRuntime.DispatchResult(false, true, false,
                     "Body is busy with task " + body.taskId());
         }
+        metrics.recordToolCall();
+        if (SKILL_ACTION_TOOLS.contains(toolName)) metrics.recordActionDispatched(actionId);
         // Capture the transaction checkpoint before recording the ACTION
         // event. Otherwise the audit entry's "before" state already contains
         // the operation it is supposed to verify.
@@ -1179,6 +1190,8 @@ public class AgentLoop {
             semanticWorldModel.recordOutcome(toolName, false, detail,
                     actionId, currentGameTickSafe(), true);
             dispatchedActionTools.remove(actionId);
+            if (SKILL_ACTION_TOOLS.contains(toolName)) metrics.recordActionOutcome(actionId,
+                    CognitionMetrics.ActionOutcome.FAILED, "tool_exception");
             return new SkillRuntime.DispatchResult(false,
                     tool.dispatchesAsyncTask(), false, detail);
         }
@@ -1190,6 +1203,8 @@ public class AgentLoop {
             semanticWorldModel.recordOutcome(toolName, false, detail,
                     actionId, currentGameTickSafe(), true);
             dispatchedActionTools.remove(actionId);
+            if (SKILL_ACTION_TOOLS.contains(toolName)) metrics.recordActionOutcome(actionId,
+                    CognitionMetrics.ActionOutcome.UNVERIFIED, "callback_missing");
             return new SkillRuntime.DispatchResult(false,
                     tool.dispatchesAsyncTask(), false, detail);
         }
@@ -1207,6 +1222,8 @@ public class AgentLoop {
             semanticWorldModel.recordOutcome(toolName, verified, raw,
                     actionId, currentGameTickSafe(), true);
             success = verified;
+            if (SKILL_ACTION_TOOLS.contains(toolName)) metrics.recordActionOutcome(actionId,
+                    metricOutcome(analysis, verified), analysis.errorType());
         } else {
             actionLedger.markPending(actionId, semanticWorldModel,
                     currentGameTickSafe(), raw);
@@ -1976,6 +1993,16 @@ public class AgentLoop {
         return new FailureAnalysis(false, true, "", "success");
     }
 
+    private static CognitionMetrics.ActionOutcome metricOutcome(FailureAnalysis analysis, boolean verified) {
+        if (verified) return CognitionMetrics.ActionOutcome.SUCCEEDED;
+        return switch (analysis.errorType()) {
+            case "invalid_arguments", "invalid_params", "unknown_tool" -> CognitionMetrics.ActionOutcome.INVALID;
+            case "timeout" -> CognitionMetrics.ActionOutcome.UNVERIFIED;
+            default -> analysis.isFailure() ? CognitionMetrics.ActionOutcome.FAILED
+                    : CognitionMetrics.ActionOutcome.UNVERIFIED;
+        };
+    }
+
     /**
      * 错误分类（通用模式，不依赖硬编码关键词）
      */
@@ -2112,6 +2139,7 @@ public class AgentLoop {
             fallbackHistory = new ArrayList<>(history);
             transportItems = opaqueTransportItems(providerTransportState.get());
         }
+        int cacheableMessageCount = messagesToSend.size();
         if (roundNumber == 0) {
             // Keep volatile state at the final message. It is intentionally not
             // persisted: on the next request the unchanged static prompt and
@@ -2129,8 +2157,8 @@ public class AgentLoop {
 
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
             ProviderSessionState providerStateBefore = providerTransportState.get();
+            long requestStarted = System.nanoTime();
             try {
-                long requestStarted = System.nanoTime();
                 Thread requestThread = Thread.currentThread();
                 activeLLMCallThread.set(requestThread);
                 if (eventGeneration.get() != callGeneration) {
@@ -2139,9 +2167,9 @@ public class AgentLoop {
                 }
                 LLMResponse response;
                 try {
-                    // Provider instances are registry singletons, so their
-                    // mutable wire session must be borrowed under a monitor.
-                    // The authoritative copy remains per AgentLoop.
+                    // Built-in transports are companion-owned. A legacy extension
+                    // may still return its registry singleton; retain its monitor
+                    // while independent built-in sessions can proceed concurrently.
                     synchronized (provider) {
                         provider.restoreSessionState(providerStateBefore);
                         response = provider.complete(new LLMRequest(
@@ -2151,7 +2179,8 @@ public class AgentLoop {
                                 providerStateBefore.previousResponseId(), providerStateBefore.conversationId(),
                                 stablePromptCacheKey(provider),
                                 Duration.ofSeconds(providerDeadlineSeconds(roundNumber)),
-                                provider.capabilities().supports(LLMCapabilities.Feature.SERVER_COMPACTION)));
+                                provider.capabilities().supports(LLMCapabilities.Feature.SERVER_COMPACTION),
+                                cacheableMessageCount));
                         providerTransportState.set(provider.sessionState(model));
                     }
                 } finally {
@@ -2193,7 +2222,7 @@ public class AgentLoop {
                     provider.restoreSessionState(providerStateBefore);
                 }
                 providerTransportState.set(providerStateBefore);
-                metrics.recordLlm(null, 0L, true);
+                metrics.recordLlm(null, System.nanoTime() - requestStarted, true);
                 String msg = e.getMessage() != null ? e.getMessage() : "";
                 System.err.println("[MineAgent] LLM call attempt " + (attempt + 1)
                         + "/" + MAX_RETRIES + " failed: " + msg);
@@ -2823,11 +2852,24 @@ public class AgentLoop {
                     // made by vanilla between the one-second periodic samples.
                     publishWorldSnapshotNow(true);
                     long actionTick = currentGameTickSafe();
+                    if (SKILL_ACTION_TOOLS.contains(tc.name())) {
+                        String blocker = planner.actionBlocker(semanticWorldModel, actionTick);
+                        if (blocker != null) {
+                            metrics.recordActionOutcome(tc.id(), CognitionMetrics.ActionOutcome.INVALID,
+                                    "plan_prerequisite");
+                            if (state.compareAndSet(ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
+                                resultHolder.set(errorJson(blocker));
+                            }
+                            latch.countDown();
+                            return;
+                        }
+                    }
                     if (!tool.dispatchesAsyncTask()
                             && SKILL_ACTION_TOOLS.contains(tc.name())) {
                         planner.bindToolCall(tc.id());
                     }
                     if (SKILL_ACTION_TOOLS.contains(tc.name())) {
+                        metrics.recordActionDispatched(tc.id());
                         actionLedger.begin(tc.id(), tc.name(),
                                 "server callback plus postcondition observation",
                                 semanticWorldModel, actionTick);
@@ -2863,6 +2905,9 @@ public class AgentLoop {
                                 success = transaction != null
                                         && transaction.status()
                                         == ActionTransactionLedger.Status.VERIFIED;
+                                metrics.recordActionOutcome(tc.id(),
+                                        metricOutcome(outcome, success),
+                                        outcome.errorType());
                             }
                             semanticWorldModel.recordOutcome(tc.name(), success,
                                     safeResult, tc.id(), callbackTick,
@@ -2968,6 +3013,8 @@ public class AgentLoop {
                                 ActionTransactionLedger.Status.UNVERIFIED,
                                 "Tool execution timed out", semanticWorldModel,
                                 currentGameTickSafe());
+                        metrics.recordActionOutcome(exec.toolCallId(),
+                                CognitionMetrics.ActionOutcome.UNVERIFIED, "timeout");
                     }
                     mechanismExplorer.onToolResult(exec.toolCallId(), exec.toolName(), false,
                             false, "Tool execution timed out", currentGameTickSafe());
@@ -2978,7 +3025,14 @@ public class AgentLoop {
                     if (rawResult == null) {
                         rawResult = exec.state().get() == ToolExecutionState.EXPIRED
                                 ? "{\"error\":\"Tool execution cancelled\"}"
-                                : "{\"success\":true}";
+                                : "{\"error\":\"Tool completed without callback evidence\"}";
+                        if (SKILL_ACTION_TOOLS.contains(exec.toolName())) {
+                            metrics.recordActionOutcome(exec.toolCallId(),
+                                    exec.state().get() == ToolExecutionState.EXPIRED
+                                            ? CognitionMetrics.ActionOutcome.CANCELLED
+                                            : CognitionMetrics.ActionOutcome.UNVERIFIED,
+                                    "callback_missing");
+                        }
                     }
                     // Truncate long tool results to keep the conversation compact.
                     // 截断长度根据工具类型差异化：
@@ -3008,6 +3062,8 @@ public class AgentLoop {
                     actionLedger.finish(exec.toolCallId(),
                             ActionTransactionLedger.Status.CANCELLED, "Interrupted",
                             semanticWorldModel, currentGameTickSafe());
+                    metrics.recordActionOutcome(exec.toolCallId(),
+                            CognitionMetrics.ActionOutcome.CANCELLED, "interrupted");
                 }
                 mechanismExplorer.onToolResult(exec.toolCallId(), exec.toolName(), false,
                         false, "Interrupted", currentGameTickSafe());
@@ -3023,11 +3079,17 @@ public class AgentLoop {
             ChatMessage r = resultsById.get(tc.id());
             if (r != null) {
                 results.add(r);
+                metrics.recordToolCall();
                 FailureAnalysis analysis = analyzeFailure(r.content());
-                boolean invalid = "invalid_arguments".equals(analysis.errorType())
-                        || "unknown_tool".equals(analysis.errorType());
-                metrics.recordAction(!invalid, analysis.isSuccess(), invalid,
-                        analysis.errorType());
+                if (SKILL_ACTION_TOOLS.contains(tc.name())) {
+                    if ("async_pending".equals(analysis.errorType())) {
+                        metrics.recordActionDispatched(tc.id());
+                    } else {
+                        metrics.recordActionOutcome(tc.id(),
+                                metricOutcome(analysis, false),
+                                analysis.errorType());
+                    }
+                }
             }
         }
         return results;
@@ -3220,7 +3282,7 @@ public class AgentLoop {
         String owner = companion.ownerUuid() == null ? "owner" : companion.ownerUuid().toString();
         String name = companion.companionName() == null ? "companion"
                 : companion.companionName().trim().replaceAll("[^a-zA-Z0-9_-]", "_");
-        return provider.providerId() + ":" + model + ":mineagent-prompt-v4:" + owner + ":" + name;
+        return provider.providerId() + ":" + model + ":mineagent-prompt-v6:" + owner + ":" + name;
     }
 
     /** HTTP deadline is bounded per reasoning round so stale requests can be cancelled. */
@@ -3338,6 +3400,8 @@ public class AgentLoop {
     }
 
     private LLMProvider resolveProvider() {
+        LLMProvider existing = companionProvider;
+        if (existing != null) return existing;
         // ── Provider selection ──
         // Model switching is NOT allowed at runtime — each companion is bound
         // to one (provider, model, baseUrl) triple for its entire lifetime.
@@ -3377,7 +3441,13 @@ public class AgentLoop {
                             "Cannot detect provider for model: " + model
                                     + " (providerId=" + providerId + ")"));
         }
-        return resolved;
+        synchronized (this) {
+            if (companionProvider == null) {
+                companionProvider = java.util.Objects.requireNonNull(resolved.newSession(),
+                        "Provider returned a null companion session");
+            }
+            return companionProvider;
+        }
     }
 
     private List<Map<String, Object>> buildToolDefinitions() {
@@ -3415,6 +3485,16 @@ public class AgentLoop {
         sb.append("to make smart decisions in real-time.\n\n");
 
         sb.append("### The Think-Act Loop\n");
+        sb.append("For long goals, attach live prerequisites to todowrite steps (materials, usable tools, target state). "
+                + "A historical completed milestone does not prove a resource is still available. "
+                + "When prerequisite_unknown is reported, observe first; when prerequisite_changed is reported, "
+                + "restore the requirement or repair the affected suffix while preserving verified achievements.\n");
+        sb.append("For unfamiliar mechanisms, use explore_mechanism predict to compare observed outcomes and uncertainty, "
+                + "plan to compose a bounded route from verified state transitions, "
+                + "and curriculum to identify owner-relevant knowledge gaps. Empirical evidence overrides guesses; "
+                + "a prediction never grants action permission. Test one bounded intervention, inspect the result, "
+                + "and repair a contradicted rule before reuse. Transfer learned adapters through named bindings "
+                + "so both the action and its verification point to the new observed target.\n");
         sb.append("Before EVERY action, run through this mental checklist:\n");
         sb.append("1. **Observe** — What's around me? What's my status? What changed?\n");
         sb.append("2. **Assess** — Am I in danger? Am I hungry? Am I equipped for this?\n");

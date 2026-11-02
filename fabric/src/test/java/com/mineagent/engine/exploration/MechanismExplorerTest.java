@@ -323,6 +323,125 @@ final class MechanismExplorerTest {
         assertEquals("inspect_block", recommendation.candidate().tool());
     }
 
+    @Test void verifiedEvidencePredictsAcrossTargetsAndPersistsWithoutRestoringAnExperiment() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        MechanismExplorer source = explorer(world, new SkillLibrary(), fingerprint("a"));
+        supportMachine(source, world, "machine:one", "ctx-one", 10);
+        supportMachine(source, world, "machine:two", "ctx-two", 100);
+        var prediction = source.predict("mod:machine", "interact_at", "{\"x\":99}", "state", "<absent>");
+        assertEquals(2, prediction.independentContexts());
+        assertTrue(prediction.outcomes().get("active") > 0.8);
+        com.google.gson.Gson gson = new com.google.gson.Gson();
+        MechanismExplorer restored = explorer(new SemanticWorldModel(), new SkillLibrary(), fingerprint("a"));
+        restored.importState(gson.fromJson(gson.toJson(source.exportState()), MechanismExplorer.State.class));
+        assertEquals(prediction, restored.predict("mod:machine", "interact_at", "{\"x\":200}", "state", "<absent>"));
+        MechanismExplorer changed = explorer(new SemanticWorldModel(), new SkillLibrary(), fingerprint("b"));
+        changed.importState(source.exportState());
+        assertEquals(0, changed.predict("mod:machine", "interact_at", "{}", "state", "<absent>").independentContexts());
+        restored.importState(null);
+        assertEquals(0, restored.predict("mod:machine", "interact_at", "{}", "state", "<absent>").independentContexts());
+    }
+
+    @Test void transferredAdapterVerifiesTheNewTargetInsteadOfTheOldTarget() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        SkillLibrary skills = new SkillLibrary();
+        MechanismExplorer explorer = explorer(world, skills, fingerprint("a"));
+        supportMachine(explorer, world, "machine:one", "ctx-one", 10);
+        supportMachine(explorer, world, "machine:two", "ctx-two", 100);
+        String adapter = explorer.knowledgeBase().rules().iterator().next().adapterSkill();
+        List<Integer> positions = new ArrayList<>();
+        var runtime = new com.mineagent.engine.skill.SkillRuntime(skills, world,
+                (id, tool, args) -> {
+                    positions.add(args.get("x").getAsInt());
+                    world.observe("machine:two", "state", "active", null, 1.0,
+                            "server", id, 201, 40, false);
+                    return new com.mineagent.engine.skill.SkillRuntime.DispatchResult(true, false, true, "accepted");
+                }, ignored -> {});
+        var overrides = com.google.gson.JsonParser.parseString(
+                "{\"bindings\":{\"target_x\":99,\"effect_subject\":\"machine:three\"}}").getAsJsonObject();
+        assertTrue(runtime.start(adapter, overrides, 200).accepted());
+        runtime.tick(201);
+        assertEquals(List.of(99), positions);
+        assertEquals(com.mineagent.engine.skill.SkillRuntime.Status.VERIFYING, runtime.snapshot().status());
+        world.observe("machine:three", "state", "active", null, 1.0, "server", null, 202, 40, false);
+        runtime.tick(202);
+        assertEquals(com.mineagent.engine.skill.SkillRuntime.Status.SUCCEEDED, runtime.snapshot().status());
+    }
+
+    @Test void curriculumIsRelevantBudgetedAndDoesNotClaimBodyOwnership() {
+        MechanismExplorer explorer = explorer(new SemanticWorldModel(), new SkillLibrary(), fingerprint("a"));
+        var profile = new MechanismKnowledgeBase.Profile("mod:machine", "mod", MechanismKnowledgeBase.Kind.BLOCK,
+                java.util.Map.of("function", "processing"), fingerprint("a"), 1, 1);
+        explorer.importState(new MechanismExplorer.State(List.of(),
+                new MechanismKnowledgeBase.State(List.of(profile), List.of(), 1), List.of(), 1));
+        assertEquals(1, explorer.curriculum("mod:machine", 2, 5).size());
+        assertTrue(explorer.curriculum("ocean fishing", 2, 5).isEmpty());
+        assertTrue(explorer.all().isEmpty());
+    }
+
+    @Test void renamingTheSameSetupCannotConfirmAMechanism() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        MechanismExplorer explorer = explorer(world, new SkillLibrary(), fingerprint("a"));
+        world.observe("machine:one", "state", "off", null, 0.9, "server", null, 1, 40, false);
+        supportMachine(explorer, world, "machine:one", "invented-context-one", 10);
+        world.observe("machine:one", "state", "off", null, 0.9, "server", null, 50, 40, false);
+        supportMachine(explorer, world, "machine:one", "invented-context-two", 60);
+        var rule = explorer.knowledgeBase().rules().iterator().next();
+        assertEquals(1, rule.supports());
+        assertEquals(MechanismKnowledgeBase.RuleStatus.CANDIDATE, rule.status());
+        assertNull(rule.adapterSkill());
+    }
+
+    @Test void legacyCallerNamedContextsRequireRevalidationAndCannotRestoreAnAdapter() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        SkillLibrary skills = new SkillLibrary();
+        MechanismExplorer source = explorer(world, skills, fingerprint("a"));
+        supportMachine(source, world, "machine:one", "legacy-one", 10);
+        supportMachine(source, world, "machine:two", "legacy-two", 100);
+        String adapter = source.knowledgeBase().rules().iterator().next().adapterSkill();
+        assertTrue(skills.get(adapter).isPresent());
+        var gson = new com.google.gson.Gson();
+        var legacy = gson.toJsonTree(source.exportState()).getAsJsonObject();
+        legacy.getAsJsonObject("knowledge").remove("contextVersion");
+        source.importState(gson.fromJson(legacy, MechanismExplorer.State.class));
+        var restored = source.knowledgeBase().rules().iterator().next();
+        assertEquals(0, restored.supports());
+        assertEquals(MechanismKnowledgeBase.RuleStatus.CANDIDATE, restored.status());
+        assertTrue(skills.get(adapter).isEmpty());
+    }
+
+    @Test void learnerAuditFactsCannotReplaceTheFrozenProbeObservation() {
+        SemanticWorldModel world = new SemanticWorldModel();
+        MechanismExplorer explorer = explorer(world, new SkillLibrary(), fingerprint("a"));
+        var proposal = explorer.propose("mod:machine", "observation changes the declared value",
+                "look_around", "{}", "mechanism:mod:machine", "hypothesis_status", "external_value",
+                MechanismExplorer.Risk.LOW, 1);
+        assertTrue(proposal.accepted());
+        explorer.onToolDispatched("probe", "look_around", "{}", 2);
+        world.observe("mechanism:mod:machine", "hypothesis_status", "external_value", null,
+                1.0, "server", "probe", 3, 40, false);
+        explorer.onToolResult("probe", "look_around", true, false, "{\"success\":true}", 3);
+        assertEquals(MechanismExplorer.Status.SUPPORTED, explorer.get(proposal.experiment().id()).status());
+        var prediction = explorer.predict("mod:machine", "look_around", "{}", "hypothesis_status", "<absent>");
+        assertTrue(prediction.outcomes().containsKey("external_value"));
+        assertFalse(prediction.outcomes().containsKey("supported"));
+    }
+
+    @Test void unsupportedProbeShapesAreRejectedBeforeTheyCanEnterTheEvidenceLifecycle() {
+        MechanismExplorer explorer = explorer(new SemanticWorldModel(), new SkillLibrary(), fingerprint("a"));
+        String deep = "{\"nested\":".repeat(20) + "1" + "}".repeat(20);
+        assertFalse(explorer.propose("mod:machine", "observation", "look_around", deep,
+                "tool:look_around", "outcome", "success", MechanismExplorer.Risk.LOW, 1).accepted());
+        var candidate = new MechanismExplorer.ProbeCandidate("look_around", deep,
+                MechanismExplorer.Risk.LOW, true, null, "{}", 1, 0.9);
+        assertNull(explorer.recommend(List.of(candidate), "mod:machine", 1).candidate());
+        var oversized = new MechanismExplorer.ProbeCandidate("look_around",
+                "{\"text\":\"" + "x".repeat(2_048) + "\"}",
+                MechanismExplorer.Risk.LOW, true, null, "{}", 1, 0.9);
+        assertNull(explorer.recommend(List.of(oversized), "mod:machine", 1).candidate());
+        assertTrue(explorer.all().isEmpty());
+    }
+
     private static MechanismExplorer explorer(SemanticWorldModel world,
                                               SkillLibrary skills,
                                               EnvironmentFingerprint fingerprint) {

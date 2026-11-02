@@ -12,6 +12,7 @@ import java.util.List;
 
 /** Azure OpenAI native route: deployment path, api-version query, api-key header. */
 public final class AzureOpenAIProvider extends OpenAICompatibleProvider {
+    @Override public AzureOpenAIProvider newSession() { return new AzureOpenAIProvider(); }
     private static final ThreadLocal<AzureCredentials> CURRENT = new ThreadLocal<>();
     public AzureOpenAIProvider() {
         super("azure-openai", "Azure OpenAI",
@@ -92,7 +93,7 @@ public final class AzureOpenAIProvider extends OpenAICompatibleProvider {
                     request.model(), request.messages(), request.fallbackMessages(), request.items(),
                     request.tools(), request.temperature(), request.maxTokens(), request.reasoningEffort(),
                     request.previousResponseId(), request.conversationId(), request.promptCacheKey(),
-                    request.deadline(), request.allowServerCompaction()));
+                    request.deadline(), request.allowServerCompaction(), request.cacheableMessageCount()));
         } finally {
             CURRENT.remove();
         }

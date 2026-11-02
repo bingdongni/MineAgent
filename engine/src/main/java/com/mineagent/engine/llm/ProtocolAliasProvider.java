@@ -45,6 +45,13 @@ public final class ProtocolAliasProvider implements LLMProvider {
     }
 
     @Override
+    public LLMProvider newSession() {
+        LLMProvider isolated = delegate.newSession();
+        return isolated == delegate ? this
+                : new ProtocolAliasProvider(providerId, displayName, isolated, requiresApiKey);
+    }
+
+    @Override
     public String displayName() {
         return displayName;
     }

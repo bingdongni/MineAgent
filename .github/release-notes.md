@@ -1,18 +1,19 @@
-MineAgent 0.3.6 is an alpha release for Minecraft 1.21.1 and requires Java 21.
+MineAgent @VERSION@ is a feature release for Minecraft 1.21.1 and Java 21.
 
-This release adds human-controlled, independently persisted game modes for every companion. Configure & Create offers Survival, Creative, Adventure, and Hardcore and defaults every omitted or blank mode to Survival. Companion Chat now lets the human select any owned companion and change that companion's mode at any time.
+This release connects verified mechanism experiments to bounded outcome prediction, learning-progress-guided exploration, short compositional transition planning, and target-bound executable adapters. Evidence is scoped to its parameters, prior state and environment; duplicate physical setups do not create independent support. Counterexamples require revalidation. This is external experience learning, not autonomous model-weight training.
 
-Survival, Creative, and Adventure are backed by vanilla `GameType`, abilities, and interaction restrictions. Vanilla Hardcore is world-scoped, so MineAgent implements the accurate per-companion equivalent: Survival rules plus persistent permanent death. Once a Hardcore companion dies, its body is permanently locked: mode changes, `/mineagent respawn`, and world rejoin cannot revive it. The owner must create a new companion.
+Long-horizon plan steps can declare live prerequisites. The planner distinguishes missing observations from observed contradictions, retains historical achievements when resources are consumed, schedules ready work by priority and remaining dependency depth, and requests a repair when the next executable window loses its prerequisites. Step readiness and executor ownership are recomputed after restart.
 
-The fake-player game-mode wrapper no longer hard-codes Survival after a mode change. Creation applies the selected mode before registration, runtime changes cancel actions accepted under the previous permission model, and the server validates both companion ownership and the four-value mode vocabulary. Mode changes are rejected for permanently dead Hardcore bodies. The LLM receives the selected mode as trusted context but has no tool or endpoint with which to change it.
+Built-in model transports use independent companion sessions. Anthropic requests can cache both the static instruction prefix and the declared durable conversation tail before transient live observations. Cache reads, writes, tool calls and action terminals are accounted for separately. Actual cache availability, model behavior and pricing depend on the selected official, relay or local endpoint.
 
-Old companion stores without a mode load as Survival. Game mode and Hardcore death state survive owner disconnects and world reloads. Both loader modules compile from the same shared UI and network contract.
+The update also fixes nullable numeric validation, adds controlled planning/learning/HTTP regressions, and verifies tag, generated release notes, loader metadata and artifact identity before publication. Legacy mechanism rules with caller-named contexts require fresh physical evidence before automatic adapter reuse.
 
 ## Downloads
 
-- `mineagent-fabric-0.3.6.jar`: supported build. Requires Fabric Loader and Fabric API for Minecraft 1.21.1.
-- `mineagent-neoforge-0.3.6.jar`: experimental build. Requires NeoForge 21.1.x and should be tested in a backed-up world.
+- `mineagent-fabric-@VERSION@.jar`: supported loader build; requires Fabric Loader and Fabric API for Minecraft 1.21.1.
+- `mineagent-neoforge-@VERSION@.jar`: experimental loader build; requires NeoForge 21.1.x.
+- `release-artifacts.sha256`: checksums for both loader JARs.
 
-Install exactly one JAR matching your mod loader. Do not install the Fabric and NeoForge artifacts together.
+Install the JAR matching your loader. Automated component tests and successful packaging do not establish AGI, zero defects, cross-project superiority, long-run gameplay success or measured monetary savings. See the repository's research and validation notes for the current evidence boundary.
 
-API requests may cost money. MineAgent stores API keys as plain text in its configuration and companion save file; review `SECURITY.md` before sharing logs, configuration, or worlds.
+API requests may cost money. MineAgent stores API keys in configuration and companion data; review `SECURITY.md` before sharing those files.

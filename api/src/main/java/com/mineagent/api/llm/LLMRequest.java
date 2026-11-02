@@ -17,7 +17,19 @@ public record LLMRequest(String baseUrl, String apiKey, String model,
                          double temperature, int maxTokens,
                          String reasoningEffort, String previousResponseId,
                          String conversationId, String promptCacheKey,
-                         Duration deadline, boolean allowServerCompaction) {
+                         Duration deadline, boolean allowServerCompaction,
+                         int cacheableMessageCount) {
+    /** Legacy callers do not declare a reusable history boundary. */
+    public LLMRequest(String baseUrl, String apiKey, String model,
+                      List<ChatMessage> messages, List<ChatMessage> fallbackMessages,
+                      List<ConversationItem> items, List<Map<String, Object>> tools,
+                      double temperature, int maxTokens, String reasoningEffort,
+                      String previousResponseId, String conversationId, String promptCacheKey,
+                      Duration deadline, boolean allowServerCompaction) {
+        this(baseUrl, apiKey, model, messages, fallbackMessages, items, tools, temperature,
+                maxTokens, reasoningEffort, previousResponseId, conversationId, promptCacheKey,
+                deadline, allowServerCompaction, 0);
+    }
     /** Source-compatible constructor for integrations written against the
      * stage-0 state-aware request contract. The same messages are used as the
      * complete local fallback when no separate history is supplied. */
@@ -40,6 +52,9 @@ public record LLMRequest(String baseUrl, String apiKey, String model,
                 ? messages : List.copyOf(fallbackMessages);
         items = items == null ? List.of() : List.copyOf(items);
         tools = tools == null ? List.of() : List.copyOf(tools);
+        // This prefix ends before transient observations; it is a capability hint,
+        // not a provider-specific wire parameter or a response cache.
+        cacheableMessageCount = Math.max(0, Math.min(messages.size(), cacheableMessageCount));
         model = model == null ? "" : model.trim();
         reasoningEffort = reasoningEffort == null || reasoningEffort.isBlank()
                 ? null : reasoningEffort.trim();

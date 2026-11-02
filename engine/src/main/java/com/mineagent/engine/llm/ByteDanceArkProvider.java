@@ -5,6 +5,7 @@ import java.net.http.HttpRequest;
 
 /** ByteDance Volcengine Ark native route (the Ark v3 JSON is OpenAI-shaped). */
 public final class ByteDanceArkProvider extends OpenAICompatibleProvider {
+    @Override public ByteDanceArkProvider newSession() { return new ByteDanceArkProvider(); }
     public ByteDanceArkProvider() {
         super("bytedance-ark", "ByteDance Ark",
                 "https://ark.cn-beijing.volces.com/api/v3",

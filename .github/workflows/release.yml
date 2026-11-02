@@ -30,23 +30,25 @@ jobs:
       - name: Build both loader artifacts
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon clean :fabric:build :neoforge:build
+          ./gradlew --no-daemon clean verifyReleaseTag prepareReleaseNotes verifyReleaseArtifacts "-Prelease_tag=$GITHUB_REF_NAME"
 
-      - name: Verify release JARs
-        run: |
-          find fabric/build/libs -maxdepth 1 -name 'mineagent-fabric-*.jar' ! -name '*-sources.jar' | grep -q .
-          find neoforge/build/libs -maxdepth 1 -name 'mineagent-neoforge-*.jar' ! -name '*-sources.jar' | grep -q .
-
-      - name: Create prerelease with Fabric and NeoForge JARs
+      - name: Publish release with Fabric and NeoForge JARs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          FABRIC_JAR="$(find fabric/build/libs -maxdepth 1 -name 'mineagent-fabric-*.jar' ! -name '*-sources.jar' -print -quit)"
-          NEOFORGE_JAR="$(find neoforge/build/libs -maxdepth 1 -name 'mineagent-neoforge-*.jar' ! -name '*-sources.jar' -print -quit)"
+          VERSION="${GITHUB_REF_NAME#v}"
+          FABRIC_JAR="fabric/build/libs/mineagent-fabric-$VERSION.jar"
+          NEOFORGE_JAR="neoforge/build/libs/mineagent-neoforge-$VERSION.jar"
+          RELEASE_FLAGS=(--latest)
+          if [[ "$VERSION" == *-* ]]; then
+            RELEASE_FLAGS=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$FABRIC_JAR" \
             "$NEOFORGE_JAR" \
+            build/release-artifacts.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --title "MineAgent $GITHUB_REF_NAME" \
-            --notes-file .github/release-notes.md \
-            --prerelease
+            --notes-file build/release-notes.md \
+            --verify-tag \
+            "${RELEASE_FLAGS[@]}"

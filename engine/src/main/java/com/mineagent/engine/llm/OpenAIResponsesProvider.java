@@ -37,9 +37,9 @@ public final class OpenAIResponsesProvider implements LLMProvider {
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30)).build();
     /**
-     * Provider instances are registry singletons.  Keeping one mutable cursor
-     * here would let companion A continue companion B's response id whenever
-     * a caller forgot to restore state first.  The map is keyed by the stable
+     * Agent loops use companion-owned sessions; direct legacy callers may still
+     * borrow the registry prototype. Keeping one mutable cursor here would let
+     * one such caller continue another's response. The map is keyed by the stable
      * conversation identity carried in {@link LLMRequest}; a model-only key
      * remains for legacy direct callers/tests.
      */
@@ -59,6 +59,9 @@ public final class OpenAIResponsesProvider implements LLMProvider {
     }
 
     @Override public String providerId() { return "openai-responses"; }
+    @Override public LLMProvider newSession() {
+        return new OpenAIResponsesProvider(chatFallback.newSession());
+    }
     @Override public String displayName() { return "OpenAI Responses (Astra)"; }
     @Override public String defaultBaseUrl() { return "https://api.openai.com"; }
     @Override public boolean requiresApiKey() { return true; }
@@ -370,10 +373,12 @@ public final class OpenAIResponsesProvider implements LLMProvider {
         int input = integer(value, "input_tokens", 0);
         int output = integer(value, "output_tokens", 0);
         int cached = 0;
+        int written = 0;
         if (value.has("input_tokens_details") && value.get("input_tokens_details").isJsonObject()) {
             cached = integer(value.getAsJsonObject("input_tokens_details"), "cached_tokens", 0);
+            written = integer(value.getAsJsonObject("input_tokens_details"), "cache_write_tokens", 0);
         }
-        return new LLMResponse.Usage(input, output, integer(value, "total_tokens", input + output), cached, 0);
+        return new LLMResponse.Usage(input, output, integer(value, "total_tokens", input + output), cached, written);
     }
 
     private static String normalizeEffort(String effort) {
@@ -454,6 +459,7 @@ public final class OpenAIResponsesProvider implements LLMProvider {
                 history, history, request.items(), request.tools(), request.temperature(),
                 request.maxTokens(), request.reasoningEffort(), null,
                 request.conversationId(), request.promptCacheKey(), request.deadline(),
-                request.allowServerCompaction());
+                request.allowServerCompaction(), request.cacheableMessageCount() == 0 ? 0
+                        : Math.max(0, history.size() - (request.messages().size() - request.cacheableMessageCount())));
     }
 }

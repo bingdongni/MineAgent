@@ -1,5 +1,7 @@
 # MineAgent
 
+> **v0.5.0** adds verified-intervention prediction, bounded transition planning, live prerequisites and local repair for long plans, target-bound adapters and independent companion sessions. [Download this version](https://github.com/bingdongni/MineAgent/releases/tag/v0.5.0), or see the [design and research sources](docs/research/continual-learning.md) and [version validation record](docs/research/validation-0.5.0.md) (Chinese). Real-game learning and cost improvements still require measurement.
+
 English | [简体中文](README.md)
 
 [![Build](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml/badge.svg)](https://github.com/bingdongni/MineAgent/actions/workflows/build.yml)
@@ -199,8 +201,8 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.4.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.4.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.5.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.5.0.jar`
 
 ## Modules
 

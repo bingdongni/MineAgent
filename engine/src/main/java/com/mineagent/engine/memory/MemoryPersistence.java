@@ -79,7 +79,10 @@ public class MemoryPersistence {
     // ephemeral reservation checkpoint and provider transport session. Every
     // new envelope carries the same version while readRoot remains compatible
     // with v1-v10 files whose absent fields have safe record defaults.
-    private static final int FORMAT_VERSION = 11;
+    // Version 12 adds bounded verified intervention history to mechanism state;
+    // absent learning fields in earlier checkpoints start with an empty model.
+    // Version 13 stores live step prerequisites; readiness is always recomputed.
+    private static final int FORMAT_VERSION = 13;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 

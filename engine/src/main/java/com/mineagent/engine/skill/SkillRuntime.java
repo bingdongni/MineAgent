@@ -386,12 +386,18 @@ public final class SkillRuntime {
             throw new IllegalArgumentException("action_sequence must contain 1-"
                     + MAX_STEPS + " steps");
         }
+        JsonObject bindings = SkillBindings.defaults(array);
+        JsonObject suppliedBindings = overrides == null ? null : object(overrides, "bindings");
+        if (suppliedBindings != null) SkillBindings.applyOverrides(bindings, suppliedBindings);
         ArrayList<Step> result = new ArrayList<>();
         for (int index = 0; index < array.size(); index++) {
             if (!array.get(index).isJsonObject()) {
                 throw new IllegalArgumentException("step " + index + " is not an object");
             }
-            JsonObject source = array.get(index).getAsJsonObject();
+            JsonObject template = array.get(index).getAsJsonObject().deepCopy();
+            // Declarations are not executable data and may contain references themselves.
+            template.remove("bindings");
+            JsonObject source = SkillBindings.resolve(template, bindings).getAsJsonObject();
             String tool = string(source, "tool", null);
             tool = normalizeTool(tool);
             if (NEVER_NEST.contains(tool)) {

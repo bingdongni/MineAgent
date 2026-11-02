@@ -97,3 +97,74 @@ project(':tools') {
         compileOnly "net.neoforged:neoforge:${project.property('neoforge_version')}"
     }
 }
+
+// Keep tag, release prose, loader metadata and the selected artifacts in one contract.
+tasks.register('verifyReleaseTag') {
+    doLast {
+        def actual = providers.gradleProperty('release_tag').orNull
+        def expected = "v${project.version}"
+        if (actual != expected) throw new GradleException("Release tag '${actual}' must equal '${expected}' from gradle.properties")
+    }
+}
+
+tasks.register('prepareReleaseNotes') {
+    def template = rootProject.file('.github/release-notes.md')
+    def destination = layout.buildDirectory.file('release-notes.md')
+    inputs.file(template)
+    inputs.property('releaseVersion', project.version.toString())
+    outputs.file(destination)
+    doLast {
+        def source = template.getText('UTF-8')
+        if (!source.contains('@VERSION@')) throw new GradleException('Release notes must contain the @VERSION@ placeholder')
+        def output = destination.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(source.replace('@VERSION@', project.version.toString()), 'UTF-8')
+    }
+}
+
+tasks.register('verifyReleaseArtifacts') {
+    dependsOn ':fabric:build', ':neoforge:build'
+    def loaders = ['fabric', 'neoforge']
+    def artifacts = loaders.collect { rootProject.file("${it}/build/libs/mineagent-${it}-${project.version}.jar") }
+    def manifest = layout.buildDirectory.file('release-artifacts.sha256')
+    inputs.files(artifacts)
+    inputs.property('releaseVersion', project.version.toString())
+    outputs.file(manifest)
+    doLast {
+        def checksums = []
+        artifacts.eachWithIndex { artifact, index ->
+            if (!artifact.isFile()) throw new GradleException("Missing release artifact: ${artifact}")
+            new java.util.zip.ZipFile(artifact).withCloseable { archive ->
+                ['com/mineagent/api/llm/provider/LLMProvider.class',
+                 'com/mineagent/engine/exploration/PredictiveLearning.class',
+                 'com/mineagent/engine/planning/PlanGraph.class',
+                 'com/mineagent/engine/skill/SkillBindings.class',
+                 'META-INF/LICENSE_MineAgent'].each { path ->
+                    if (archive.getEntry(path) == null) throw new GradleException("${artifact.name} is missing ${path}")
+                }
+                def metadata = loaders[index] == 'fabric' ? 'fabric.mod.json' : 'META-INF/neoforge.mods.toml'
+                def entry = archive.getEntry(metadata)
+                if (entry == null) throw new GradleException("Missing loader metadata in ${artifact.name}")
+                def source = archive.getInputStream(entry).withCloseable { it.getText('UTF-8') }
+                if (source.contains('${version}')) throw new GradleException("Unexpanded version in ${artifact.name}")
+                if (loaders[index] == 'fabric') {
+                    def parsed = new groovy.json.JsonSlurper().parseText(source)
+                    if (parsed.id != 'mineagent' || parsed.version != project.version.toString()) {
+                        throw new GradleException("Wrong Fabric identity/version in ${artifact.name}")
+                    }
+                } else {
+                    def normalized = source.replace(' ', '').replace('\t', '')
+                    if (!normalized.contains('modId="mineagent"')
+                            || !normalized.contains('version="' + project.version + '"')) {
+                        throw new GradleException("Wrong NeoForge identity/version in ${artifact.name}")
+                    }
+                }
+            }
+            def hash = java.security.MessageDigest.getInstance('SHA-256').digest(artifact.bytes).encodeHex().toString()
+            checksums.add("${hash}  ${artifact.name}")
+        }
+        def output = manifest.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(checksums.join('\n') + '\n', 'UTF-8')
+    }
+}

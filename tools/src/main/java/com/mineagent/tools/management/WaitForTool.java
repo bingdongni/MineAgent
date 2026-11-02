@@ -170,7 +170,7 @@ public final class WaitForTool implements Tool {
             return;
         }
         Double radius = ToolArgs.has(args, "radius")
-                ? ToolArgs.getDoubleOrNull(args, "radius") : 8.0;
+                ? ToolArgs.getDoubleOrNull(args, "radius") : Double.valueOf(8.0);
         if (radius == null || !Double.isFinite(radius) || radius <= 0.0 || radius > 128.0) {
             reply.accept(ToolArgs.errorJson("radius must be finite and between 0 and 128."));
             return;

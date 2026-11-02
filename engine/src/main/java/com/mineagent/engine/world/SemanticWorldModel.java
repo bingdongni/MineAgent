@@ -221,6 +221,13 @@ public final class SemanticWorldModel {
     public synchronized void observeInventory(WorldAssetIndex.Position position,
                                               Collection<WorldAssetIndex.ItemObservation> items,
                                               long gameTick) {
+        observeInventory(position, items, gameTick, List.of());
+    }
+
+    /** A complete server-side scan also proves zero for explicitly watched absent items. */
+    public synchronized void observeInventory(WorldAssetIndex.Position position,
+                                              Collection<WorldAssetIndex.ItemObservation> items,
+                                              long gameTick, Collection<String> watchedItems) {
         Map<String, Integer> counts = new LinkedHashMap<>();
         if (items != null) {
             for (WorldAssetIndex.ItemObservation item : items) {
@@ -230,6 +237,9 @@ public final class SemanticWorldModel {
         }
         LinkedHashSet<String> ids = new LinkedHashSet<>(lastInventoryCounts.keySet());
         ids.addAll(counts.keySet());
+        if (items != null && watchedItems != null) watchedItems.stream()
+                .filter(java.util.Objects::nonNull).filter(id -> !id.isBlank() && id.length() <= 256)
+                .limit(1_040).forEach(ids::add);
         for (String id : ids) {
             observe("inventory:" + id, "count",
                     Integer.toString(counts.getOrDefault(id, 0)), position,

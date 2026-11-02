@@ -20,6 +20,9 @@ import java.util.*;
  * Anthropic's native format internally.
  */
 public class AnthropicProvider implements LLMProvider {
+    @Override public LLMProvider newSession() {
+        return getClass() == AnthropicProvider.class ? new AnthropicProvider() : this;
+    }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
@@ -85,7 +88,7 @@ public class AnthropicProvider implements LLMProvider {
                                  double temperature, int maxTokens,
                                  String reasoningEffort) {
         return completeInternal(baseUrl, apiKey, model, messages, tools,
-                temperature, maxTokens, reasoningEffort, Duration.ofSeconds(120));
+                temperature, maxTokens, reasoningEffort, Duration.ofSeconds(120), 0);
     }
 
     @Override
@@ -93,14 +96,14 @@ public class AnthropicProvider implements LLMProvider {
         if (request == null) throw new IllegalArgumentException("Anthropic request is null");
         return completeInternal(request.baseUrl(), request.apiKey(), request.model(),
                 request.messages(), request.tools(), request.temperature(),
-                request.maxTokens(), request.reasoningEffort(), request.deadline());
+                request.maxTokens(), request.reasoningEffort(), request.deadline(), request.cacheableMessageCount());
     }
 
     private LLMResponse completeInternal(String baseUrl, String apiKey, String model,
                                           List<ChatMessage> messages,
                                           List<Map<String, Object>> tools,
                                           double temperature, int maxTokens,
-                                          String reasoningEffort, Duration timeout) {
+                                          String reasoningEffort, Duration timeout, int cacheableMessageCount) {
         ProviderSupport.validateRequest(
                 "Anthropic", apiKey, model, messages, temperature, maxTokens);
         String resolvedBaseUrl = ProviderSupport.validatedBaseUrl(
@@ -124,17 +127,17 @@ public class AnthropicProvider implements LLMProvider {
             body.addProperty("temperature", effectiveTemperature);
 
             // Extract system message
-            StringBuilder systemPrompt = new StringBuilder();
+            List<String> systemPrompts = new java.util.ArrayList<>();
             JsonArray msgsArr = new JsonArray();
 
-            for (ChatMessage msg : messages) {
+            for (int messageIndex = 0; messageIndex < messages.size(); messageIndex++) {
+                ChatMessage msg = messages.get(messageIndex);
                 if ("system".equals(msg.role())) {
                     // Skip null/blank system content — StringBuilder.append(null)
                     // would otherwise append the literal string "null",
                     // corrupting the system prompt sent to the model.
                     if (msg.content() == null || msg.content().isEmpty()) continue;
-                    if (systemPrompt.length() > 0) systemPrompt.append("\n\n");
-                    systemPrompt.append(msg.content());
+                    systemPrompts.add(msg.content());
                     continue;
                 }
 
@@ -187,23 +190,30 @@ public class AnthropicProvider implements LLMProvider {
                     }
                 }
                 if (!contentBlocks.isEmpty()) {
+                    if (messageIndex == cacheableMessageCount - 1) {
+                        // Mark the durable history tail before volatile live state.
+                        // Adjacent user/tool messages may merge, but the boundary
+                        // stays on the same content block inside that message.
+                        contentBlocks.get(contentBlocks.size() - 1).getAsJsonObject()
+                                .add("cache_control", ephemeralCacheControl());
+                    }
                     appendMessage(msgsArr, role, contentBlocks);
                 }
             }
 
-            if (systemPrompt.length() > 0) {
-                // Native Anthropic prompt caching is opt-in. Mark the stable
-                // instruction/summary prefix as an ephemeral cache breakpoint;
-                // volatile MineAgent state is a final user message and is not
-                // included here, so it cannot invalidate this block each turn.
+            if (!systemPrompts.isEmpty()) {
+                // The first instruction block is immutable. Rolling summaries and
+                // remediation messages remain separate so they cannot rewrite it.
                 JsonArray systemBlocks = new JsonArray();
-                JsonObject systemBlock = new JsonObject();
-                systemBlock.addProperty("type", "text");
-                systemBlock.addProperty("text", systemPrompt.toString());
-                JsonObject cacheControl = new JsonObject();
-                cacheControl.addProperty("type", "ephemeral");
-                systemBlock.add("cache_control", cacheControl);
-                systemBlocks.add(systemBlock);
+                for (int index = 0; index < systemPrompts.size(); index++) {
+                    JsonObject systemBlock = new JsonObject();
+                    systemBlock.addProperty("type", "text");
+                    systemBlock.addProperty("text", systemPrompts.get(index));
+                    if (index == 0) {
+                        systemBlock.add("cache_control", ephemeralCacheControl());
+                    }
+                    systemBlocks.add(systemBlock);
+                }
                 body.add("system", systemBlocks);
             }
             body.add("messages", msgsArr);
@@ -385,6 +395,12 @@ public class AnthropicProvider implements LLMProvider {
         }
         return timeout.compareTo(Duration.ofMinutes(10)) > 0
                 ? Duration.ofMinutes(10) : timeout;
+    }
+
+    private static JsonObject ephemeralCacheControl() {
+        JsonObject value = new JsonObject();
+        value.addProperty("type", "ephemeral");
+        return value;
     }
 
     private String translateRole(String role) {

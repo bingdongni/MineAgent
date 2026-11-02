@@ -69,7 +69,7 @@ public class InteractAtTool implements Tool {
             return;
         }
         Integer holdTicks = ToolArgs.has(args, "hold_ticks")
-                ? ToolArgs.getIntOrNull(args, "hold_ticks") : 0;
+                ? ToolArgs.getIntOrNull(args, "hold_ticks") : Integer.valueOf(0);
         if (holdTicks == null || holdTicks < 0 || holdTicks > 40) {
             reply.accept(ToolArgs.errorJson("'hold_ticks' must be an integer from 0 to 40."));
             return;

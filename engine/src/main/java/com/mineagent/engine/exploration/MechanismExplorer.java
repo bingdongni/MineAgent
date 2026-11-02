@@ -121,7 +121,16 @@ public final class MechanismExplorer {
     }
     public record State(List<Experiment> experiments,
                         MechanismKnowledgeBase.State knowledge,
-                        List<Budget> budgets, long revision) {}
+                        List<Budget> budgets, long revision,
+                        PredictiveLearning.State learning) {
+        public State(List<Experiment> experiments, MechanismKnowledgeBase.State knowledge,
+                     List<Budget> budgets, long revision) {
+            this(experiments, knowledge, budgets, revision, null);
+        }
+    }
+
+    public record LearningOpportunity(String subject, String reason, double priority,
+                                      int remainingBudget) {}
 
     @FunctionalInterface
     public interface EvidenceSink {
@@ -161,6 +170,7 @@ public final class MechanismExplorer {
     private final CompensationDispatcher compensationDispatcher;
     private final MechanismKnowledgeBase knowledgeBase;
     private final AdaptationRuntime adaptationRuntime;
+    private final PredictiveLearning learning = new PredictiveLearning();
     private final LinkedHashMap<String, Experiment> experiments = new LinkedHashMap<>();
     private final LinkedHashMap<String, Budget> budgets = new LinkedHashMap<>();
     private long revision;
@@ -216,7 +226,7 @@ public final class MechanismExplorer {
                 || (expectedPredicate != null && expectedPredicate.length() > 128)
                 || (expectedValue != null && expectedValue.length() > 256)
                 || contextKey == null || contextKey.isBlank() || contextKey.length() > 256
-                || !isJsonObject(probeArguments)
+                || !PredictiveLearning.supportsArguments(probeArguments)
                 || !isJsonObject(compensationArguments == null ? "{}" : compensationArguments)) {
             return new Proposal(false, null,
                     "Experiment text, context, or JSON arguments are invalid or too large");
@@ -283,12 +293,55 @@ public final class MechanismExplorer {
         Budget budget = budgetFor(subject, gameTick);
         ProbeCandidate best = candidates == null ? null : candidates.stream()
                 .filter(candidate -> validCandidate(candidate, budget))
-                .max(Comparator.comparingDouble(MechanismExplorer::probeScore))
+                .max(Comparator.comparingDouble(candidate -> probeScore(candidate, subject)))
                 .orElse(null);
         if (best == null) return new Recommendation(null, 0.0,
                 "No candidate fits the remaining reversible exploration budget");
-        return new Recommendation(best, probeScore(best),
-                "Prefer the highest expected information per bounded cost; verify one probe only");
+        return new Recommendation(best, probeScore(best, subject),
+                "Empirical prediction uncertainty and learning progress override cold-start estimates when evidence exists; verify one probe only");
+    }
+
+    public synchronized PredictiveLearning.Prediction predict(String subject, String tool,
+                                                               String arguments, String predicate,
+                                                               String before) {
+        return learning.predict(subject, tool, arguments, predicate, before,
+                knowledgeBase.currentFingerprint().toString());
+    }
+
+    public synchronized PredictiveLearning.Plan plan(String subject, String predicate,
+                                                      String before, String goal, int maxSteps) {
+        return learning.plan(subject, predicate, before, goal,
+                knowledgeBase.currentFingerprint().toString(), maxSteps);
+    }
+
+    /** A bounded curriculum of observed knowledge gaps; proposals do not dispatch actions. */
+    public synchronized List<LearningOpportunity> curriculum(String query, long gameTick, int limit) {
+        String objective = query == null ? "" : query.trim();
+        return knowledgeBase.exportState().profiles().stream()
+                .filter(profile -> knowledgeBase.novelty(profile.subject())
+                        != MechanismKnowledgeBase.Novelty.VERIFIED)
+                .filter(profile -> objective.isBlank()
+                        || com.mineagent.engine.memory.TextSimilarity.score(objective,
+                                profile.subject() + " " + profile.attributes()) >= 0.20)
+                .map(profile -> {
+                    double relevance = objective.isBlank() ? 0.25
+                            : com.mineagent.engine.memory.TextSimilarity.score(objective,
+                                    profile.subject() + " " + profile.attributes());
+                    boolean contradicted = knowledgeBase.rules().stream().anyMatch(rule ->
+                            rule.subject().equals(profile.subject())
+                                    && (rule.status() == MechanismKnowledgeBase.RuleStatus.REFUTED
+                                    || rule.status() == MechanismKnowledgeBase.RuleStatus.STALE));
+                    Budget budget = budgetFor(profile.subject(), gameTick);
+                    return new LearningOpportunity(profile.subject(), contradicted
+                            ? "Revalidate a contradicted or changed mechanism"
+                            : "Test one missing mechanism rule, then transfer to an independent setup",
+                            relevance + (contradicted ? 0.75 : 0.25), budget.remaining());
+                })
+                .filter(opportunity -> opportunity.remainingBudget() > 0
+                        && (objective.isBlank() || opportunity.priority() > 0.25))
+                .sorted(Comparator.comparingDouble(LearningOpportunity::priority).reversed()
+                        .thenComparing(LearningOpportunity::subject))
+                .limit(Math.max(0, Math.min(5, limit))).toList();
     }
 
     /** Correlate the next exact matching tool call; unrelated actions stay untouched. */
@@ -476,12 +529,14 @@ public final class MechanismExplorer {
 
     public synchronized State exportState() {
         return new State(List.copyOf(experiments.values()),
-                knowledgeBase.exportState(), List.copyOf(budgets.values()), revision);
+                knowledgeBase.exportState(), List.copyOf(budgets.values()), revision,
+                learning.exportState());
     }
 
     public synchronized void importState(State state) {
         experiments.clear();
         budgets.clear();
+        learning.importState(state == null ? null : state.learning());
         if (state != null) {
             if (state.experiments() != null) for (Experiment experiment : state.experiments()) {
                 if (experiment == null || experiment.id() == null) continue;
@@ -578,6 +633,10 @@ public final class MechanismExplorer {
     }
 
     private void finish(Experiment experiment, Status status, String evidence, long gameTick) {
+        // Freeze the verified probe observation before publishing learner audit facts.
+        // Internal status/adapter projections must not replace the actual outcome.
+        var observed = status == Status.SUPPORTED || status == Status.REFUTED
+                ? newFact(experiment, gameTick).orElse(null) : null;
         Experiment finished = lifecycle(experiment, status, experiment.actionId(),
                 evidence, experiment.actionTick(), gameTick,
                 experiment.baselineWorldRevision(), experiment.attempts(),
@@ -600,6 +659,14 @@ public final class MechanismExplorer {
         }
         // Execution errors and timeouts are not negative likelihood evidence.
         if (status == Status.SUPPORTED || status == Status.REFUTED) {
+            if (observed != null && observed.eventSequence() > finished.baseline().eventSequence()
+                    && observed.observedTick() >= finished.actionTick()) {
+                learning.observe(finished.id(), finished.subject(), finished.probeTool(),
+                        finished.probeArguments(), finished.expectedPredicate(), finished.baseline().present()
+                                ? finished.baseline().value() : "<absent>",
+                        observed.value(), PredictiveLearning.physicalContext(finished),
+                        finished.environmentFingerprint().toString(), gameTick);
+            }
             evidenceSink.record(finished, status == Status.SUPPORTED,
                     finished.evidence(), gameTick);
         }
@@ -651,7 +718,7 @@ public final class MechanismExplorer {
         if (candidate == null || candidate.risk() == Risk.HIGH
                 || !SAFE_PROBE_TOOLS.contains(candidate.tool())
                 || candidate.estimatedCost() > budget.remaining()
-                || !isJsonObject(candidate.arguments())) return false;
+                || !PredictiveLearning.supportsArguments(candidate.arguments())) return false;
         if (!MEDIUM_RISK_TOOLS.contains(candidate.tool())) return true;
         return candidate.risk() == Risk.MEDIUM && candidate.reversible()
                 && candidate.compensationTool() != null
@@ -659,10 +726,12 @@ public final class MechanismExplorer {
                 && !"craft".equals(candidate.tool());
     }
 
-    private static double probeScore(ProbeCandidate candidate) {
+    private double probeScore(ProbeCandidate candidate, String subject) {
         double riskPenalty = candidate.risk() == Risk.MEDIUM ? 0.25 : 0.0;
         double reversibility = candidate.reversible() ? 0.1 : 0.0;
-        return candidate.estimatedInformationGain() / candidate.estimatedCost()
+        double value = learning.explorationValue(subject, candidate.tool(), candidate.arguments(),
+                knowledgeBase.currentFingerprint().toString(), candidate.estimatedInformationGain());
+        return value / candidate.estimatedCost()
                 + reversibility - riskPenalty;
     }
 

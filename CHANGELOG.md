@@ -1,6 +1,29 @@
 # Changelog
 
-All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during its alpha stage.
+All notable changes to MineAgent will be documented in this file. The project follows [Semantic Versioning](https://semver.org/) where practical during initial development.
+
+## [Unreleased]
+
+## [0.5.0] - 2026-11-02
+
+### Added
+
+- Learn a bounded, environment-scoped outcome model from verified mechanism experiments; expose prediction, short transition planning, learning opportunities and runtime metrics through `explore_mechanism`.
+- Add live step prerequisites to long-horizon plans, distinguish missing evidence from contradiction, schedule ready steps by priority and remaining dependency depth, and retain achievements while repairing resource-dependent suffixes.
+- Declare the reusable conversation prefix explicitly; Anthropic can cache its durable history tail before transient live context, including inside merged tool-result/user messages.
+- Verify release tag, rendered notes, exact loader artifact names, embedded metadata/classes and SHA-256 checksums from the configured version.
+- Bind learned adapter targets structurally so action parameters and postcondition subjects transfer together; reject unknown, missing, cyclic or mistyped binding overrides before dispatch.
+- Add regression coverage for compositional planning, contradictory outcomes, drift recovery, evidence persistence, target transfer, local HTTP concurrency, cache prefix stability and action lifecycle accounting.
+
+### Changed
+
+- Give built-in providers independent companion sessions while retaining synchronization for legacy extensions.
+- Keep Anthropic's stable system cache block separate from rolling summaries; normalize reported cache reads/writes and record failed request latency.
+- Count tool calls, verified action terminals, pending actions, cancellations and missing evidence separately. Derive independent experiment contexts from physical targets and arguments rather than caller-written labels.
+- Record explicit zero counts for plan-watched items absent from a complete inventory observation. Fix nullable optional-number validation that could unbox invalid values before returning an error.
+- Upgrade memory envelopes to version 13; old step records default to no prerequisites, and live readiness never survives checkpoint restore.
+
+See [continual learning research and validation](docs/research/continual-learning.md). Real-game superiority, AGI capability and monetary savings have not been established.
 
 ## [0.4.0] - 2026-09-09
 

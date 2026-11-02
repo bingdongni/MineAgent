@@ -13,6 +13,45 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class HierarchicalRollingPlannerTest {
+    @Test void prerequisiteGapsWakeOnlyOnChangedDecisionEvidenceAndRearmAfterRecovery() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("produce", List.of(new PlanGraph.DraftNode("craft", "craft", "output",
+                "medium", List.of(), PlanGraph.NodeStatus.PENDING,
+                List.of(new PlanGraph.GoalCondition("inventory:input", "count", "3", PlanGraph.Comparison.AT_LEAST, 0.7)))), List.of());
+        SemanticWorldModel world = new SemanticWorldModel();
+        HierarchicalRollingPlanner planner = new HierarchicalRollingPlanner(graph, world);
+        planner.onPlanReplaced("produce", 1);
+        assertEquals(HierarchicalRollingPlanner.Reason.PREREQUISITE_UNKNOWN, planner.tick(2).reason());
+        assertNull(planner.tick(3));
+        world.observe("inventory:input", "count", "0", null, 1, "server", null, 4, 100, false);
+        var changed = planner.tick(4);
+        assertEquals(HierarchicalRollingPlanner.Reason.PREREQUISITE_CHANGED, changed.reason());
+        assertEquals("craft", changed.activeStep());
+        assertTrue(changed.detail().contains("observed 0"));
+        world.observe("inventory:input", "count", "1", null, 1, "server", null, 5, 100, false);
+        assertNull(planner.tick(5));
+        for (int i = 0; i < 50; i++) world.observe("unrelated:" + i, "x", "changed", null, 1, "server", null, 6, 100, false);
+        assertNull(planner.tick(6));
+        world.observe("inventory:input", "count", "3", null, 1, "server", null, 7, 100, false);
+        assertNull(planner.tick(7));
+        world.observe("inventory:input", "count", "0", null, 1, "server", null, 8, 100, false);
+        assertEquals(HierarchicalRollingPlanner.Reason.PREREQUISITE_CHANGED, planner.tick(8).reason());
+    }
+
+    @Test void expiredEvidenceRequestsObservationRatherThanDeclaringAContradiction() {
+        PlanGraph graph = new PlanGraph();
+        graph.replacePlan("produce", List.of(new PlanGraph.DraftNode("craft", "craft", "output",
+                "medium", List.of(), PlanGraph.NodeStatus.PENDING,
+                List.of(new PlanGraph.GoalCondition("inventory:input", "count", "3", PlanGraph.Comparison.AT_LEAST, 0.7)))), List.of());
+        SemanticWorldModel world = new SemanticWorldModel();
+        world.observe("inventory:input", "count", "3", null, 1, "server", null, 1, 4, false);
+        HierarchicalRollingPlanner planner = new HierarchicalRollingPlanner(graph, world);
+        planner.onPlanReplaced("produce", 1);
+        assertNull(planner.tick(1));
+        assertEquals(HierarchicalRollingPlanner.Reason.PREREQUISITE_UNKNOWN, planner.tick(20).reason());
+        assertNull(planner.tick(21));
+    }
+
     @Test void stalledExecutorProducesOneSignalForUnchangedState() {
         PlanGraph graph = new PlanGraph();
         graph.replacePlan("collect resources", List.of(new PlanGraph.DraftNode(

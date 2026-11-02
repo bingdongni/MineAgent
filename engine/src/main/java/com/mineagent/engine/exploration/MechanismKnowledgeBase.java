@@ -91,7 +91,11 @@ public final class MechanismKnowledgeBase {
         }
     }
 
-    public record State(List<Profile> profiles, List<Rule> rules, long revision) {}
+    public record State(List<Profile> profiles, List<Rule> rules, long revision, int contextVersion) {
+        public State(List<Profile> profiles, List<Rule> rules, long revision) {
+            this(profiles, rules, revision, 1);
+        }
+    }
 
     private static final int MAX_PROFILES = 256;
     private static final int MAX_RULES = 256;
@@ -231,9 +235,9 @@ public final class MechanismKnowledgeBase {
         if (outcome == MechanismExplorer.Status.SUPPORTED) {
             // Repeating the same setup is useful reliability evidence, but it
             // is not an independent context and cannot alone confirm a rule.
-            if (contexts.add(experiment.contextKey())) supports++;
+            if (contexts.add(PredictiveLearning.physicalContext(experiment))) supports++;
         } else if (outcome == MechanismExplorer.Status.REFUTED) {
-            if (counterContexts.add(experiment.contextKey())) refutations++;
+            if (counterContexts.add(PredictiveLearning.physicalContext(experiment))) refutations++;
         } else {
             inconclusive++;
         }
@@ -363,8 +367,18 @@ public final class MechanismKnowledgeBase {
             }
             if (state.rules() != null) for (Rule rule : state.rules()) {
                 if (rule == null) continue;
-                Rule restored = rule.fingerprint().compatible(currentFingerprint)
-                        ? rule : copy(rule, RuleStatus.STALE, rule.adapterSkill(), rule.updatedTick());
+                // Gson supplies 0 for old files. Their caller-written context labels
+                // do not establish independent physical support under the new contract.
+                Rule supported = state.contextVersion() == 1 ? rule
+                        : new Rule(rule.id(), rule.subject(), rule.hypothesis(), rule.probeTool(),
+                                rule.probeArguments(), rule.expectedSubject(), rule.expectedPredicate(),
+                                rule.expectedValue(), rule.compensationTool(), rule.compensationArguments(),
+                                Set.of(), rule.refutingContexts(), 0, rule.refutations(), rule.inconclusive(),
+                                1.0 / (2.0 + rule.refutations()),
+                                rule.status() == RuleStatus.CONFIRMED ? RuleStatus.CANDIDATE : rule.status(),
+                                rule.fingerprint(), rule.adapterSkill(), rule.updatedTick());
+                Rule restored = supported.fingerprint().compatible(currentFingerprint)
+                        ? supported : copy(supported, RuleStatus.STALE, supported.adapterSkill(), supported.updatedTick());
                 rules.put(restored.id(), restored);
             }
             revision = Math.max(0L, state.revision()) + 1L;

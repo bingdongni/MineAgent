@@ -57,6 +57,18 @@ final class OpenAIResponsesProviderTest {
     }
 
     @Test
+    void recordsCacheWritesSeparatelyFromReads() {
+        var response = new OpenAIResponsesProvider(new StubProvider()).parseResponse("""
+                {"id":"resp_cache","model":"custom","output":[],
+                 "usage":{"input_tokens":15000,"output_tokens":20,
+                  "input_tokens_details":{"cached_tokens":12000,"cache_write_tokens":3000}}}
+                """, "custom");
+        assertEquals(12000, response.usage().cachedPromptTokens());
+        assertEquals(3000, response.usage().cacheCreationPromptTokens());
+        assertEquals(15020, response.usage().totalTokens());
+    }
+
+    @Test
     void buildBodyDoesNotReplayOpaqueItemsOnStatefulContinuation() {
         OpenAIResponsesProvider provider = new OpenAIResponsesProvider(new StubProvider());
         List<ConversationItem> opaque = List.of(
