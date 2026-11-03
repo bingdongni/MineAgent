@@ -1,6 +1,6 @@
 # MineAgent v0.6.0 验证记录
 
-验证日期：2026-11-03。对象为 `codex/v0.6.0-mod-adaptation` 分支的 v0.6.0 改动。本文记录本地构建与测试证据，不表示已创建 GitHub Release。
+验证日期：2026-11-03。对象为 `codex/v0.6.0-mod-adaptation` 分支的 v0.6.0 改动。本文记录本地构建与测试证据。GitHub Release 工作流另行测试、构建并校验发布包；下方本地校验和仅对应本轮本地文件，在线附件以 Release 附带的 `release-artifacts.sha256` 为准。
 
 ## 环境和复现
 
@@ -75,6 +75,8 @@ $env:Path = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:Path
 | `mineagent-neoforge-0.6.0.jar` | 1,565,788 | `c41b04357e1f6a261fe48c04f1d81e67fbc8ae36fa349a9f79a6d2db042baf5f` |
 
 校验和对应本轮实际构建文件；重新打包后的文件应以新生成清单为准。
+
+发布工作流额外从精确的标签提交生成带版本目录前缀的源码 ZIP 和 TAR.GZ，将更新说明作为附件，并在上传前逐项验证五个数据附件的 SHA-256。源码归档只包含 Git 跟踪文件；构建目录、世界、配置和密钥不进入源码包。Release 正文与更新说明附件记录源提交及本轮 CI 链接。
 
 可检查的报告与文件：
 

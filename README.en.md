@@ -1,6 +1,6 @@
 # MineAgent
 
-> This branch targets **v0.6.0**: public observations of unfamiliar content, conditioned experiments, grounded reflection, typed transfer, bounded relearning, experience-driven plan repair and observable cache accounting. See the [usage and design](docs/research/mod-learning-0.6.0.md), [validation record](docs/research/validation-0.6.0.md), and [research sources](docs/research/continual-learning.md) (Chinese). Published downloads are listed in [Releases](https://github.com/bingdongni/MineAgent/releases).
+> **v0.6.0**: public observations of unfamiliar content, conditioned experiments, grounded reflection, typed transfer, bounded relearning, experience-driven plan repair and observable cache accounting. [Download v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0), or see the [usage and design](docs/research/mod-learning-0.6.0.md), [validation record](docs/research/validation-0.6.0.md), and [research sources](docs/research/continual-learning.md) (Chinese). The release includes both loader JARs, source archives, release notes and a complete SHA-256 manifest.
 
 English | [简体中文](README.md)
 

@@ -1,6 +1,6 @@
 # MineAgent
 
-> 本分支版本 **v0.6.0**：陌生模组的公开观察、多条件实验、结构化反思、类型约束迁移、有界重学、经验驱动计划修复与缓存可观测性。参见 [使用与设计](docs/research/mod-learning-0.6.0.md)、[验证记录](docs/research/validation-0.6.0.md) 和 [研究依据](docs/research/continual-learning.md)。发布包以 [Releases](https://github.com/bingdongni/MineAgent/releases) 为准。
+> **v0.6.0**：陌生模组的公开观察、多条件实验、结构化反思、类型约束迁移、有界重学、经验驱动计划修复与缓存可观测性。[下载 v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0)，或参见 [使用与设计](docs/research/mod-learning-0.6.0.md)、[验证记录](docs/research/validation-0.6.0.md) 和 [研究依据](docs/research/continual-learning.md)。Release 包含双加载器 JAR、源码压缩包、更新说明和完整 SHA-256 清单。
 
 [English](README.en.md) | 简体中文
 

@@ -4,7 +4,9 @@ All notable changes to MineAgent will be documented in this file. The project fo
 
 ## [Unreleased]
 
-### v0.6.0 — Added
+## [0.6.0] - 2026-11-03
+
+### Added
 
 - Observe visible actor types/UUIDs/public state, actual carried item tags/tooltips, opened merchant offers, and side-aware public block capabilities without exposing arbitrary NBT. Keep unsupported channels distinct from zero and preserve fluid/energy units.
 - Learn contracts with observed multi-condition prerequisites, prior state and typed identity; reflect execution failures separately from mechanism counterexamples and transfer block/entity actions with matching effect bindings.
@@ -13,7 +15,7 @@ All notable changes to MineAgent will be documented in this file. The project fo
 - Publish stable experience references only on content changes and report cache read/write observability alongside hit rate. Parse malformed optional provider usage without dropping valid model responses.
 - Run an isolated test mod on a headless Minecraft server for physical learning/transfer/rule changes, actor/item observations and native data reload. Gate dual-loader release verification on these scenarios and exclude the fixture from production artifacts.
 
-### v0.6.0 — Changed
+### Changed
 
 - Invalidate learned authority on successful Fabric/NeoForge server data reload, stop pending probes and reject late completion evidence. Keep raw audit experiences for revalidation.
 - Upgrade memory envelopes to version 14 and conditioned evidence contexts to version 2. Older confirmations retain audit history but lose automatic replay and predictive authority until revalidated.

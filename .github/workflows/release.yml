@@ -43,23 +43,52 @@ jobs:
             fabric/build/reports/tests/test/
           if-no-files-found: warn
 
-      - name: Publish release with Fabric and NeoForge JARs
+      - name: Package checked source and binary release bundle
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p build/release
+          cp "fabric/build/libs/mineagent-fabric-$VERSION.jar" build/release/
+          cp "neoforge/build/libs/mineagent-neoforge-$VERSION.jar" build/release/
+          cp build/release-artifacts.sha256 build/release/
+          git archive --format=zip --prefix="MineAgent-$VERSION/" \
+            --output="build/release/mineagent-source-$VERSION.zip" "$GITHUB_SHA"
+          git archive --format=tar --prefix="MineAgent-$VERSION/" "$GITHUB_SHA" \
+            | gzip -n > "build/release/mineagent-source-$VERSION.tar.gz"
+          {
+            printf '\n## Build provenance\n\n'
+            printf 'Source commit: `%s`\n\n' "$GITHUB_SHA"
+            printf '[Verified GitHub Actions build](%s/%s/actions/runs/%s)\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } >> build/release-notes.md
+          cp build/release-notes.md build/release/
+          (
+            cd build/release
+            sha256sum "mineagent-source-$VERSION.zip" "mineagent-source-$VERSION.tar.gz" \
+              release-notes.md >> release-artifacts.sha256
+            sha256sum --check release-artifacts.sha256
+          )
+
+      - name: Preserve checked release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineagent-${{ github.ref_name }}-release-bundle
+          path: build/release/
+          if-no-files-found: error
+
+      - name: Publish release with source, binaries, notes and checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          FABRIC_JAR="fabric/build/libs/mineagent-fabric-$VERSION.jar"
-          NEOFORGE_JAR="neoforge/build/libs/mineagent-neoforge-$VERSION.jar"
           RELEASE_FLAGS=(--latest)
           if [[ "$VERSION" == *-* ]]; then
             RELEASE_FLAGS=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" \
-            "$FABRIC_JAR" \
-            "$NEOFORGE_JAR" \
-            build/release-artifacts.sha256 \
+            build/release/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "MineAgent $GITHUB_REF_NAME" \
-            --notes-file build/release-notes.md \
+            --notes-file build/release/release-notes.md \
             --verify-tag \
             "${RELEASE_FLAGS[@]}"
