@@ -356,6 +356,11 @@ public final class SemanticWorldModel {
         return revision;
     }
 
+    public synchronized List<SemanticFact> factsForSubject(String subject, long gameTick) {
+        return facts.values().stream().filter(fact -> fact.subject().equalsIgnoreCase(subject)
+                && fact.activeAt(gameTick)).limit(160).toList();
+    }
+
     /** Latest monotonic event sequence, used as an action checkpoint. */
     public synchronized long latestSequence() {
         return Math.max(0L, nextSequence - 1L);

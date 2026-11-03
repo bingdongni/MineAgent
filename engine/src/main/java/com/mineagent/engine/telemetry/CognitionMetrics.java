@@ -28,6 +28,11 @@ public final class CognitionMetrics {
     private final LongAdder inputTokens = new LongAdder();
     private final LongAdder cachedInputTokens = new LongAdder();
     private final LongAdder cacheWriteTokens = new LongAdder();
+    private final LongAdder cacheReadReportedCalls = new LongAdder();
+    private final LongAdder cacheWriteReportedCalls = new LongAdder();
+    private final LongAdder observableCacheInputTokens = new LongAdder();
+    private final LongAdder publishedExperienceContexts = new LongAdder();
+    private final LongAdder reusedExperienceContexts = new LongAdder();
     private final LongAdder outputTokens = new LongAdder();
     private final LongAdder cacheHits = new LongAdder();
     private final LongAdder cacheMisses = new LongAdder();
@@ -49,11 +54,28 @@ public final class CognitionMetrics {
         cachedInputTokens.add(Math.max(0, usage.cachedPromptTokens()));
         cacheWriteTokens.add(Math.max(0, usage.cacheCreationPromptTokens()));
         outputTokens.add(Math.max(0, usage.completionTokens()));
+        if (usage.cacheReadReported()) {
+            cacheReadReportedCalls.increment();
+            observableCacheInputTokens.add(usage.promptTokens());
+        }
+        if (usage.cacheWriteReported()) cacheWriteReportedCalls.increment();
     }
 
     public void recordDecisionCache(boolean hit) {
         if (hit) cacheHits.increment(); else cacheMisses.increment();
     }
+
+    public record CacheCoverage(long calls, long readReportedCalls, long writeReportedCalls,
+                                long inputTokensWithReadReporting) {}
+    public CacheCoverage cacheCoverage() {
+        return new CacheCoverage(llmCalls.sum(), cacheReadReportedCalls.sum(), cacheWriteReportedCalls.sum(),
+                observableCacheInputTokens.sum());
+    }
+    public void recordExperienceContext(boolean published) {
+        if (published) publishedExperienceContexts.increment(); else reusedExperienceContexts.increment();
+    }
+    public record ContextReuse(long published, long reused) {}
+    public ContextReuse contextReuse() { return new ContextReuse(publishedExperienceContexts.sum(), reusedExperienceContexts.sum()); }
 
     public void recordAction(boolean accepted, boolean success, boolean invalid,
                               String failureKind) {
@@ -120,7 +142,7 @@ public final class CognitionMetrics {
                 cacheHits.sum(), cacheMisses.sum(), actionCount,
                 successfulActions.sum(), failedActions.sum(), invalidActions.sum(),
                 queryCount, memoryUsefulHits.sum(),
-                totalInput <= 0 ? 0.0 : (double) cached / totalInput,
+                observableCacheInputTokens.sum() <= 0 ? 0.0 : (double) cached / observableCacheInputTokens.sum(),
                 calls <= 0 ? 0.0 : (double) llmLatencyNanos.sum() / calls,
                 actionCount <= 0 ? 0.0 : (double) successfulActions.sum() / actionCount,
                 queryCount <= 0 ? 0.0 : (double) memoryUsefulHits.sum() / queryCount,

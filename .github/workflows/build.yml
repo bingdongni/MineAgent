@@ -28,10 +28,21 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build both loader artifacts
+      - name: Test native learning and build both loader artifacts
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon prepareReleaseNotes verifyReleaseArtifacts
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineagent-test-evidence
+          path: |
+            fabric/build/gametest-results.xml
+            fabric/build/test-results/test/*.xml
+            fabric/build/reports/tests/test/
+          if-no-files-found: warn
 
       - name: Upload Fabric artifact
         uses: actions/upload-artifact@v4

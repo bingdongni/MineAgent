@@ -85,11 +85,26 @@ public class InspectGuiTool implements Tool {
             slots.add(slot);
         }
         result.add("slots", slots);
+        if (menu instanceof net.minecraft.world.inventory.MerchantMenu merchant) {
+            JsonArray offers = new JsonArray();
+            var available = merchant.getOffers();
+            for (int i=0;i<Math.min(12,available.size());i++) {
+                var offer=available.get(i); JsonObject value=new JsonObject(); value.addProperty("index",i);
+                value.add("cost_a",tradeStack(offer.getCostA())); value.add("cost_b",tradeStack(offer.getCostB()));
+                value.add("result",tradeStack(offer.getResult())); value.addProperty("out_of_stock",offer.isOutOfStock());
+                offers.add(value);
+            }
+            result.add("offers",offers); result.addProperty("offers_truncated",available.size()>12);
+        }
         result.addProperty("total_slots", menu.slots.size());
         result.addProperty("observed_slots", slots.size());
         result.addProperty("slots_truncated", slots.size() >= MAX_OBSERVED_SLOTS);
         result.addProperty("slot_addressing",
                 "Use 'slot' for endpoint=container and 'inventory_slot' for endpoint=player");
         reply.accept(result.toString());
+    }
+    private static JsonObject tradeStack(net.minecraft.world.item.ItemStack stack) {
+        JsonObject value=new JsonObject(); value.addProperty("item",net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+        value.addProperty("count",stack.getCount()); return value;
     }
 }

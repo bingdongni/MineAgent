@@ -75,6 +75,9 @@ public class MineAgentFabric implements ModInitializer {
             MineAgentEngine.setWorldDataDir(dataDir);
             MineAgentEngine.restoreCompanions(server);
         });
+        ServerLifecycleEvents.END_DATA_PACK_RELOAD.register((server, manager, success) -> {
+            if (success) MineAgentEngine.onRulesReloaded(server);
+        });
 
         // 7a. Player join — auto-restore saved companion
         net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {

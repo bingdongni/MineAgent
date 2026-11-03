@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v0.5.0** adds verified-intervention prediction, bounded transition planning, live prerequisites and local repair for long plans, target-bound adapters and independent companion sessions. [Download this version](https://github.com/bingdongni/MineAgent/releases/tag/v0.5.0), or see the [design and research sources](docs/research/continual-learning.md) and [version validation record](docs/research/validation-0.5.0.md) (Chinese). Real-game learning and cost improvements still require measurement.
+> This branch targets **v0.6.0**: public observations of unfamiliar content, conditioned experiments, grounded reflection, typed transfer, bounded relearning, experience-driven plan repair and observable cache accounting. See the [usage and design](docs/research/mod-learning-0.6.0.md), [validation record](docs/research/validation-0.6.0.md), and [research sources](docs/research/continual-learning.md) (Chinese). Published downloads are listed in [Releases](https://github.com/bingdongni/MineAgent/releases).
 
 English | [简体中文](README.md)
 
@@ -8,6 +8,15 @@ English | [简体中文](README.md)
 [![License: LGPL-3.0-only](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
+
+## v0.6.0: Observe, learn and adapt to unfamiliar content
+
+- Inspect a visible actor's registered type, UUID and public state, a carried item's durability, tags and bounded normal tooltip, and public offers in an already opened trading menu.
+- Observe side-aware public item/fluid capabilities and NeoForge energy capabilities. Preserve units and unsupported states; private NBT and hidden rule answers are excluded.
+- Freeze observed prerequisites and before-state, require two physically independent supporting contexts, and bind both execution and verification to an observed transfer target. Recheck conditions before dispatch.
+- Revoke learned execution on counterexamples and grant one bounded recovery window. Data reload aborts old probes and invalidates rules and predictions while retaining raw experience for reflection.
+- Search verified experience for bounded plan repairs while preserving achievements. Append stable experience references only when changed, and distinguish missing cache reports from explicit zero counts.
+- Gate release artifacts on component regressions, headless native Minecraft GameTests and both loader builds. External modpacks, extended gameplay and monetary savings require separate measurement.
 
 ## v0.4.0: Stages 0–9 cognition, execution, adaptation, and teamwork
 
@@ -189,20 +198,22 @@ Conversation and game context are sent to the selected LLM provider. Requests ma
 JDK 21 is required. The repository includes the Gradle Wrapper.
 
 ```bash
-./gradlew :fabric:build :neoforge:build
+./gradlew verifyReleaseArtifacts
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:JAVA_HOME = 'C:\Path\To\jdk-21'
-.\gradlew.bat :fabric:build :neoforge:build
+.\gradlew.bat verifyReleaseArtifacts
 ```
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.5.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.5.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.6.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.6.0.jar`
+
+The command starts an isolated headless test server and produces `fabric/build/gametest-results.xml` and `build/release-artifacts.sha256`. The test-only mod is excluded from release JARs. NeoForge remains experimental; native runtime scenarios currently run on Fabric.
 
 ## Modules
 

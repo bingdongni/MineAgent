@@ -1288,6 +1288,16 @@ public final class MineAgentEngine {
         skipNightIfAllHumansSleeping(server);
     }
 
+    public static void onRulesReloaded(net.minecraft.server.MinecraftServer server) {
+        Runnable invalidate = () -> {
+            for (CompanionState state : List.copyOf(COMPANIONS.values())) {
+                try { state.loop.onRulesReloaded(); }
+                catch (RuntimeException failure) { System.err.println("[MineAgent] Rule reload reconciliation failed: " + failure.getClass().getSimpleName()); }
+            }
+        };
+        if (server.isSameThread()) invalidate.run(); else server.execute(invalidate);
+    }
+
     private static void discardIncrementalWork() {
         ACTIVE_TICK_WORK.addAll(CompanionTickDispatcher.drainWork());
         for (var pending : ACTIVE_TICK_WORK) {

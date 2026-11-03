@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "mineagent_gametest",
+  "version": "1",
+  "name": "MineAgent development GameTests",
+  "environment": "server",
+  "entrypoints": {
+    "main": ["com.mineagent.gametest.LearningGameTests"],
+    "fabric-gametest": ["com.mineagent.gametest.LearningGameTests"]
+  },
+  "depends": {"mineagent": "*", "fabric-api": "*"}
+}

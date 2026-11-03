@@ -49,5 +49,11 @@ public final class Services {
 
         /** Get the server's current game time (ticks). */
         long gameTime();
+
+        /** Server-thread, read-only public automation port; callers must check reach and visibility first. */
+        default CapabilityObservation observeBlockCapabilities(com.mineagent.api.entity.AgentPlayer player,
+                int x, int y, int z, String face) {
+            return CapabilityObservation.unsupported();
+        }
     }
 }

@@ -122,8 +122,35 @@ tasks.register('prepareReleaseNotes') {
     }
 }
 
+tasks.register('verifyGameTests') {
+    dependsOn ':fabric:runGametest'
+    doLast {
+        def report = rootProject.file('fabric/build/gametest-results.xml')
+        if (!report.isFile()) throw new GradleException('Missing native Minecraft GameTest report')
+        def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+        factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+        factory.setFeature('http://xml.org/sax/features/external-general-entities', false)
+        factory.setFeature('http://xml.org/sax/features/external-parameter-entities', false)
+        def document = factory.newDocumentBuilder().parse(report)
+        ['failure', 'error', 'skipped'].each { name ->
+            if (document.getElementsByTagName(name).length > 0)
+                throw new GradleException("Native Minecraft GameTests contain ${name} results")
+        }
+        def cases = document.getElementsByTagName('testcase')
+        def names = (0..<cases.length).collect { cases.item(it).getAttribute('name') }.toSet()
+        ['learninggametests.learnstransfersandstopsafterrulechange',
+         'learninggametests.observespublicactorandrejectswronguuid',
+         'learninggametests.observesnewitemwithoutdumpingprivatecomponents',
+         'learninggametests.runsobservationsviatheagentloopandreadspublicstorage',
+         'learninggametests.nativedatareloadinvalidateslearnedrules'].each { name ->
+            if (!names.contains(name)) throw new GradleException("Missing required native scenario: ${name}")
+        }
+        logger.lifecycle("Verified ${cases.length} native Minecraft GameTests")
+    }
+}
+
 tasks.register('verifyReleaseArtifacts') {
-    dependsOn ':fabric:build', ':neoforge:build'
+    dependsOn ':fabric:build', ':neoforge:build', 'verifyGameTests'
     def loaders = ['fabric', 'neoforge']
     def artifacts = loaders.collect { rootProject.file("${it}/build/libs/mineagent-${it}-${project.version}.jar") }
     def manifest = layout.buildDirectory.file('release-artifacts.sha256')
@@ -136,12 +163,21 @@ tasks.register('verifyReleaseArtifacts') {
             if (!artifact.isFile()) throw new GradleException("Missing release artifact: ${artifact}")
             new java.util.zip.ZipFile(artifact).withCloseable { archive ->
                 ['com/mineagent/api/llm/provider/LLMProvider.class',
+                 'com/mineagent/api/platform/CapabilityObservation.class',
                  'com/mineagent/engine/exploration/PredictiveLearning.class',
+                 'com/mineagent/engine/exploration/LearningConditions.class',
+                 'com/mineagent/engine/exploration/ActorObservation.class',
+                 'com/mineagent/engine/cache/ExperienceContext.class',
+                 'com/mineagent/engine/planning/ExperienceRepairPlanner.class',
                  'com/mineagent/engine/planning/PlanGraph.class',
                  'com/mineagent/engine/skill/SkillBindings.class',
+                 'com/mineagent/tools/perception/InspectEntityTool.class',
+                 'com/mineagent/tools/perception/InspectItemTool.class',
                  'META-INF/LICENSE_MineAgent'].each { path ->
                     if (archive.getEntry(path) == null) throw new GradleException("${artifact.name} is missing ${path}")
                 }
+                if (archive.getEntry('com/mineagent/gametest/LearningGameTests.class') != null)
+                    throw new GradleException("Test-only mod leaked into ${artifact.name}")
                 def metadata = loaders[index] == 'fabric' ? 'fabric.mod.json' : 'META-INF/neoforge.mods.toml'
                 def entry = archive.getEntry(metadata)
                 if (entry == null) throw new GradleException("Missing loader metadata in ${artifact.name}")

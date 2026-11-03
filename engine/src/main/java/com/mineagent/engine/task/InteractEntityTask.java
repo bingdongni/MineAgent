@@ -37,7 +37,8 @@ public class InteractEntityTask extends CompanionTask<InteractEntityTool.Interac
         nextAttackTick = 0;
         failReason = null;
         target = TaskContext.serverPlayer(player).serverLevel().getEntity(record.entityId);
-        if (target == null || !target.isAlive()) {
+        if (target == null || !target.isAlive() || (record.expectedUuid != null
+                && !record.expectedUuid.equalsIgnoreCase(target.getUUID().toString()))) {
             failReason = "Target entity " + record.entityId + " not found or dead";
             phase = Phase.DONE;
             return;
@@ -62,6 +63,9 @@ public class InteractEntityTask extends CompanionTask<InteractEntityTool.Interac
         if (record.deadline() > 0L && now >= record.deadline()) {
             cancelNav();
             return TaskState.FAILED;
+        }
+        if (target != null && target.level() != TaskContext.serverPlayer(player).level()) {
+            failReason = "Target entity changed dimension"; cancelNav(); return TaskState.FAILED;
         }
         if (target == null || !target.isAlive()) {
             if ("attack".equals(record.button) && interactTicks > 0) {

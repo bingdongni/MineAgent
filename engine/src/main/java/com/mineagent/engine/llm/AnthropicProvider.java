@@ -475,20 +475,7 @@ public class AnthropicProvider implements LLMProvider {
 
         LLMResponse.Usage usage = null;
         if (root.has("usage") && root.get("usage").isJsonObject()) {
-            JsonObject usageObj = root.getAsJsonObject("usage");
-            int uncached = usageObj.has("input_tokens")
-                    ? usageObj.get("input_tokens").getAsInt() : 0;
-            int cacheRead = usageObj.has("cache_read_input_tokens")
-                    ? usageObj.get("cache_read_input_tokens").getAsInt() : 0;
-            int cacheCreation = usageObj.has("cache_creation_input_tokens")
-                    ? usageObj.get("cache_creation_input_tokens").getAsInt() : 0;
-            int output = usageObj.has("output_tokens")
-                    ? usageObj.get("output_tokens").getAsInt() : 0;
-            int totalInput = uncached + cacheRead + cacheCreation;
-            usage = new LLMResponse.Usage(
-                    totalInput, output, totalInput + output,
-                    cacheRead, cacheCreation
-            );
+            usage = UsageParser.anthropic(root.getAsJsonObject("usage"));
         }
 
         String finishReason = switch (stopReason) {

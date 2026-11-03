@@ -144,6 +144,10 @@ public final class PredictiveLearning {
         Trial latest = matching.stream().max(Comparator.comparingLong(Trial::tick)).orElseThrow();
         Prediction prediction = predict(mechanism, tool, arguments,
                 latest.predicate(), latest.before(), environment);
+        return explorationValue(prediction);
+    }
+
+    static double explorationValue(Prediction prediction) {
         // Persistent noise without improving predictions loses priority; useful learning does not.
         return finiteUnit(prediction.informationGainBits() * 4.0
                 * (0.25 + Math.min(1.0, prediction.learningProgress()))
@@ -151,6 +155,14 @@ public final class PredictiveLearning {
     }
 
     public synchronized int size() { return trials.size(); }
+
+    /** Start a revalidation window for one falsified contract; raw experiment audit remains in its owner. */
+    synchronized void startRevalidation(String mechanism,String tool,String arguments,String predicate,String before,String environment) {
+        String normalized=abstractArguments(arguments);
+        trials.values().removeIf(trial->trial.mechanism().equals(mechanism) && trial.tool().equals(tool)
+                && trial.arguments().equals(normalized) && trial.predicate().equals(predicate)
+                && trial.before().equals(before) && trial.environment().equals(environment));
+    }
 
     /** Compose verified transitions into a new bounded route; no body action is dispatched. */
     public synchronized Plan plan(String mechanism, String predicate, String before,
@@ -267,7 +279,7 @@ public final class PredictiveLearning {
         return digestParts(mechanism, tool, arguments, predicate, before, environment);
     }
 
-    private static String abstractArguments(String arguments) {
+    static String abstractArguments(String arguments) {
         if (arguments == null || arguments.length() > MAX_ARGUMENT_CHARS) {
             throw new IllegalArgumentException("Probe arguments are too large");
         }

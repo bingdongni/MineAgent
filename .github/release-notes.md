@@ -1,12 +1,16 @@
 MineAgent @VERSION@ is a feature release for Minecraft 1.21.1 and Java 21.
 
-This release connects verified mechanism experiments to bounded outcome prediction, learning-progress-guided exploration, short compositional transition planning, and target-bound executable adapters. Evidence is scoped to its parameters, prior state and environment; duplicate physical setups do not create independent support. Counterexamples require revalidation. This is external experience learning, not autonomous model-weight training.
+This release adds an observable learning loop for unfamiliar mod content: inspect public block capabilities, visible actor types/UUIDs, carried item tags/tooltips and opened merchant offers; propose a conditioned experiment; execute through normal admission; inspect the result; reflect; and transfer only after independent verification. Unsupported channels remain unknown, units remain explicit and private NBT is excluded.
 
-Long-horizon plan steps can declare live prerequisites. The planner distinguishes missing observations from observed contradictions, retains historical achievements when resources are consumed, schedules ready work by priority and remaining dependency depth, and requests a repair when the next executable window loses its prerequisites. Step readiness and executor ownership are recomputed after restart.
+Learned contracts include observed prerequisites, prior state, typed identity, parameters and environment. Contradictory observations revoke conflicting adapters and plan authority immediately, even when supporting a different hypothesis. One persisted recovery allowance permits two additional physical probes; two fresh independent supports are required before reuse. Successful server data reload stops pending learning and invalidates old rules and predictions. Raw audit experiences remain available for reflection.
 
-Built-in model transports use independent companion sessions. Anthropic requests can cache both the static instruction prefix and the declared durable conversation tail before transient live observations. Cache reads, writes, tool calls and action terminals are accounted for separately. Actual cache availability, model behavior and pricing depend on the selected official, relay or local endpoint.
+Bounded verified-experience search can repair a blocked plan suffix while preserving achievements, unrelated branches, constraints and final goal conditions. Block and entity transfer bindings keep action and verification targets aligned, and runtime conditions are rechecked before execution. Attack variants cannot masquerade as compensated experiments.
 
-The update also fixes nullable numeric validation, adds controlled planning/learning/HTTP regressions, and verifies tag, generated release notes, loader metadata and artifact identity before publication. Legacy mechanism rules with caller-named contexts require fresh physical evidence before automatic adapter reuse.
+Stable experience references are appended only when changed, retaining transient observations at the request tail. Cache accounting distinguishes missing reports from explicit zero, exposes coverage and parses malformed optional usage without discarding valid answers. Actual caching and prices depend on the official, relay or local endpoint; no universal cache control is forced on unknown services.
+
+Memory envelopes advance to version 14 and conditioned contexts to version 2. Older rules retain audit history but require fresh verification before predictive or automatic execution reuse. This is external experience learning, not autonomous model-weight training.
+
+Release verification now runs component regressions plus an isolated headless Minecraft test mod covering physical learning, transfer, changed-outcome relearning, actor/item observations and actual data reload. Both loader JARs must pass metadata, required-class and checksum checks; the fixture must be absent from production packages. See `docs/research/validation-0.6.0.md` and `mod-learning-0.6.0.md` for evidence and usage.
 
 ## Downloads
 

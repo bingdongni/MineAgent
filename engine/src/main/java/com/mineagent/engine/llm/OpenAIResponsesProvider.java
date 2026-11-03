@@ -369,16 +369,7 @@ public final class OpenAIResponsesProvider implements LLMProvider {
 
     private static LLMResponse.Usage usage(JsonObject root) {
         if (!root.has("usage") || !root.get("usage").isJsonObject()) return null;
-        JsonObject value = root.getAsJsonObject("usage");
-        int input = integer(value, "input_tokens", 0);
-        int output = integer(value, "output_tokens", 0);
-        int cached = 0;
-        int written = 0;
-        if (value.has("input_tokens_details") && value.get("input_tokens_details").isJsonObject()) {
-            cached = integer(value.getAsJsonObject("input_tokens_details"), "cached_tokens", 0);
-            written = integer(value.getAsJsonObject("input_tokens_details"), "cache_write_tokens", 0);
-        }
-        return new LLMResponse.Usage(input, output, integer(value, "total_tokens", input + output), cached, written);
+        return UsageParser.responses(root.getAsJsonObject("usage"));
     }
 
     private static String normalizeEffort(String effort) {

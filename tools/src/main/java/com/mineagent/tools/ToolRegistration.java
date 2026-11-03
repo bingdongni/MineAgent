@@ -51,6 +51,8 @@ public final class ToolRegistration {
         ToolRegistry.register(new ScanBlocksTool());
         ToolRegistry.register(new GetSelfStatusTool());
         ToolRegistry.register(new ScanNearbyEntitiesTool());
+        ToolRegistry.register(new com.mineagent.tools.perception.InspectEntityTool());
+        ToolRegistry.register(new com.mineagent.tools.perception.InspectItemTool());
         ToolRegistry.register(new RecallMemoryTool());
         ToolRegistry.register(new ResolveNeedTool());
         ToolRegistry.register(new PlanAcquisitionTool());

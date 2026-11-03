@@ -14,6 +14,8 @@ final class InvalidOptionalNumberTest {
     @Test void invalidOptionalNumbersReturnErrorsBeforeServerStateAccess() {
         record Case(Tool tool, String arguments) {}
         List<Case> cases = List.of(
+                new Case(new com.mineagent.tools.perception.InspectItemTool(), "{\"inventory_slot\":\"bad\"}"),
+                new Case(new com.mineagent.tools.perception.InspectEntityTool(), "{\"entity_id\":\"bad\"}"),
                 new Case(new com.mineagent.tools.perception.LookAroundTool(), "{\"radius\":\"bad\"}"),
                 new Case(new com.mineagent.tools.perception.ScanBlocksTool(), "{\"block_type\":\"minecraft:stone\",\"radius\":\"bad\"}"),
                 new Case(new com.mineagent.tools.perception.ScanNearbyEntitiesTool(), "{\"radius\":\"bad\"}"),

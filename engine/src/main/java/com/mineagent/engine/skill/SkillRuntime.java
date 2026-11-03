@@ -34,12 +34,18 @@ public final class SkillRuntime {
     public enum FailurePolicy { REPLAN, RETRY_ONCE, ABORT }
 
     public record Condition(String subject, String predicate, String value,
-                            double minimumConfidence) {
+                            double minimumConfidence,
+                            com.mineagent.engine.planning.PlanGraph.Comparison comparison) {
+        public Condition(String subject, String predicate, String value, double minimumConfidence) {
+            this(subject, predicate, value, minimumConfidence,
+                    com.mineagent.engine.planning.PlanGraph.Comparison.EQUALS);
+        }
         public Condition {
             subject = normalize(subject, "unknown");
             predicate = normalize(predicate, "observed");
             value = normalize(value, "*");
             minimumConfidence = unit(minimumConfidence);
+            comparison = comparison == null ? com.mineagent.engine.planning.PlanGraph.Comparison.EQUALS : comparison;
         }
     }
 
@@ -364,9 +370,12 @@ public final class SkillRuntime {
         if (conditions == null || conditions.isEmpty()) return List.of();
         ArrayList<Condition> result = new ArrayList<>();
         for (Condition condition : conditions) {
+            boolean numeric = condition.comparison() != com.mineagent.engine.planning.PlanGraph.Comparison.EQUALS;
             if (!worldModel.matches(condition.subject(), condition.predicate(),
-                    condition.value(), notBeforeTick, condition.minimumConfidence(),
-                    gameTick)) result.add(condition);
+                    numeric ? "*" : condition.value(), notBeforeTick, condition.minimumConfidence(), gameTick)
+                    || !new com.mineagent.engine.planning.PlanGraph.GoalCondition(condition.subject(),
+                    condition.predicate(), condition.value(), condition.comparison(), condition.minimumConfidence())
+                    .matches(worldModel, gameTick)) result.add(condition);
         }
         return List.copyOf(result);
     }
@@ -448,7 +457,8 @@ public final class SkillRuntime {
             }
             result.add(new Condition(subject, predicate,
                     string(value, "value", "*"), number(value,
-                    "minimum_confidence", 0.6)));
+                    "minimum_confidence", 0.6), com.mineagent.engine.planning.PlanGraph.Comparison.valueOf(
+                    string(value, "comparison", "equals").toUpperCase(Locale.ROOT))));
         }
         return List.copyOf(result);
     }

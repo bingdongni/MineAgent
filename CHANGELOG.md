@@ -4,6 +4,23 @@ All notable changes to MineAgent will be documented in this file. The project fo
 
 ## [Unreleased]
 
+### v0.6.0 — Added
+
+- Observe visible actor types/UUIDs/public state, actual carried item tags/tooltips, opened merchant offers, and side-aware public block capabilities without exposing arbitrary NBT. Keep unsupported channels distinct from zero and preserve fluid/energy units.
+- Learn contracts with observed multi-condition prerequisites, prior state and typed identity; reflect execution failures separately from mechanism counterexamples and transfer block/entity actions with matching effect bindings.
+- Grant one bounded recovery allowance after a verified rule is contradicted; persist its quota and require two fresh independent supports before reuse. Revoke generated skill and plan authority when evidence changes.
+- Search verified operators for bounded suffix repairs while retaining completed milestones, unrelated branches and top-level goal conditions.
+- Publish stable experience references only on content changes and report cache read/write observability alongside hit rate. Parse malformed optional provider usage without dropping valid model responses.
+- Run an isolated test mod on a headless Minecraft server for physical learning/transfer/rule changes, actor/item observations and native data reload. Gate dual-loader release verification on these scenarios and exclude the fixture from production artifacts.
+
+### v0.6.0 — Changed
+
+- Invalidate learned authority on successful Fabric/NeoForge server data reload, stop pending probes and reject late completion evidence. Keep raw audit experiences for revalidation.
+- Upgrade memory envelopes to version 14 and conditioned evidence contexts to version 2. Older confirmations retain audit history but lose automatic replay and predictive authority until revalidated.
+- Reject attack variants as compensated experiments, check actor UUIDs before execution, isolate nonspatial arguments and units, and use applicable conditional evidence in exploration scoring.
+
+See [v0.6.0 design and usage](docs/research/mod-learning-0.6.0.md) and [validation](docs/research/validation-0.6.0.md). External modpack performance, long-run retention, AGI and monetary savings have not been established.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added

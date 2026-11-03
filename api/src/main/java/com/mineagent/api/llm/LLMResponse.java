@@ -36,7 +36,15 @@ public record LLMResponse(
      *                                  cache (primarily Anthropic)
      */
     public record Usage(int promptTokens, int completionTokens, int totalTokens,
-                        int cachedPromptTokens, int cacheCreationPromptTokens) {
+                        int cachedPromptTokens, int cacheCreationPromptTokens,
+                        boolean cacheReadReported, boolean cacheWriteReported) {
+        /** Legacy providers do not establish observability by supplying a default zero. */
+        public Usage(int promptTokens, int completionTokens, int totalTokens,
+                     int cachedPromptTokens, int cacheCreationPromptTokens) {
+            this(promptTokens, completionTokens, totalTokens, cachedPromptTokens,
+                    cacheCreationPromptTokens, promptTokens > 0 && cachedPromptTokens > 0,
+                    promptTokens > 0 && cacheCreationPromptTokens > 0);
+        }
         public Usage {
             promptTokens = Math.max(0, promptTokens);
             completionTokens = Math.max(0, completionTokens);

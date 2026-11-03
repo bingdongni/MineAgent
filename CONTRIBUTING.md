@@ -19,7 +19,7 @@ Use [GitHub Security Advisories](https://github.com/bingdongni/MineAgent/securit
 3. Build both loader artifacts:
 
 ```bash
-./gradlew :fabric:build :neoforge:build
+./gradlew verifyReleaseArtifacts
 ```
 
 On Windows PowerShell, use `./gradlew.bat` instead. Fabric is the primary runtime validation target. NeoForge changes must preserve its experimental build even when the feature has no NeoForge client implementation yet.
@@ -36,10 +36,12 @@ On Windows PowerShell, use `./gradlew.bat` instead. Fabric is the primary runtim
 Before submitting, run:
 
 ```bash
-./gradlew clean :fabric:build :neoforge:build
+./gradlew clean verifyReleaseArtifacts
 ```
 
-If a live-game test is required, include the loader, exact reproduction steps, expected result, observed result, and relevant sanitized log lines in the pull request.
+The verification task runs component tests, an isolated headless Fabric GameTest server, both loader builds, metadata checks and checksums. Test fixtures stay under `fabric/src/gametest` and must never enter production JARs. Reports are under `fabric/build/test-results/test` and `fabric/build/gametest-results.xml`.
+
+For additional live-game tests, include the loader, exact reproduction steps, expected result, observed result, and relevant sanitized log lines in the pull request.
 
 ## License
 

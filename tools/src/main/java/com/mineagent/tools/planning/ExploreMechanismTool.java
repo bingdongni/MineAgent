@@ -28,7 +28,11 @@ public final class ExploreMechanismTool implements Tool {
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("mode", "propose, recommend, predict, plan, curriculum, metrics, status, or abort")
+                .string("mode", "propose, run, reflect, transfer, repair, recommend, predict, plan, curriculum, metrics, status, or abort")
+                .optionalString("rule_id", "Verified rule ID for transfer")
+                .optionalString("target_subject", "Observed block:<dimension>:x,y,z or entity:<UUID> subject for transfer")
+                .optionalBoolean("apply", "For repair: apply a bounded verified-experience suffix repair; default false")
+                .optionalString("prerequisites", "JSON array of up to 12 observed conditions: subject, predicate, value, comparison (equals/present/at_least/at_most), minimum_confidence")
                 .optionalInteger("max_steps", "For plan: maximum learned transitions to compose", 1, 6)
                 .optionalString("query", "For curriculum: current objective; blank explores observed knowledge gaps")
                 .optionalString("before_value", "For predict/plan: observed pre-action value; plan requires a concrete observed state")
@@ -70,7 +74,50 @@ public final class ExploreMechanismTool implements Tool {
             return;
         }
         switch (mode) {
-            case "propose" -> propose(args, loop.mechanismExplorer(), gameTick, reply);
+            case "transfer" -> reply.accept(new com.google.gson.Gson().toJson(
+                    loop.mechanismExplorer().transfer(ToolArgs.getString(args, "rule_id", null),
+                            ToolArgs.getString(args, "target_subject", null), player.dimensionKey(), gameTick)));
+            case "repair" -> {
+                var suggestion = com.mineagent.engine.planning.ExperienceRepairPlanner.suggest(
+                        loop.planner(), loop.semanticWorldModel(), loop.mechanismExplorer().knowledgeBase(), gameTick);
+                JsonObject result = new com.google.gson.Gson().toJsonTree(suggestion).getAsJsonObject();
+                result.addProperty("success", true);
+                result.addProperty("applied", false);
+                if (ToolArgs.getBool(args, "apply", false) && suggestion.found()) {
+                    var state = loop.planner().exportState();
+                    if (loop.hasActiveExecutor()) {
+                        result.addProperty("success", false);
+                        result.addProperty("error", "An active executor must finish before plan repair");
+                    } else {
+                        var update = loop.planner().repairPlan(state.goal(), suggestion.drafts(), state.constraints(), state.goalConditions());
+                        result.add("update", new com.google.gson.Gson().toJsonTree(update));
+                        result.addProperty("success", update.accepted());
+                        result.addProperty("applied", update.accepted());
+                        if (!update.accepted()) result.addProperty("error", "Plan repair was rejected; inspect update warnings");
+                    }
+                }
+                reply.accept(result.toString());
+            }
+            case "run" -> {
+                var result = loop.runMechanismProbe(ToolArgs.getString(args, "experiment_id", null));
+                JsonObject response = new JsonObject();
+                response.addProperty("success", result.accepted());
+                response.addProperty("pending", result.asynchronous());
+                response.addProperty("message", result.evidence());
+                if (!result.accepted()) response.addProperty("error", result.evidence());
+                reply.accept(response.toString());
+            }
+            case "reflect" -> {
+                JsonObject result = new JsonObject();
+                result.addProperty("success", true);
+                result.add("reflections", new com.google.gson.Gson().toJsonTree(
+                        loop.mechanismExplorer().reflect(ToolArgs.getString(args, "query", ""), gameTick, 5)));
+                reply.accept(result.toString());
+            }
+            case "propose" -> {
+                try { propose(args, loop.mechanismExplorer(), gameTick, reply); }
+                catch (IllegalArgumentException invalid) { reply.accept(ToolArgs.errorJson(invalid.getMessage())); }
+            }
             case "recommend" -> recommend(args, loop.mechanismExplorer(), gameTick, reply);
             case "predict" -> {
                 String subject = ToolArgs.getString(args, "subject", null);
@@ -83,7 +130,8 @@ public final class ExploreMechanismTool implements Tool {
                 try {
                     var prediction = loop.mechanismExplorer().predict(subject, tool,
                             ToolArgs.getString(args, "probe_arguments", "{}"), predicate,
-                            ToolArgs.getString(args, "before_value", "<absent>"));
+                            ToolArgs.getString(args, "before_value", "<absent>"),
+                            ToolArgs.getString(args, "expected_subject", "tool:" + tool), prerequisites(args), gameTick);
                     JsonObject result = new JsonObject();
                     result.addProperty("success", true);
                     result.add("prediction", new com.google.gson.Gson().toJsonTree(prediction));
@@ -101,7 +149,8 @@ public final class ExploreMechanismTool implements Tool {
                             ToolArgs.getString(args, "expected_predicate", null),
                             ToolArgs.getString(args, "before_value", null),
                             ToolArgs.getString(args, "expected_value", null),
-                            ToolArgs.getInt(args, "max_steps", 4));
+                            ToolArgs.getInt(args, "max_steps", 4),
+                            ToolArgs.getString(args, "expected_subject", null), prerequisites(args), gameTick);
                     JsonObject result = new JsonObject();
                     result.addProperty("success", true);
                     result.add("plan", new com.google.gson.Gson().toJsonTree(plan));
@@ -127,7 +176,11 @@ public final class ExploreMechanismTool implements Tool {
                 result.addProperty("cached_input_tokens", metrics.cachedInputTokens());
                 result.addProperty("cache_write_tokens", metrics.cacheWriteTokens());
                 result.addProperty("output_tokens", metrics.outputTokens());
-                result.addProperty("provider_cache_hit_rate", metrics.providerCacheHitRate());
+                if (loop.cacheCoverage().inputTokensWithReadReporting() > 0)
+                    result.addProperty("provider_cache_hit_rate", metrics.providerCacheHitRate());
+                else result.add("provider_cache_hit_rate", com.google.gson.JsonNull.INSTANCE);
+                result.add("cache_reporting", new com.google.gson.Gson().toJsonTree(loop.cacheCoverage()));
+                result.add("experience_context", new com.google.gson.Gson().toJsonTree(loop.experienceContextReuse()));
                 result.addProperty("verified_action_successes", metrics.successfulActions());
                 result.addProperty("action_failures", metrics.failedActions());
                 result.add("operations", new com.google.gson.Gson().toJsonTree(loop.metricOperations()));
@@ -172,7 +225,7 @@ public final class ExploreMechanismTool implements Tool {
                 ToolArgs.getString(args, "compensation_arguments", "{}"),
                 ToolArgs.getInt(args, "estimated_cost",
                         risk == MechanismExplorer.Risk.MEDIUM ? 4 : 1),
-                ToolArgs.getDouble(args, "information_gain", 0.6), gameTick);
+                ToolArgs.getDouble(args, "information_gain", 0.6), gameTick, prerequisites(args));
         JsonObject result = new JsonObject();
         result.addProperty("success", proposal.accepted());
         result.addProperty("message", proposal.message());
@@ -257,6 +310,7 @@ public final class ExploreMechanismTool implements Tool {
         out.addProperty("subject", value.subject());
         out.addProperty("hypothesis", value.hypothesis());
         out.addProperty("probe_tool", value.probeTool());
+        out.addProperty("probe_arguments", value.probeArguments());
         out.addProperty("expected", value.expectedSubject() + " "
                 + value.expectedPredicate() + "=" + value.expectedValue());
         out.addProperty("risk", value.risk().name().toLowerCase(Locale.ROOT));
@@ -265,6 +319,7 @@ public final class ExploreMechanismTool implements Tool {
         out.addProperty("cost", value.estimatedCost());
         out.addProperty("information_gain", value.estimatedInformationGain());
         out.addProperty("reversible", value.reversible());
+        out.add("prerequisites", new com.google.gson.Gson().toJsonTree(value.prerequisites()));
         if (value.compensationTool() != null) {
             out.addProperty("compensation_tool", value.compensationTool());
             out.addProperty("compensation_attempted", value.compensationAttempted());
@@ -280,6 +335,34 @@ public final class ExploreMechanismTool implements Tool {
             case "medium" -> MechanismExplorer.Risk.MEDIUM;
             default -> MechanismExplorer.Risk.LOW;
         };
+    }
+
+    private static java.util.List<com.mineagent.engine.planning.PlanGraph.GoalCondition> prerequisites(JsonObject args) {
+        if (!args.has("prerequisites") || args.get("prerequisites").isJsonNull()) return java.util.List.of();
+        JsonArray values = ToolArgs.getArray(args, "prerequisites");
+        if (values == null || values.size() > 12) throw new IllegalArgumentException("prerequisites must be an array of at most 12 conditions");
+        var result = new java.util.ArrayList<com.mineagent.engine.planning.PlanGraph.GoalCondition>();
+        for (JsonElement element : values) {
+            if (!element.isJsonObject()) throw new IllegalArgumentException("Each prerequisite must be an object");
+            JsonObject condition = element.getAsJsonObject();
+            String subject = ToolArgs.getString(condition, "subject");
+            String predicate = ToolArgs.getString(condition, "predicate");
+            if (subject == null || subject.isBlank() || predicate == null || predicate.isBlank())
+                throw new IllegalArgumentException("Prerequisites require subject and predicate");
+            var comparison = com.mineagent.engine.planning.PlanGraph.Comparison.valueOf(
+                    ToolArgs.getString(condition, "comparison", "equals").toUpperCase(Locale.ROOT));
+            String value = ToolArgs.getString(condition, "value", "*");
+            if (comparison == com.mineagent.engine.planning.PlanGraph.Comparison.AT_LEAST
+                    || comparison == com.mineagent.engine.planning.PlanGraph.Comparison.AT_MOST) {
+                double number = Double.parseDouble(value);
+                if (!Double.isFinite(number)) throw new IllegalArgumentException("Prerequisite numeric values must be finite");
+            }
+            double confidence = ToolArgs.getDouble(condition, "minimum_confidence", 0.7);
+            if (!Double.isFinite(confidence) || confidence < 0.6 || confidence > 1)
+                throw new IllegalArgumentException("Prerequisite confidence must be between 0.6 and 1");
+            result.add(new com.mineagent.engine.planning.PlanGraph.GoalCondition(subject, predicate, value, comparison, confidence));
+        }
+        return com.mineagent.engine.exploration.LearningConditions.checked(result);
     }
 
     private static String jsonObjectString(JsonObject source, String key) {

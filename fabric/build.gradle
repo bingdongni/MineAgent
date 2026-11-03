@@ -39,6 +39,10 @@ sourceSets {
             srcDir project(':tools').file('src/main/resources')
         }
     }
+    gametest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath
+    }
 }
 
 dependencies {
@@ -58,6 +62,10 @@ dependencies {
 
 loom {
     accessWidenerPath = file("src/main/resources/mineagent.accesswidener")
+    mods {
+        mineagent { sourceSet sourceSets.main }
+        mineagent_gametest { sourceSet sourceSets.gametest }
+    }
 
     runs {
         client {
@@ -68,6 +76,14 @@ loom {
             server()
             setConfigName("Fabric Server")
         }
+        gametest {
+            server()
+            source sourceSets.gametest
+            setConfigName("MineAgent headless GameTests")
+            vmArg "-Dfabric-api.gametest"
+            vmArg "-Dfabric-api.gametest.report-file=${project.layout.buildDirectory.file('gametest-results.xml').get().asFile.absolutePath}"
+            runDir "build/gametest"
+        }
     }
 }
 
@@ -76,4 +92,9 @@ processResources {
     filesMatching("fabric.mod.json") {
         expand "version": project.version
     }
+}
+
+tasks.named('runGametest') {
+    timeout = java.time.Duration.ofMinutes(5)
+    doFirst { delete layout.buildDirectory.file('gametest-results.xml').get().asFile }
 }

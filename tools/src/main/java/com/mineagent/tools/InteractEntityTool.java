@@ -41,6 +41,7 @@ public class InteractEntityTool implements Tool {
         return Schema.object()
                 .string("button", "Interaction type: 'use', 'attack', or 'use_offhand'")
                 .integer("entity_id", "The entity ID of the target entity", 0, Integer.MAX_VALUE)
+                .optionalString("expected_uuid", "Optional observed UUID; rejects stale or rebound runtime entity IDs")
                 .optionalInteger("hold_ticks", "How long to hold the button (0-40 ticks, default 0)", 0, 40)
                 .optionalString("item_id", "Item ID to hold during interaction (e.g. 'minecraft:wheat' for feeding animals)")
                 .build();
@@ -84,6 +85,11 @@ public class InteractEntityTool implements Tool {
             reply.accept(ToolArgs.errorJson("Entity " + entityId + " was not found or cannot be targeted."));
             return;
         }
+        String expectedUuid = ToolArgs.getString(args, "expected_uuid");
+        if (expectedUuid != null && !target.getUUID().toString().equalsIgnoreCase(expectedUuid)) {
+            reply.accept(ToolArgs.errorJson("Target UUID changed; inspect the actor again before interacting."));
+            return;
+        }
         if (itemId != null) {
             var id = net.minecraft.resources.ResourceLocation.tryParse(itemId);
             if (id == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(id)) {
@@ -93,7 +99,7 @@ public class InteractEntityTool implements Tool {
             itemId = id.toString();
         }
 
-        var record = new InteractEntityTaskRecord(toolCallId, button, entityId, holdTicks, itemId);
+        var record = new InteractEntityTaskRecord(toolCallId, button, entityId, holdTicks, itemId, target.getUUID().toString());
         TaskDispatch.dispatchAsync(player, record, reply);
     }
 
@@ -103,14 +109,20 @@ public class InteractEntityTool implements Tool {
         public final int entityId;
         public final int holdTicks;
         public final String itemId;
+        public final String expectedUuid;
 
         public InteractEntityTaskRecord(String toolCallId, String button, int entityId,
                                          int holdTicks, String itemId) {
+            this(toolCallId,button,entityId,holdTicks,itemId,null);
+        }
+        public InteractEntityTaskRecord(String toolCallId, String button, int entityId,
+                                         int holdTicks, String itemId, String expectedUuid) {
             super(toolCallId);
             this.button = button;
             this.entityId = entityId;
             this.holdTicks = holdTicks;
             this.itemId = itemId;
+            this.expectedUuid = expectedUuid;
         }
     }
 }

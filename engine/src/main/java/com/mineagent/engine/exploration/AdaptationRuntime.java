@@ -75,6 +75,12 @@ public final class AdaptationRuntime {
                     arguments.add(coordinate, SkillBindings.reference("target_" + coordinate));
                 }
             }
+            if (arguments.has("entity_id") && arguments.has("expected_uuid")) {
+                bindings.add("target_entity_id", arguments.get("entity_id").deepCopy());
+                bindings.add("target_uuid", arguments.get("expected_uuid").deepCopy());
+                arguments.add("entity_id", SkillBindings.reference("target_entity_id"));
+                arguments.add("expected_uuid", SkillBindings.reference("target_uuid"));
+            }
             step.add("args", arguments);
         } catch (RuntimeException malformed) {
             step.add("args", new JsonObject());
@@ -88,6 +94,27 @@ public final class AdaptationRuntime {
         effect.addProperty("minimum_confidence", 0.7);
         effects.add(effect);
         step.add("expected_effects", effects);
+        JsonArray guards = new JsonArray();
+        JsonObject validity = new JsonObject();
+        validity.addProperty("subject", "mechanism_rule:" + rule.id());
+        validity.addProperty("predicate", "reusable");
+        validity.addProperty("value", "true");
+        validity.addProperty("minimum_confidence", 0.99);
+        guards.add(validity);
+        for (var condition : rule.prerequisites()) {
+            JsonObject guard = new JsonObject();
+            if (condition.subject().equals(rule.expectedSubject())) {
+                guard.add("subject", SkillBindings.reference("effect_subject"));
+            } else {
+                guard.addProperty("subject", condition.subject());
+            }
+            guard.addProperty("predicate", condition.predicate());
+            guard.addProperty("value", condition.value());
+            guard.addProperty("comparison", condition.comparison().name().toLowerCase(Locale.ROOT));
+            guard.addProperty("minimum_confidence", condition.minimumConfidence());
+            guards.add(guard);
+        }
+        step.add("preconditions", guards);
         step.add("bindings", bindings);
         step.addProperty("on_failure", "replan");
         step.addProperty("max_attempts", 1);

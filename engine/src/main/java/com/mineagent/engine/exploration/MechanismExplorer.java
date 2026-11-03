@@ -4,6 +4,7 @@ import com.google.gson.JsonParser;
 import com.mineagent.api.task.TaskState;
 import com.mineagent.engine.skill.SkillLibrary;
 import com.mineagent.engine.world.SemanticWorldModel;
+import com.mineagent.engine.planning.PlanGraph;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -56,7 +57,8 @@ public final class MechanismExplorer {
                              FactSnapshot baseline, boolean probeSucceeded,
                              boolean compensationAttempted,
                              boolean compensationSucceeded,
-                             EnvironmentFingerprint environmentFingerprint) {
+                             EnvironmentFingerprint environmentFingerprint,
+                             List<PlanGraph.GoalCondition> prerequisites) {
         public Experiment {
             id = normalize(id, "experiment");
             subject = normalize(subject, "unknown_mechanism");
@@ -78,11 +80,12 @@ public final class MechanismExplorer {
             contextKey = normalize(contextKey, subject + "|" + probeArguments);
             compensationTool = blankToNull(compensationTool);
             compensationArguments = normalize(compensationArguments, "{}");
-            estimatedCost = Math.max(1, Math.min(12, estimatedCost));
+            estimatedCost = Math.max(defaultCost(probeTool, risk), Math.min(12, estimatedCost));
             estimatedInformationGain = unit(estimatedInformationGain);
             baseline = baseline == null ? FactSnapshot.absent() : baseline;
             environmentFingerprint = environmentFingerprint == null
                     ? EnvironmentFingerprint.unknown() : environmentFingerprint;
+            prerequisites = LearningConditions.checked(prerequisites);
         }
 
         public boolean terminal() {
@@ -101,7 +104,7 @@ public final class MechanismExplorer {
             risk = risk == null ? Risk.LOW : risk;
             compensationTool = blankToNull(compensationTool);
             compensationArguments = normalize(compensationArguments, "{}");
-            estimatedCost = Math.max(1, Math.min(12, estimatedCost));
+            estimatedCost = Math.max(defaultCost(tool, risk), Math.min(12, estimatedCost));
             estimatedInformationGain = unit(estimatedInformationGain);
         }
     }
@@ -109,11 +112,15 @@ public final class MechanismExplorer {
     public record Proposal(boolean accepted, Experiment experiment, String message) {}
     public record Recommendation(ProbeCandidate candidate, double score, String message) {}
     public record Budget(String subject, int remaining, int probes, long updatedTick,
-                         EnvironmentFingerprint fingerprint) {
+                         EnvironmentFingerprint fingerprint, int recoveryRefills) {
+        public Budget(String subject, int remaining, int probes, long updatedTick, EnvironmentFingerprint fingerprint) {
+            this(subject, remaining, probes, updatedTick, fingerprint, 0);
+        }
         public Budget {
             subject = normalize(subject, "unknown");
             remaining = Math.max(0, Math.min(MAX_BUDGET, remaining));
-            probes = Math.max(0, Math.min(MAX_PROBES_PER_SUBJECT, probes));
+            recoveryRefills = Math.max(0, Math.min(1, recoveryRefills));
+            probes = Math.max(0, Math.min(MAX_PROBES_PER_SUBJECT + 2, probes));
             updatedTick = Math.max(0L, updatedTick);
             fingerprint = fingerprint == null
                     ? EnvironmentFingerprint.unknown() : fingerprint;
@@ -157,7 +164,7 @@ public final class MechanismExplorer {
     private static final Set<String> SAFE_PROBE_TOOLS = Set.of(
             "look_around", "scan_blocks", "scan_nearby_entities",
             "get_self_status", "get_owner_status", "get_world_info",
-            "inspect_block", "inspect_block_storage", "inspect_gui",
+            "inspect_block", "inspect_entity", "inspect_item", "inspect_block_storage", "inspect_gui",
             "lookup_recipe", "resolve_need", "interact_at", "interact_entity",
             "close_gui", "transfer_items", "craft", "equip_item");
     private static final Set<String> MEDIUM_RISK_TOOLS = Set.of(
@@ -217,6 +224,48 @@ public final class MechanismExplorer {
                                          int estimatedCost,
                                          double estimatedInformationGain,
                                          long gameTick) {
+        return propose(subject, hypothesis, probeTool, probeArguments, expectedSubject,
+                expectedPredicate, expectedValue, risk, contextKey, reversible,
+                compensationTool, compensationArguments, estimatedCost,
+                estimatedInformationGain, gameTick, List.of());
+    }
+
+    public synchronized Proposal propose(String subject, String hypothesis,
+                                         String probeTool, String probeArguments,
+                                         String expectedSubject, String expectedPredicate,
+                                         String expectedValue, Risk risk, String contextKey,
+                                         boolean reversible, String compensationTool,
+                                         String compensationArguments, int estimatedCost,
+                                         double estimatedInformationGain, long gameTick,
+                                         List<PlanGraph.GoalCondition> prerequisites) {
+        List<PlanGraph.GoalCondition> conditions;
+        try { conditions = LearningConditions.checked(prerequisites); }
+        catch (IllegalArgumentException invalid) { return new Proposal(false, null, invalid.getMessage()); }
+        if (expectedSubject != null) {
+            var before = worldModel.find(expectedSubject, normalize(expectedPredicate, "outcome"), gameTick);
+            if (!expectedSubject.startsWith("tool:") && before.isPresent()
+                    && before.get().confidenceAt(gameTick) >= 0.7) {
+                var guarded = new ArrayList<>(conditions);
+                var guard = new PlanGraph.GoalCondition(expectedSubject, normalize(expectedPredicate, "outcome"),
+                        before.get().value(), PlanGraph.Comparison.EQUALS, 0.7);
+                if (!guarded.contains(guard)) guarded.add(guard);
+                try { conditions = LearningConditions.checked(guarded); }
+                catch (IllegalArgumentException invalid) { return new Proposal(false, null, invalid.getMessage()); }
+            }
+            var identity = worldModel.find(expectedSubject, "block_id", gameTick);
+            if (identity.isPresent() && identity.get().confidenceAt(gameTick) >= 0.7) {
+                var guarded = new ArrayList<>(conditions);
+                var guard = new PlanGraph.GoalCondition(expectedSubject, "block_id", identity.get().value(),
+                        PlanGraph.Comparison.EQUALS, 0.7);
+                if (!guarded.contains(guard)) guarded.add(guard);
+                try { conditions = LearningConditions.checked(guarded); }
+                catch (IllegalArgumentException invalid) { return new Proposal(false, null, invalid.getMessage()); }
+            }
+        }
+        try { conditions = identityConditions(conditions, expectedSubject, gameTick); }
+        catch (IllegalArgumentException invalid) { return new Proposal(false, null, invalid.getMessage()); }
+        String blocker = LearningConditions.blocker(conditions, worldModel, gameTick);
+        if (blocker != null) return new Proposal(false, null, blocker);
         String tool = normalize(probeTool, "").toLowerCase(Locale.ROOT);
         String compensation = blankToNull(compensationTool);
         if (subject == null || subject.isBlank() || subject.length() > 256
@@ -234,6 +283,28 @@ public final class MechanismExplorer {
         if (!tool.matches("[a-z][a-z0-9_]{0,63}") || !SAFE_PROBE_TOOLS.contains(tool)) {
             return new Proposal(false, null,
                     "Probe tool is not permitted for controlled exploration: " + probeTool);
+        }
+        if (expectedSubject != null && (expectedSubject.startsWith("block:") || expectedSubject.startsWith("entity:"))) {
+            String identityPredicate = expectedSubject.startsWith("block:") ? "block_id" : "entity_type";
+            var identity = conditions.stream().filter(condition -> condition.subject().equals(expectedSubject)
+                    && condition.predicate().equals(identityPredicate) && condition.comparison() == PlanGraph.Comparison.EQUALS).findFirst();
+            if (identity.isPresent() && !canonical(subject).equals(canonical(identity.get().value())))
+                return new Proposal(false, null, "Use the observed registered mechanism ID as subject: " + identity.get().value());
+        }
+        if ("interact_entity".equals(tool) && expectedSubject != null && expectedSubject.startsWith("entity:")
+                && conditions.stream().anyMatch(condition -> condition.predicate().equals("entity_type") && condition.subject().equals(expectedSubject))) {
+            try {
+                String uuid = UUID.fromString(expectedSubject.substring(7)).toString();
+                var arguments = JsonParser.parseString(probeArguments).getAsJsonObject();
+                int entityId = arguments.get("entity_id").getAsBigDecimal().intValueExact();
+                var observedId = worldModel.find(expectedSubject,"entity_id",gameTick)
+                        .filter(fact -> fact.confidenceAt(gameTick)>=0.7).orElse(null);
+                if (observedId == null || !Integer.toString(entityId).equals(observedId.value()))
+                    return new Proposal(false,null,"Observe the actor's current runtime entity_id before probing");
+                if (arguments.has("expected_uuid") && !uuid.equalsIgnoreCase(arguments.get("expected_uuid").getAsString()))
+                    return new Proposal(false,null,"Probe UUID does not match the observed target");
+                arguments.addProperty("expected_uuid",uuid); probeArguments = arguments.toString();
+            } catch (RuntimeException invalid) { return new Proposal(false,null,"Invalid observed actor target or entity_id"); }
         }
         Risk normalizedRisk = risk == null ? Risk.LOW : risk;
         if (normalizedRisk == Risk.HIGH) {
@@ -253,13 +324,17 @@ public final class MechanismExplorer {
             return new Proposal(false, null,
                     "Crafting consumes inputs and has no generic lossless compensation; inspect recipes instead");
         }
+        if (destructiveProbe(tool, probeArguments)) {
+            return new Proposal(false, null,
+                    "Attack interactions have no generic compensation; use owner-directed normal actions instead");
+        }
         if (activeExperiment() != null) {
             return new Proposal(false, activeExperiment(),
                     "Finish or abort the active experiment before arming another");
         }
-        int cost = Math.max(1, Math.min(MAX_BUDGET, estimatedCost));
+        int cost = Math.max(defaultCost(tool, normalizedRisk), Math.min(MAX_BUDGET, estimatedCost));
         Budget budget = budgetFor(subject, gameTick);
-        if (budget.probes() >= MAX_PROBES_PER_SUBJECT || budget.remaining() < cost) {
+        if (budget.probes() >= MAX_PROBES_PER_SUBJECT + budget.recoveryRefills() * 2 || budget.remaining() < cost) {
             return new Proposal(false, null,
                     "Exploration budget exhausted for " + subject
                             + "; use known evidence or request explicit owner direction");
@@ -276,11 +351,11 @@ public final class MechanismExplorer {
                 contextKey, compensation, compensationArguments, reversible,
                 cost, estimatedInformationGain, snapshot(expectedSubjectValue,
                 expectedPredicateValue, gameTick), false, false, false,
-                knowledgeBase.currentFingerprint());
+                knowledgeBase.currentFingerprint(), conditions);
         experiments.put(id, experiment);
         budgets.put(canonical(subject), new Budget(subject,
                 budget.remaining() - cost, budget.probes() + 1, gameTick,
-                knowledgeBase.currentFingerprint()));
+                knowledgeBase.currentFingerprint(), budget.recoveryRefills()));
         revision++;
         trim();
         return new Proposal(true, experiment,
@@ -291,13 +366,16 @@ public final class MechanismExplorer {
     public synchronized Recommendation recommend(Collection<ProbeCandidate> candidates,
                                                   String subject, long gameTick) {
         Budget budget = budgetFor(subject, gameTick);
+        if (budget.probes() >= MAX_PROBES_PER_SUBJECT + budget.recoveryRefills() * 2)
+            return new Recommendation(null, 0.0, "Exploration probe allowance exhausted for " + subject);
         ProbeCandidate best = candidates == null ? null : candidates.stream()
+                .limit(64)
                 .filter(candidate -> validCandidate(candidate, budget))
-                .max(Comparator.comparingDouble(candidate -> probeScore(candidate, subject)))
+                .max(Comparator.comparingDouble(candidate -> probeScore(candidate, subject, gameTick)))
                 .orElse(null);
         if (best == null) return new Recommendation(null, 0.0,
                 "No candidate fits the remaining reversible exploration budget");
-        return new Recommendation(best, probeScore(best, subject),
+        return new Recommendation(best, probeScore(best, subject, gameTick),
                 "Empirical prediction uncertainty and learning progress override cold-start estimates when evidence exists; verify one probe only");
     }
 
@@ -351,6 +429,11 @@ public final class MechanismExplorer {
         if (active == null || active.status() != Status.ARMED
                 || !active.probeTool().equals(toolName)
                 || !sameJsonObject(active.probeArguments(), arguments)) return null;
+        String blocker = LearningConditions.blocker(active.prerequisites(), worldModel, gameTick);
+        if (blocker != null) {
+            finish(active, Status.INCONCLUSIVE, "Prerequisites changed before dispatch: " + blocker, gameTick);
+            return null;
+        }
         Experiment running = lifecycle(active, Status.RUNNING, actionId,
                 "Probe dispatched with args=" + compact(arguments, 240), gameTick,
                 saturatedAdd(gameTick, OBSERVATION_WINDOW_TICKS),
@@ -375,6 +458,8 @@ public final class MechanismExplorer {
                                           boolean success, boolean asynchronous,
                                           String evidence, long gameTick) {
         if (success && !asynchronous && toolName != null) {
+            ActorObservation.project(toolName, evidence, actionId, gameTick, worldModel);
+            projectBlockObservation(toolName, evidence, actionId, gameTick);
             List<MechanismKnowledgeBase.Profile> observed =
                     knowledgeBase.observeToolResult(toolName, evidence, gameTick);
             // Publish the bounded profile projection into the same temporal
@@ -404,6 +489,66 @@ public final class MechanismExplorer {
         active = withProbeSucceeded(active);
         experiments.put(active.id(), active);
         beginObservation(active, evidence, gameTick);
+    }
+
+    private void projectBlockObservation(String tool, String raw, String actionId, long tick) {
+        if (!"inspect_block".equals(tool) || raw == null || raw.length() > 24_000) return;
+        try {
+            var root = JsonParser.parseString(raw).getAsJsonObject();
+            if (!root.has("fact_subject")) return;
+            String subject = root.get("fact_subject").getAsString();
+            if (!subject.startsWith("block:") || subject.length() > 256) return;
+            java.util.Set<String> observedProperties = new java.util.HashSet<>();
+            if (root.has("properties") && root.get("properties").isJsonObject())
+                root.getAsJsonObject("properties").keySet().forEach(name -> observedProperties.add("property." + name));
+            boolean typeChanged = root.has("block_id") && worldModel.find(subject, "block_id", tick)
+                    .map(fact -> !fact.value().equals(root.get("block_id").getAsString())).orElse(false);
+            boolean sampledCapabilities = root.has("capabilities") || root.has("capability_status");
+            var reportedCapabilities = new java.util.HashSet<String>();
+            if (root.has("capabilities") && root.get("capabilities").isJsonObject()) {
+                var caps=root.getAsJsonObject("capabilities");
+                if(caps.has("fields") && caps.get("fields").isJsonObject()
+                        && caps.has("channels") && caps.get("channels").isJsonObject()) {
+                    var channels=caps.getAsJsonObject("channels");
+                    caps.getAsJsonObject("fields").entrySet().stream().limit(96).forEach(entry->{
+                        String channel=entry.getKey().split("\\.",2)[0];
+                        if(channels.has(channel) && "available".equals(channels.get(channel).getAsString()))
+                            reportedCapabilities.add("capability."+entry.getKey());
+                    });
+                }
+            }
+            for (var old : worldModel.factsForSubject(subject, tick)) {
+                if ((old.predicate().startsWith("property.") && !observedProperties.contains(old.predicate()))
+                        || (old.predicate().startsWith("capability.") && (typeChanged
+                        || (sampledCapabilities && !reportedCapabilities.contains(old.predicate()))))) {
+                    worldModel.retract(subject, old.predicate(), tool, actionId, tick, false);
+                }
+            }
+            if (root.has("block_id")) worldModel.observe(subject, "block_id", root.get("block_id").getAsString(),
+                    null, 0.95, tool, actionId, tick, 400L, false);
+            if (root.has("dimension")) worldModel.observe(subject,"dimension",root.get("dimension").getAsString(),
+                    null,0.95,tool,actionId,tick,400L,false);
+            if (root.has("properties") && root.get("properties").isJsonObject()) {
+                root.getAsJsonObject("properties").entrySet().stream().limit(24)
+                        .filter(entry -> entry.getValue().isJsonPrimitive()).forEach(entry ->
+                        worldModel.observe(subject, "property." + entry.getKey(), entry.getValue().getAsString(),
+                                null, 0.95, tool, actionId, tick, 400L, false));
+            }
+            if (root.has("capabilities") && root.get("capabilities").isJsonObject()) {
+                var caps = root.getAsJsonObject("capabilities");
+                if (caps.has("fields") && caps.get("fields").isJsonObject()
+                        && caps.has("channels") && caps.get("channels").isJsonObject()) {
+                    var channels = caps.getAsJsonObject("channels");
+                    caps.getAsJsonObject("fields").entrySet().stream().limit(96)
+                            .filter(entry -> entry.getValue().isJsonPrimitive())
+                            .filter(entry -> {
+                                String channel = entry.getKey().split("\\.", 2)[0];
+                                return channels.has(channel) && "available".equals(channels.get(channel).getAsString());
+                            }).forEach(entry -> worldModel.observe(subject, "capability." + entry.getKey(),
+                                    entry.getValue().getAsString(), null, 0.95, tool, actionId, tick, 100L, false));
+                }
+            }
+        } catch (RuntimeException malformed) { /* malformed observations provide no invented facts */ }
     }
 
     public synchronized void onTaskFinished(String actionId, TaskState state,
@@ -461,7 +606,9 @@ public final class MechanismExplorer {
                 || !evidence.toLowerCase(Locale.ROOT).contains("postcondition")) return;
         MechanismKnowledgeBase.Rule stale = knowledgeBase
                 .recordAdapterContradiction(skillName, gameTick);
+        if (stale != null) grantRecoveryBudget(stale.subject(), gameTick);
         adaptationRuntime.invalidate(stale);
+        publishRuleValidity(stale, gameTick);
     }
 
     public synchronized Experiment get(String id) {
@@ -472,8 +619,111 @@ public final class MechanismExplorer {
         return List.copyOf(experiments.values());
     }
 
+    public synchronized List<LearningReflection> reflect(String query, long tick, int limit) {
+        String goal = query == null ? "" : query.trim();
+        return experiments.values().stream().filter(Experiment::terminal)
+                .filter(experiment -> goal.isBlank() || com.mineagent.engine.memory.TextSimilarity.score(goal,
+                        experiment.subject() + " " + experiment.hypothesis()) >= 0.2)
+                .sorted(Comparator.comparingLong(Experiment::deadlineTick).reversed())
+                .limit(Math.max(0, Math.min(8, limit)))
+                .map(experiment -> LearningReflection.from(experiment, worldModel, tick)).toList();
+    }
+
+    public record Transfer(boolean eligible, String ruleId, String skillName,
+                           com.google.gson.JsonObject overrides, String message) {}
+
+    /** Read-only transfer admission. Matching a name never establishes equivalent behavior. */
+    public synchronized Transfer transfer(String ruleId, String target, String dimension, long tick) {
+        var rule = knowledgeBase.rules().stream().filter(value -> value.id().equals(ruleId))
+                .findFirst().orElse(null);
+        if (rule == null || !rule.reusable(knowledgeBase.currentFingerprint()) || rule.adapterSkill() == null)
+            return new Transfer(false, ruleId, null, null, "Rule is not currently verified; obtain independent evidence first");
+        boolean actor = target != null && target.startsWith("entity:");
+        String identityPredicate = actor ? "entity_type" : "block_id";
+        var identity = rule.prerequisites().stream().filter(condition ->
+                condition.subject().equals(rule.expectedSubject()) && condition.predicate().equals(identityPredicate)
+                        && condition.comparison() == PlanGraph.Comparison.EQUALS).findFirst().orElse(null);
+        boolean currentDimension = actor ? worldModel.find(target,"dimension",tick)
+                .filter(fact -> fact.confidenceAt(tick)>=0.7).map(fact->fact.value().equals(dimension)).orElse(false)
+                : target != null && target.startsWith("block:" + dimension + ":");
+        if (identity == null || !currentDimension)
+            return new Transfer(false, ruleId, null, null, "A current-dimension target and observed source identity are required");
+        var guards = rule.prerequisites().stream().map(condition -> new PlanGraph.GoalCondition(
+                condition.subject().equals(rule.expectedSubject()) ? target : condition.subject(),
+                condition.predicate(), condition.value(), condition.comparison(), condition.minimumConfidence())).toList();
+        String blocker = LearningConditions.blocker(guards, worldModel, tick);
+        if (blocker != null) return new Transfer(false, ruleId, null, null, blocker);
+        try {
+            var original = JsonParser.parseString(rule.probeArguments()).getAsJsonObject();
+            com.google.gson.JsonObject bindings = new com.google.gson.JsonObject();
+            if (actor) {
+                if (!original.has("entity_id") || !original.has("expected_uuid")) throw new IllegalArgumentException();
+                var runtimeId = worldModel.find(target,"entity_id",tick).filter(fact->fact.confidenceAt(tick)>=0.7).orElseThrow();
+                int entityId = Integer.parseInt(runtimeId.value());
+                if (entityId < 0) throw new IllegalArgumentException();
+                bindings.addProperty("target_entity_id",entityId);
+                bindings.addProperty("target_uuid",UUID.fromString(target.substring(7)).toString());
+            } else {
+                String[] coordinates = target.substring(target.lastIndexOf(':') + 1).split(",", -1);
+                if (coordinates.length != 3) throw new IllegalArgumentException();
+                int i = 0;
+                for (String axis : List.of("x", "y", "z")) {
+                    if (!original.has(axis)) throw new IllegalArgumentException();
+                    bindings.addProperty("target_" + axis, Integer.parseInt(coordinates[i++]));
+                }
+            }
+            bindings.addProperty("effect_subject", target);
+            com.google.gson.JsonObject overrides = new com.google.gson.JsonObject();
+            overrides.add("bindings", bindings);
+            return new Transfer(true, ruleId, rule.adapterSkill(), overrides,
+                    "Observed identity and conditions match; execute_skill will recheck conditions and verify the new target's effect");
+        } catch (RuntimeException invalid) {
+            return new Transfer(false, ruleId, null, null, "This rule does not expose a complete observed target binding");
+        }
+    }
+
+    public synchronized PredictiveLearning.Prediction predict(String subject, String tool,
+            String arguments, String predicate, String before, String target,
+            List<PlanGraph.GoalCondition> prerequisites, long tick) {
+        prerequisites = identityConditions(prerequisites, target, tick);
+        String blocker = LearningConditions.blocker(prerequisites, worldModel, tick);
+        if (blocker != null) throw new IllegalArgumentException(blocker);
+        return learning.predict(subject, tool, LearningConditions.roleArguments(arguments,target,prerequisites), predicate, before,
+                LearningConditions.predictiveScope(knowledgeBase.currentFingerprint(), prerequisites, target, predicate));
+    }
+
+    public synchronized PredictiveLearning.Plan plan(String subject, String predicate, String before,
+            String goal, int maxSteps, String target, List<PlanGraph.GoalCondition> prerequisites, long tick) {
+        prerequisites = identityConditions(prerequisites, target, tick);
+        String blocker = LearningConditions.blocker(prerequisites, worldModel, tick);
+        if (blocker != null) throw new IllegalArgumentException(blocker);
+        return learning.plan(subject, predicate, before, goal,
+                LearningConditions.predictiveScope(knowledgeBase.currentFingerprint(), prerequisites, target, predicate), maxSteps);
+    }
+
+    private List<PlanGraph.GoalCondition> identityConditions(List<PlanGraph.GoalCondition> original, String target, long tick) {
+        var conditions = new ArrayList<>(LearningConditions.checked(original));
+        if (target != null) for (String predicate : List.of("block_id", "entity_type", "dimension")) {
+            worldModel.find(target, predicate, tick).filter(fact -> fact.confidenceAt(tick) >= 0.7).ifPresent(fact -> {
+                var guard = new PlanGraph.GoalCondition(target, predicate, fact.value(), PlanGraph.Comparison.EQUALS, 0.7);
+                if (!conditions.contains(guard)) conditions.add(guard);
+            });
+        }
+        return LearningConditions.checked(conditions);
+    }
+
     public synchronized MechanismKnowledgeBase knowledgeBase() {
         return knowledgeBase;
+    }
+
+    /** Called before body/tool admission, not after the side effect. */
+    public synchronized String actionBlocker(String tool, String arguments, long tick) {
+        Experiment active = activeExperiment();
+        if (active == null || active.status() != Status.ARMED
+                || !active.probeTool().equals(tool) || !sameJsonObject(active.probeArguments(), arguments)) return null;
+        String blocker = LearningConditions.blocker(active.prerequisites(), worldModel, tick);
+        if (blocker != null) finish(active, Status.INCONCLUSIVE, "Prerequisites changed: " + blocker, tick);
+        return blocker;
     }
 
     public synchronized boolean hasRelevantNovelty(String query) {
@@ -482,6 +732,21 @@ public final class MechanismExplorer {
 
     public synchronized String summarizeForPrompt() {
         return summarizeForPrompt("");
+    }
+
+    public synchronized String experienceReference(String query) {
+        StringBuilder out = new StringBuilder("contract_version=2\n");
+        int count = 0;
+        for (var rule : knowledgeBase.relevantRules(query, 4)) {
+            if (!rule.reusable(knowledgeBase.currentFingerprint()) || rule.adapterSkill() == null) continue;
+            String line = "rule=" + rule.id() + " subject=" + rule.subject() + " skill=" + rule.adapterSkill()
+                    + " guards=" + rule.prerequisites().stream().map(PlanGraph.GoalCondition::describe).toList()
+                    + " effect=" + rule.expectedPredicate() + "=" + rule.expectedValue() + "\n";
+            if (out.length() + line.length() > 5_600) break;
+            out.append(line); count++;
+        }
+        if (count == 0) out.append("No currently verified relevant rules. Observe or test before automatic reuse.\n");
+        return out.toString();
     }
 
     /** Recall only rules relevant to the current owner goal to protect token budget. */
@@ -500,6 +765,11 @@ public final class MechanismExplorer {
                 .append(" probe=").append(active.probeTool())
                 .append(" expected=").append(expected(active)).append('\n');
         for (MechanismKnowledgeBase.Rule rule : relevant) {
+            if (rule.reusable(knowledgeBase.currentFingerprint()) && rule.adapterSkill() != null) {
+                out.append("- current_rule=").append(rule.id()).append(" subject=").append(rule.subject()).append(" reusable=true adapter=")
+                        .append(rule.adapterSkill()).append("; see experience reference\n");
+                continue;
+            }
             out.append("- rule subject=").append(rule.subject())
                     .append(" status=").append(rule.status().name().toLowerCase(Locale.ROOT))
                     .append(" confidence=").append(String.format(Locale.ROOT, "%.2f", rule.confidence()))
@@ -534,9 +804,17 @@ public final class MechanismExplorer {
     }
 
     public synchronized void importState(State state) {
+        for (var old : knowledgeBase.rules()) {
+            adaptationRuntime.invalidate(old);
+            long tick = worldModel.find("mechanism_rule:" + old.id(), "reusable", 0L)
+                    .map(SemanticWorldModel.SemanticFact::observedTick).orElse(old.updatedTick());
+            worldModel.observe("mechanism_rule:" + old.id(), "reusable", "false", null, 1.0,
+                    "mechanism_restore", old.id(), tick, 0L, false);
+        }
         experiments.clear();
         budgets.clear();
-        learning.importState(state == null ? null : state.learning());
+        learning.importState(state != null && state.knowledge() != null && state.knowledge().contextVersion() == 2
+                ? state.learning() : null);
         if (state != null) {
             if (state.experiments() != null) for (Experiment experiment : state.experiments()) {
                 if (experiment == null || experiment.id() == null) continue;
@@ -562,6 +840,7 @@ public final class MechanismExplorer {
             revision++;
         }
         adaptationRuntime.rebuild(knowledgeBase.rules());
+        knowledgeBase.rules().forEach(rule -> publishRuleValidity(rule, 0L));
         trim();
     }
 
@@ -649,9 +928,29 @@ public final class MechanismExplorer {
 
         // An explicit abort contains no likelihood evidence and should not
         // create an empty candidate rule merely because the owner stopped it.
+        var previousRule=knowledgeBase.ruleFor(finished).orElse(null);
+        boolean previouslyVerified = status == Status.REFUTED && previousRule!=null
+                && previousRule.reusable(knowledgeBase.currentFingerprint());
+        var previousRules = knowledgeBase.rules();
         MechanismKnowledgeBase.Rule rule = status == Status.ABORTED ? null
                 : knowledgeBase.record(finished, status, finished.evidence(), gameTick);
+        var contradicted = observed == null ? List.<MechanismKnowledgeBase.Rule>of()
+                : knowledgeBase.recordObservedContradictions(finished, observed.value(), gameTick);
+        for (var other : contradicted) {
+            adaptationRuntime.invalidate(other); publishRuleValidity(other, gameTick);
+        }
+        boolean newlyContradictedAuthority = contradicted.stream().anyMatch(other -> previousRules.stream()
+                .anyMatch(old -> old.id().equals(other.id()) && old.reusable(knowledgeBase.currentFingerprint())));
+        var currentRuleIds = knowledgeBase.rules().stream().map(MechanismKnowledgeBase.Rule::id)
+                .collect(java.util.stream.Collectors.toSet());
+        for (var previous : previousRules) if (!currentRuleIds.contains(previous.id())) {
+            adaptationRuntime.invalidate(previous);
+            worldModel.observe("mechanism_rule:" + previous.id(),"reusable","false",null,1,
+                    "mechanism_eviction",finished.id(),gameTick,0,false);
+        }
+        if (previouslyVerified || newlyContradictedAuthority) grantRecoveryBudget(finished.subject(), gameTick);
         String adapter = adaptationRuntime.synchronize(rule);
+        publishRuleValidity(rule, gameTick);
         if (adapter != null) {
             worldModel.observe("mechanism:" + finished.subject(), "adapter",
                     adapter, null, rule.confidence(), "adaptation_runtime",
@@ -661,11 +960,24 @@ public final class MechanismExplorer {
         if (status == Status.SUPPORTED || status == Status.REFUTED) {
             if (observed != null && observed.eventSequence() > finished.baseline().eventSequence()
                     && observed.observedTick() >= finished.actionTick()) {
+                boolean previousWindowInvalid = previousRule != null
+                        && (previousRule.status() == MechanismKnowledgeBase.RuleStatus.STALE || previousRule.status() == MechanismKnowledgeBase.RuleStatus.REFUTED);
+                boolean replacementWindow = (previousRule == null || previousRule.supports() == 0) && previousRules.stream().anyMatch(old ->
+                        (old.status() == MechanismKnowledgeBase.RuleStatus.STALE || old.status() == MechanismKnowledgeBase.RuleStatus.REFUTED)
+                                && MechanismKnowledgeBase.sameContract(old, experiment));
+                if(status==Status.SUPPORTED && (previousWindowInvalid || replacementWindow || newlyContradictedAuthority)) {
+                    learning.startRevalidation(finished.subject(),finished.probeTool(),
+                            LearningConditions.roleArguments(finished.probeArguments(),finished.expectedSubject(),finished.prerequisites()),
+                            finished.expectedPredicate(),finished.baseline().present()?finished.baseline().value():"<absent>",
+                            LearningConditions.predictiveScope(finished.environmentFingerprint(),finished.prerequisites(),finished.expectedSubject(),finished.expectedPredicate()));
+                }
                 learning.observe(finished.id(), finished.subject(), finished.probeTool(),
-                        finished.probeArguments(), finished.expectedPredicate(), finished.baseline().present()
+                        LearningConditions.roleArguments(finished.probeArguments(),finished.expectedSubject(),finished.prerequisites()),
+                        finished.expectedPredicate(), finished.baseline().present()
                                 ? finished.baseline().value() : "<absent>",
                         observed.value(), PredictiveLearning.physicalContext(finished),
-                        finished.environmentFingerprint().toString(), gameTick);
+                        LearningConditions.predictiveScope(finished.environmentFingerprint(),
+                                finished.prerequisites(), finished.expectedSubject(), finished.expectedPredicate()), gameTick);
             }
             evidenceSink.record(finished, status == Status.SUPPORTED,
                     finished.evidence(), gameTick);
@@ -703,11 +1015,37 @@ public final class MechanismExplorer {
                 .orElseGet(FactSnapshot::absent);
     }
 
+    private void publishRuleValidity(MechanismKnowledgeBase.Rule rule, long tick) {
+        if (rule != null) {
+            tick = Math.max(tick, worldModel.find("mechanism_rule:" + rule.id(), "reusable", 0L)
+                    .map(SemanticWorldModel.SemanticFact::observedTick).orElse(0L));
+            worldModel.observe("mechanism_rule:" + rule.id(), "reusable",
+                Boolean.toString(rule.reusable(knowledgeBase.currentFingerprint())), null,
+                1.0, "mechanism_explorer", rule.id(), tick, 0L, false);
+        }
+    }
+
+    private void grantRecoveryBudget(String subject, long tick) {
+        Budget budget = budgetFor(subject, tick);
+        if (budget.recoveryRefills() == 0) budgets.put(canonical(subject), new Budget(subject,
+                Math.min(MAX_BUDGET, budget.remaining() + 8), budget.probes(), tick,
+                knowledgeBase.currentFingerprint(), 1));
+    }
+
+    /** A real data reload invalidates unknown dependencies conservatively, retaining audit history. */
+    public synchronized void onRulesReloaded(long tick) {
+        abort(null, "Game data rules were reloaded; revalidate affected mechanisms", tick);
+        for (var rule : knowledgeBase.invalidateAll()) {
+            adaptationRuntime.invalidate(rule); publishRuleValidity(rule, tick);
+        }
+        learning.importState(null); budgets.clear(); revision++;
+    }
+
     private Budget budgetFor(String subject, long gameTick) {
         Budget old = budgets.get(canonical(subject));
         if (old == null || !old.fingerprint().compatible(
                 knowledgeBase.currentFingerprint())
-                || gameTick - old.updatedTick() >= BUDGET_RESET_TICKS) {
+                || gameTick < old.updatedTick() || gameTick - old.updatedTick() >= BUDGET_RESET_TICKS) {
             return new Budget(subject, MAX_BUDGET, 0, gameTick,
                     knowledgeBase.currentFingerprint());
         }
@@ -718,7 +1056,8 @@ public final class MechanismExplorer {
         if (candidate == null || candidate.risk() == Risk.HIGH
                 || !SAFE_PROBE_TOOLS.contains(candidate.tool())
                 || candidate.estimatedCost() > budget.remaining()
-                || !PredictiveLearning.supportsArguments(candidate.arguments())) return false;
+                || !PredictiveLearning.supportsArguments(candidate.arguments())
+                || destructiveProbe(candidate.tool(), candidate.arguments())) return false;
         if (!MEDIUM_RISK_TOOLS.contains(candidate.tool())) return true;
         return candidate.risk() == Risk.MEDIUM && candidate.reversible()
                 && candidate.compensationTool() != null
@@ -726,13 +1065,67 @@ public final class MechanismExplorer {
                 && !"craft".equals(candidate.tool());
     }
 
-    private double probeScore(ProbeCandidate candidate, String subject) {
+    private static boolean destructiveProbe(String tool, String arguments) {
+        if (!"interact_at".equals(tool) && !"interact_entity".equals(tool)) return false;
+        try {
+            var button = JsonParser.parseString(arguments).getAsJsonObject().get("button");
+            return button != null && button.isJsonPrimitive() && "attack".equalsIgnoreCase(button.getAsString());
+        } catch (RuntimeException invalid) { return true; }
+    }
+
+    private double probeScore(ProbeCandidate candidate, String subject, long tick) {
         double riskPenalty = candidate.risk() == Risk.MEDIUM ? 0.25 : 0.0;
         double reversibility = candidate.reversible() ? 0.1 : 0.0;
         double value = learning.explorationValue(subject, candidate.tool(), candidate.arguments(),
                 knowledgeBase.currentFingerprint().toString(), candidate.estimatedInformationGain());
+        // Conditional trials live in their observed contract, not the unscoped fallback above.
+        // Use only contracts applicable to this exact observed target and current before-state.
+        double empirical = -1.0;
+        var rules = knowledgeBase.rules().stream().filter(rule -> rule.subject().equals(subject)
+                && rule.probeTool().equals(candidate.tool())
+                && rule.fingerprint().compatible(knowledgeBase.currentFingerprint()))
+                .sorted(Comparator.comparingLong(MechanismKnowledgeBase.Rule::updatedTick).reversed())
+                .limit(64).toList();
+        for (var rule : rules) {
+            String target = candidateTarget(rule, candidate.arguments(), tick);
+            if (target == null) continue;
+            var guards = rule.prerequisites().stream().map(condition -> new PlanGraph.GoalCondition(
+                    condition.subject().equals(rule.expectedSubject()) ? target : condition.subject(),
+                    condition.predicate(), condition.value(), condition.comparison(), condition.minimumConfidence())).toList();
+            if (LearningConditions.blocker(guards, worldModel, tick) != null) continue;
+            String arguments = LearningConditions.roleArguments(candidate.arguments(), target, guards);
+            String original = LearningConditions.roleArguments(rule.probeArguments(), rule.expectedSubject(), rule.prerequisites());
+            if (!PredictiveLearning.abstractArguments(arguments).equals(PredictiveLearning.abstractArguments(original))) continue;
+            String before = worldModel.find(target, rule.expectedPredicate(), tick)
+                    .filter(fact -> fact.confidenceAt(tick) >= 0.7).map(SemanticWorldModel.SemanticFact::value).orElse("<absent>");
+            var prediction = learning.predict(subject, candidate.tool(), arguments, rule.expectedPredicate(), before,
+                    LearningConditions.predictiveScope(knowledgeBase.currentFingerprint(), guards, target, rule.expectedPredicate()));
+            if (prediction.independentContexts() > 0)
+                empirical = Math.max(empirical, PredictiveLearning.explorationValue(prediction));
+        }
+        if (empirical >= 0) value = empirical;
         return value / candidate.estimatedCost()
                 + reversibility - riskPenalty;
+    }
+
+    private String candidateTarget(MechanismKnowledgeBase.Rule rule, String arguments, long tick) {
+        try {
+            var args = JsonParser.parseString(arguments).getAsJsonObject();
+            if (rule.expectedSubject().startsWith("block:")) {
+                String prefix = rule.expectedSubject().substring(0, rule.expectedSubject().lastIndexOf(':') + 1);
+                return prefix + args.get("x").getAsBigDecimal().intValueExact() + ","
+                        + args.get("y").getAsBigDecimal().intValueExact() + ","
+                        + args.get("z").getAsBigDecimal().intValueExact();
+            }
+            if (rule.expectedSubject().startsWith("entity:")) {
+                String target = args.has("expected_uuid") ? "entity:" + UUID.fromString(args.get("expected_uuid").getAsString())
+                        : rule.expectedSubject();
+                String runtimeId = Integer.toString(args.get("entity_id").getAsBigDecimal().intValueExact());
+                return worldModel.find(target, "entity_id", tick).filter(fact -> fact.confidenceAt(tick) >= 0.7
+                        && fact.value().equals(runtimeId)).isPresent() ? target : null;
+            }
+            return rule.expectedSubject();
+        } catch (RuntimeException unavailableTarget) { return null; }
     }
 
     private Experiment activeExperiment() {
@@ -774,7 +1167,7 @@ public final class MechanismExplorer {
                 value.compensationArguments(), value.reversible(), value.estimatedCost(),
                 value.estimatedInformationGain(), baseline, probeSucceeded,
                 value.compensationAttempted(), value.compensationSucceeded(),
-                value.environmentFingerprint());
+                value.environmentFingerprint(), value.prerequisites());
     }
 
     private static Experiment withProbeSucceeded(Experiment value) {
@@ -793,7 +1186,7 @@ public final class MechanismExplorer {
                 value.contextKey(), value.compensationTool(), value.compensationArguments(),
                 value.reversible(), value.estimatedCost(), value.estimatedInformationGain(),
                 value.baseline(), value.probeSucceeded(), attempted, succeeded,
-                value.environmentFingerprint());
+                value.environmentFingerprint(), value.prerequisites());
     }
 
     private static int defaultCost(String tool, Risk risk) {

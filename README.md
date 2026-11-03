@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v0.5.0** 加入经验条件预测、短程转换组合、长程计划的实时前提与局部修复、技能目标绑定和伙伴独立会话。[下载本版](https://github.com/bingdongni/MineAgent/releases/tag/v0.5.0)，或查看 [持续学习说明](docs/research/continual-learning.md) 与 [版本验证记录](docs/research/validation-0.5.0.md)。实机学习与成本收益仍需测量。
+> 本分支版本 **v0.6.0**：陌生模组的公开观察、多条件实验、结构化反思、类型约束迁移、有界重学、经验驱动计划修复与缓存可观测性。参见 [使用与设计](docs/research/mod-learning-0.6.0.md)、[验证记录](docs/research/validation-0.6.0.md) 和 [研究依据](docs/research/continual-learning.md)。发布包以 [Releases](https://github.com/bingdongni/MineAgent/releases) 为准。
 
 [English](README.en.md) | 简体中文
 
@@ -8,6 +8,15 @@
 [![License: LGPL-3.0-only](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 
 MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动的 AI 伴游模组。它在服务端创建无真实网络连接的假玩家，并让 AI 通过移动、采集、挖掘、建造、战斗、合成、物品管理和生存本能与世界交互。
+
+## v0.6.0：陌生内容的观察、学习与适应
+
+- `inspect_entity` 观察可见角色的注册类型、UUID 与公开状态；`inspect_item` 读取实际携带物品的耐久、标签和有界说明；已打开的交易菜单可读取公开报价。
+- `inspect_block` 连接加载器的公开物品、流体及 NeoForge 能量接口，保留面、单位和不可用状态。学习器不读取私有 NBT 或隐藏规则答案。
+- 实验冻结观察到的多项前提和原始状态；两份物理独立证据才建立可复用规则。迁移同时绑定动作目标与验收对象，并在执行前重新检查条件。
+- 反例立即撤销依赖技能的复用资格，并提供一次有界重学窗口。数据重载停止旧实验、失效旧规则并清空预测缓存，保留原始经历供反思。
+- 从已验证经验搜索有界修复路径，保留长程计划已完成历史；稳定经验引用仅在变化时追加到模型历史，缓存统计区分未上报与明确零值。
+- 发布验证同时运行组件回归、真实 Minecraft 无界面 GameTests 和 Fabric/NeoForge 双加载器构建。实际整合包、长期玩法表现和账单收益仍需独立测量。
 
 ## v0.4.0：阶段 0–9 认知、执行与协作闭环
 
@@ -198,19 +207,21 @@ Windows PowerShell：
 ```powershell
 cd MineAgent
 $env:JAVA_HOME = 'C:\Path\To\jdk-21'
-.\gradlew.bat :fabric:build :neoforge:build
+.\gradlew.bat verifyReleaseArtifacts
 ```
 
 Linux/macOS：
 
 ```bash
-./gradlew :fabric:build :neoforge:build
+./gradlew verifyReleaseArtifacts
 ```
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.5.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.5.0.jar`
+- `fabric/build/libs/mineagent-fabric-0.6.0.jar`
+- `neoforge/build/libs/mineagent-neoforge-0.6.0.jar`
+
+该命令会启动测试专用的无界面服务器，并生成 `fabric/build/gametest-results.xml` 与 `build/release-artifacts.sha256`；测试模组不会打入发布 JAR。NeoForge 构建仍标记为实验性，原生运行场景当前在 Fabric 上验证。
 
 ## 项目结构
 

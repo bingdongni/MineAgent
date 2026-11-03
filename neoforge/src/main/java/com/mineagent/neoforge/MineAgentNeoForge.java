@@ -71,6 +71,9 @@ public class MineAgentNeoForge {
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
         NeoForge.EVENT_BUS.addListener(this::onServerStopping);
         NeoForge.EVENT_BUS.addListener(this::onServerChat);
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.OnDatapackSyncEvent event) -> {
+            if (event.getPlayer() == null) MineAgentEngine.onRulesReloaded(event.getPlayerList().getServer());
+        });
         NeoForge.EVENT_BUS.addListener(this::onLivingDeath);
     }
 

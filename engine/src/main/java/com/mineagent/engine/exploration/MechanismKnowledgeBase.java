@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mineagent.engine.memory.TextSimilarity;
+import com.mineagent.engine.planning.PlanGraph;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -59,7 +60,8 @@ public final class MechanismKnowledgeBase {
                        int supports, int refutations, int inconclusive,
                        double confidence, RuleStatus status,
                        EnvironmentFingerprint fingerprint,
-                       String adapterSkill, long updatedTick) {
+                       String adapterSkill, long updatedTick,
+                       List<PlanGraph.GoalCondition> prerequisites) {
         public Rule {
             id = normalize(id, "rule");
             subject = normalize(subject, "unknown");
@@ -82,6 +84,7 @@ public final class MechanismKnowledgeBase {
                     ? EnvironmentFingerprint.unknown() : fingerprint;
             adapterSkill = blankToNull(adapterSkill);
             updatedTick = Math.max(0L, updatedTick);
+            prerequisites = LearningConditions.checked(prerequisites);
         }
 
         public boolean reusable(EnvironmentFingerprint current) {
@@ -93,7 +96,7 @@ public final class MechanismKnowledgeBase {
 
     public record State(List<Profile> profiles, List<Rule> rules, long revision, int contextVersion) {
         public State(List<Profile> profiles, List<Rule> rules, long revision) {
-            this(profiles, rules, revision, 1);
+            this(profiles, rules, revision, 2);
         }
     }
 
@@ -141,6 +144,25 @@ public final class MechanismKnowledgeBase {
         if (root == null) return List.of();
         ArrayList<Profile> updated = new ArrayList<>();
         switch (canonical(toolName)) {
+            case "inspect_entity" -> {
+                String type = primitive(root,"entity_type");
+                if (type != null) updated.add(upsert(type,Kind.ENTITY,
+                        selectedAttributes(root,List.of("entity_type","dialogue_status")),gameTick,true));
+            }
+            case "inspect_item" -> {
+                String id = primitive(root, "item_id");
+                if (id != null) {
+                    var attributes = selectedAttributes(root, List.of("item_id", "display_name", "use_animation",
+                            "max_durability", "tooltip_status", "tooltip_truncated", "tags_truncated"));
+                    for (String field : List.of("tooltip", "tags")) {
+                        JsonArray values = array(root, field);
+                        if (values == null) continue;
+                        for (int i = 0; i < Math.min(values.size(), field.equals("tooltip") ? 12 : 16); i++)
+                            putPrimitive(attributes, field + "." + i, values.get(i));
+                    }
+                    updated.add(upsert(id, Kind.ITEM, attributes, gameTick, true));
+                }
+            }
             case "look_around" -> observeSituationResult(root, gameTick, updated);
             case "inspect_block" -> {
                 String id = primitive(root, "block_id");
@@ -221,9 +243,7 @@ public final class MechanismKnowledgeBase {
                                     MechanismExplorer.Status outcome,
                                     String evidence, long gameTick) {
         if (experiment == null) return null;
-        String id = ruleId(experiment.subject(), experiment.hypothesis(),
-                experiment.probeTool(), experiment.expectedPredicate(),
-                experiment.expectedValue(), currentFingerprint);
+        String id = keyFor(experiment);
         Rule old = rules.get(id);
         int supports = old == null ? 0 : old.supports();
         int refutations = old == null ? 0 : old.refutations();
@@ -232,6 +252,10 @@ public final class MechanismKnowledgeBase {
                 ? Set.of() : old.supportingContexts());
         LinkedHashSet<String> counterContexts = new LinkedHashSet<>(old == null
                 ? Set.of() : old.refutingContexts());
+        if (outcome == MechanismExplorer.Status.SUPPORTED && old != null
+                && (old.status() == RuleStatus.STALE || old.status() == RuleStatus.REFUTED)) {
+            contexts.clear(); counterContexts.clear(); supports = 0; refutations = 0;
+        }
         if (outcome == MechanismExplorer.Status.SUPPORTED) {
             // Repeating the same setup is useful reliability evidence, but it
             // is not an independent context and cannot alone confirm a rule.
@@ -245,7 +269,10 @@ public final class MechanismKnowledgeBase {
         RuleStatus status;
         EnvironmentFingerprint learnedIn = old == null
                 ? currentFingerprint : old.fingerprint();
-        if (!learnedIn.compatible(currentFingerprint)) status = RuleStatus.STALE;
+        if (outcome == MechanismExplorer.Status.REFUTED) status = RuleStatus.REFUTED;
+        else if (old != null && (old.status() == RuleStatus.STALE || old.status() == RuleStatus.REFUTED)
+                && outcome != MechanismExplorer.Status.SUPPORTED) status = RuleStatus.STALE;
+        else if (!learnedIn.compatible(currentFingerprint)) status = RuleStatus.STALE;
         else if (refutations > 0 && (refutations >= supports || confidence < 0.7)) {
             status = RuleStatus.REFUTED;
         } else if (supports >= 2 && contexts.size() >= 2 && confidence >= 0.7) {
@@ -258,7 +285,7 @@ public final class MechanismKnowledgeBase {
                 experiment.expectedValue(), experiment.compensationTool(),
                 experiment.compensationArguments(), contexts, counterContexts, supports,
                 refutations, inconclusive, confidence, status, learnedIn,
-                old == null ? null : old.adapterSkill(), gameTick);
+                old == null ? null : old.adapterSkill(), gameTick, experiment.prerequisites());
         rules.put(id, rule);
         revision++;
         trim();
@@ -279,7 +306,7 @@ public final class MechanismKnowledgeBase {
         Rule old = rules.values().stream()
                 .filter(rule -> skillName != null && skillName.equals(rule.adapterSkill()))
                 .findFirst().orElse(null);
-        if (old == null) return null;
+        if (old == null || !old.reusable(currentFingerprint)) return null;
         int refutations = old.refutations() + 1;
         LinkedHashSet<String> counterContexts = new LinkedHashSet<>(old.refutingContexts());
         counterContexts.add("adapter:" + skillName + ":" + gameTick);
@@ -291,10 +318,31 @@ public final class MechanismKnowledgeBase {
                 old.compensationArguments(), old.supportingContexts(), counterContexts,
                 old.supports(),
                 refutations, old.inconclusive(), confidence, RuleStatus.STALE,
-                old.fingerprint(), old.adapterSkill(), gameTick);
+                old.fingerprint(), old.adapterSkill(), gameTick, old.prerequisites());
         rules.put(updated.id(), updated);
         revision++;
         return updated;
+    }
+
+    /** One observed transition also falsifies incompatible predictions of the exact same contract. */
+    public synchronized List<Rule> recordObservedContradictions(MechanismExplorer.Experiment experiment,
+                                                               String observed, long tick) {
+        List<Rule> invalidated = new ArrayList<>();
+        for (var old : List.copyOf(rules.values())) {
+            if ((old.status() != RuleStatus.CONFIRMED && old.status() != RuleStatus.CANDIDATE)
+                    || !sameContract(old, experiment) || old.expectedValue().equals("*")
+                    || old.expectedValue().equalsIgnoreCase(observed)) continue;
+            var counters = new LinkedHashSet<>(old.refutingContexts());
+            int refutations = old.refutations() + (counters.add(PredictiveLearning.physicalContext(experiment)) ? 1 : 0);
+            Rule updated = new Rule(old.id(), old.subject(), old.hypothesis(), old.probeTool(), old.probeArguments(),
+                    old.expectedSubject(), old.expectedPredicate(), old.expectedValue(), old.compensationTool(),
+                    old.compensationArguments(), old.supportingContexts(), counters, old.supports(), refutations,
+                    old.inconclusive(), (1.0 + old.supports()) / (2.0 + old.supports() + refutations),
+                    RuleStatus.REFUTED, old.fingerprint(), old.adapterSkill(), tick, old.prerequisites());
+            rules.put(old.id(), updated); invalidated.add(updated);
+        }
+        if (!invalidated.isEmpty()) revision++;
+        return List.copyOf(invalidated);
     }
 
     public synchronized List<Rule> relevantRules(String query, int limit) {
@@ -369,14 +417,14 @@ public final class MechanismKnowledgeBase {
                 if (rule == null) continue;
                 // Gson supplies 0 for old files. Their caller-written context labels
                 // do not establish independent physical support under the new contract.
-                Rule supported = state.contextVersion() == 1 ? rule
+                Rule supported = state.contextVersion() == 2 ? rule
                         : new Rule(rule.id(), rule.subject(), rule.hypothesis(), rule.probeTool(),
                                 rule.probeArguments(), rule.expectedSubject(), rule.expectedPredicate(),
                                 rule.expectedValue(), rule.compensationTool(), rule.compensationArguments(),
                                 Set.of(), rule.refutingContexts(), 0, rule.refutations(), rule.inconclusive(),
                                 1.0 / (2.0 + rule.refutations()),
                                 rule.status() == RuleStatus.CONFIRMED ? RuleStatus.CANDIDATE : rule.status(),
-                                rule.fingerprint(), rule.adapterSkill(), rule.updatedTick());
+                                rule.fingerprint(), rule.adapterSkill(), rule.updatedTick(), rule.prerequisites());
                 Rule restored = supported.fingerprint().compatible(currentFingerprint)
                         ? supported : copy(supported, RuleStatus.STALE, supported.adapterSkill(), supported.updatedTick());
                 rules.put(restored.id(), restored);
@@ -423,6 +471,8 @@ public final class MechanismKnowledgeBase {
         // block_entity_data is intentionally excluded: its string form can be
         // large, unstable and may contain private server/mod data.
         out.remove("block_entity_data");
+        out.remove("fact_subject");
+        out.remove("x"); out.remove("y"); out.remove("z");
         return out;
     }
 
@@ -528,7 +578,7 @@ public final class MechanismKnowledgeBase {
                 old.expectedValue(), old.compensationTool(), old.compensationArguments(),
                 old.supportingContexts(), old.refutingContexts(), old.supports(), old.refutations(),
                 old.inconclusive(), old.confidence(), status, old.fingerprint(),
-                adapter, updatedTick);
+                adapter, updatedTick, old.prerequisites());
     }
 
     private static String ruleId(String subject, String hypothesis, String tool,
@@ -538,7 +588,7 @@ public final class MechanismKnowledgeBase {
         // Excluding it allows evidence from two independent machine instances
         // to validate one behavioral hypothesis without conflating different
         // predicates or expected values.
-        String raw = canonical(subject) + "|" + canonical(hypothesis) + "|"
+        String raw = canonical(subject) + "|"
                 + canonical(tool) + "|" + canonical(predicate) + "|"
                 + canonical(value) + "|" + String.valueOf(fingerprint);
         try {
@@ -548,6 +598,39 @@ public final class MechanismKnowledgeBase {
         } catch (NoSuchAlgorithmException impossible) {
             return "rule-" + Integer.toUnsignedString(raw.hashCode(), 36);
         }
+    }
+
+    private static String scopedRuleKey(MechanismExplorer.Experiment experiment) {
+        return scopedRuleKey(experiment.probeArguments(), experiment.prerequisites(), experiment.expectedSubject());
+    }
+
+    private static String scopedRuleKey(String arguments, List<PlanGraph.GoalCondition> conditions, String target) {
+        return LearningConditions.digest(PredictiveLearning.abstractArguments(LearningConditions.roleArguments(arguments, target, conditions))
+                + "|" + LearningConditions.signature(conditions, target) + "|" + LearningConditions.effectIdentity(target)).substring(0, 24);
+    }
+
+    static boolean sameContract(Rule rule, MechanismExplorer.Experiment experiment) {
+        return canonical(rule.subject()).equals(canonical(experiment.subject()))
+                && rule.probeTool().equals(experiment.probeTool())
+                && rule.expectedPredicate().equals(experiment.expectedPredicate())
+                && rule.fingerprint().compatible(experiment.environmentFingerprint())
+                && scopedRuleKey(rule.probeArguments(), rule.prerequisites(), rule.expectedSubject()).equals(scopedRuleKey(experiment));
+    }
+
+    private String keyFor(MechanismExplorer.Experiment experiment) {
+        return ruleId(experiment.subject(), experiment.hypothesis(), experiment.probeTool(),
+                experiment.expectedPredicate(), experiment.expectedValue(), currentFingerprint) + "-" + scopedRuleKey(experiment);
+    }
+    public synchronized java.util.Optional<Rule> ruleFor(MechanismExplorer.Experiment experiment) {
+        return java.util.Optional.ofNullable(rules.get(keyFor(experiment)));
+    }
+    public synchronized List<Rule> invalidateAll() {
+        List<Rule> invalid = new ArrayList<>();
+        for (var old : List.copyOf(rules.values())) {
+            Rule value = copy(old, RuleStatus.STALE, old.adapterSkill(), old.updatedTick());
+            rules.put(value.id(), value); invalid.add(value);
+        }
+        revision++; return List.copyOf(invalid);
     }
 
     private static Map<String, String> boundedAttributes(Map<String, String> source) {
