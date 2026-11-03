@@ -165,6 +165,14 @@ Fabric and NeoForge users can press `M` to configure and create companions. Usef
 /mineagent reload
 ```
 
+Companions speak Simplified Chinese by default. Run `/mineagent setconfig language <value>` in game, or set `companion.language` in `config/mineagent.json` and then run `/mineagent reload` (or restart the game):
+
+- `zh_cn` (default): Simplified Chinese.
+- `auto`: the owner's Minecraft client language, such as `pt_br`.
+- Any other value, such as `en_us` or `Brazilian Portuguese`: that language.
+
+Companions still switch when the owner asks for another language or writes in one. The setting applies to companions created or restored after the change; rejoin the world to apply it to existing companions. A companion using the `openai-responses` protocol continues its stored response chain, which keeps the previous language until that chain is reset.
+
 Default key bindings on Fabric and NeoForge:
 
 | Key | Action |

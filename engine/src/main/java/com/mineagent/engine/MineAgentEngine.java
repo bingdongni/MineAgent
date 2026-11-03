@@ -16,6 +16,7 @@ import com.mineagent.engine.entity.fakeplayer.FakePlayerFactory;
 import com.mineagent.engine.entity.fakeplayer.FakePlayerGameMode;
 import com.mineagent.engine.llm.*;
 import com.mineagent.engine.loop.AgentLoop;
+import com.mineagent.engine.loop.CompanionLanguage;
 import com.mineagent.engine.scheduler.PriorityAuction;
 import com.mineagent.engine.cognition.TeamBlackboard;
 import com.mineagent.engine.survival.*;
@@ -635,9 +636,12 @@ public final class MineAgentEngine {
         // (Companion UUID was registered above, before FakePlayerFactory.create,
         // so mixins can identify this player as a companion during creation.)
 
-        // Create the agent loop
+        // Create the agent loop. Fresh spawns and restores both pass here, so
+        // "auto" follows the owner's client language at the time of creation.
         AgentLoop loop = new AgentLoop(companion, providerId, apiKey, model,
-                baseUrl, temperature, config.llm().maxTokens(), reasoningEffort);
+                baseUrl, temperature, config.llm().maxTokens(), reasoningEffort,
+                CompanionLanguage.resolve(config.companion().language(),
+                        owner.clientInformation().language()));
         initializingLoop = loop;
 
         // Create instinct chains
@@ -2009,6 +2013,7 @@ public final class MineAgentEngine {
                         sb.append("§eCompanion:\n");
                         sb.append("  §7Name: §f").append(config.companion().name()).append("\n");
                         sb.append("  §7Game Mode: §f").append(config.companion().gameMode()).append("\n");
+                        sb.append("  §7Language: §f").append(config.companion().language()).append("\n");
                         sb.append("§7Config file: config/mineagent.json");
                         source.sendSuccess(() -> Component.literal(sb.toString()), false);
                         return 1;
@@ -2312,15 +2317,18 @@ public final class MineAgentEngine {
                                         }
                                         case "name" -> comp = new MineAgentConfig.CompanionConfig(
                                                 value, comp.gameMode(), comp.skinName(),
-                                                comp.instantBreak(), comp.creativeReach());
+                                                comp.instantBreak(), comp.creativeReach(), comp.language());
                                         case "skin", "skinname" -> comp = new MineAgentConfig.CompanionConfig(
                                                 comp.name(), comp.gameMode(), value,
-                                                comp.instantBreak(), comp.creativeReach());
+                                                comp.instantBreak(), comp.creativeReach(), comp.language());
+                                        case "language" -> comp = new MineAgentConfig.CompanionConfig(
+                                                comp.name(), comp.gameMode(), comp.skinName(),
+                                                comp.instantBreak(), comp.creativeReach(), value);
                                         default -> {
                                             source.sendFailure(Component.literal(
                                                     "§c[MineAgent] Unknown key: " + key));
                                             source.sendFailure(Component.literal(
-                                                    "§7Valid: provider, model, apikey, baseurl, temperature, name, skin"));
+                                                    "§7Valid: provider, model, apikey, baseurl, temperature, name, skin, language"));
                                             return 0;
                                         }
                                     }
@@ -2704,7 +2712,8 @@ public final class MineAgentEngine {
 
             §e/mineagent setconfig§7 <key> <value>
               §aUpdate config and save to file. Keys:
-              §7  provider, model, apikey, baseurl, temperature, name, skin
+              §7  provider, model, apikey, baseurl, temperature, name, skin,
+              §7  language (zh_cn, auto, or a language name/locale code)
 
             §7───────────────────────────────
             §7Quick start: Edit §fconfig/mineagent.json§7, then run §e/mineagent quick§7
