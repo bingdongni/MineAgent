@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v1.0.0 开发版**：真实模组环境中的条件学习、跨任务记忆保持、公开端口和陌生菜单操作、依赖任务协作及耐久前缀缓存。[设计与使用](docs/research/lifelong-learning-1.0.0.md) · [验证记录](docs/research/validation-1.0.0.md)。目前已发布版本为 [v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0)；此开发版本尚未发布 Release。
+> **v1.0.0**：真实模组环境中的条件学习、跨任务记忆保持、公开端口和陌生菜单操作、依赖任务协作及耐久前缀缓存。[下载 v1.0.0](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.0) · [设计与使用](docs/research/lifelong-learning-1.0.0.md) · [验证记录](docs/research/validation-1.0.0.md)。Release 包含完整源码、Fabric 和实验性 NeoForge 构建产物、更新说明及 SHA-256 校验清单。
 
 [English](README.en.md) | 简体中文
 

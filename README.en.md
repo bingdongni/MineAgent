@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v1.0.0 development**: real-mod learning and execution, bounded retention across tasks, public ports and unfamiliar menus, dependency jobs and guarded team learning. See the [design and usage](docs/research/lifelong-learning-1.0.0.md) and [validation record](docs/research/validation-1.0.0.md) (Chinese). The published release remains [v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0); v1.0.0 has not been published.
+> **v1.0.0**: real-mod learning and execution, bounded retention across tasks, public ports and unfamiliar menus, dependency jobs and guarded team learning. [Download v1.0.0](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.0) · [design and usage](docs/research/lifelong-learning-1.0.0.md) · [validation record](docs/research/validation-1.0.0.md) (Chinese). The release includes complete source archives, Fabric and experimental NeoForge artifacts, release notes and SHA-256 checksums.
 
 English | [简体中文](README.md)
 

@@ -4,7 +4,9 @@ All notable changes to MineAgent will be documented in this file. The project fo
 
 ## [Unreleased]
 
-### v1.0.0 development
+## [1.0.0] - 2026-11-03
+
+### Added and changed
 
 - Retain up to 1,024 historical mechanism rules behind a 256-rule active budget. Rebuild guarded adapters on relevant recall; retain counterexamples, environment invalidation and old-format downgrades across persistence.
 - Keep bounded task timelines with start anchors, verified action evidence and distinct goal acceptance. Restore active tasks as interrupted; old observations cannot verify a newly started task.
