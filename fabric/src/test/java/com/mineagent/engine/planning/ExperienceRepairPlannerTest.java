@@ -79,6 +79,18 @@ final class ExperienceRepairPlannerTest {
         assertEquals(List.of("experience_repair_2"), suggestion.drafts().getLast().dependsOn());
     }
 
+    @Test void unrelatedOldOperatorsCannotHideTheNeededRuleBehindTheBudget() {
+        learn();plan(false);
+        var state=explorer.knowledgeBase().exportState();var rules=new java.util.ArrayList<MechanismKnowledgeBase.Rule>();
+        for(int i=0;i<100;i++) rules.add(new MechanismKnowledgeBase.Rule("aaa-unrelated-"+i,"mod:other","other task","interact_at","{}",
+                "other:"+i,"state","1","close_gui","{}",java.util.Set.of("a","b"),java.util.Set.of(),2,0,0,0.75,
+                MechanismKnowledgeBase.RuleStatus.CONFIRMED,explorer.knowledgeBase().currentFingerprint(),"other-skill-"+i,1,List.of()));
+        rules.addAll(state.rules());explorer.knowledgeBase().importState(new MechanismKnowledgeBase.State(List.of(),rules,1));
+        var suggestion=ExperienceRepairPlanner.suggest(graph,world,explorer.knowledgeBase(),20);
+        assertTrue(suggestion.found(),suggestion.message());assertEquals(1,suggestion.ruleIds().size());
+        assertFalse(suggestion.ruleIds().getFirst().startsWith("aaa-unrelated"));
+    }
+
     private void learn() {
         for(int i=0;i<2;i++) {
             long tick=2+i*4; observe("0",tick);

@@ -18,10 +18,11 @@ public final class ExperienceRepairPlanner {
         plan.refreshReadiness(world, tick);
         var gap = plan.prerequisiteGap();
         if (gap == null) return new Suggestion(false, List.of(), List.of(), 0, "No blocked prerequisite requires repair");
-        List<MechanismKnowledgeBase.Rule> operators = knowledge.rules().stream()
+        var available = knowledge.rules().stream()
                 .filter(rule -> rule.reusable(knowledge.currentFingerprint()) && rule.adapterSkill() != null)
                 .filter(rule -> !rule.expectedValue().equals("*"))
-                .sorted(Comparator.comparing(MechanismKnowledgeBase.Rule::id)).limit(64).toList();
+                .sorted(Comparator.comparing(MechanismKnowledgeBase.Rule::id)).toList();
+        List<MechanismKnowledgeBase.Rule> operators = relevantOperators(available,gap.condition());
         Map<String, String> initial = new TreeMap<>();
         List<PlanGraph.GoalCondition> predicates = new ArrayList<>();
         predicates.add(gap.condition());
@@ -43,7 +44,7 @@ public final class ExperienceRepairPlanner {
                 Map<String, String> next = new TreeMap<>(state.facts());
                 // Only the declared effect is modeled. Forget potentially consumed inputs;
                 // an unknown side effect cannot manufacture reusable inventory or power.
-                for (var condition : rule.prerequisites()) if (!Set.of("block_id", "entity_type", "dimension").contains(condition.predicate()))
+                for (var condition : rule.prerequisites()) if (!Set.of("block_id", "entity_type", "dimension", "capability_face").contains(condition.predicate()))
                     next.remove(key(condition.subject(), condition.predicate()));
                 next.put(key(rule.expectedSubject(), rule.expectedPredicate()), rule.expectedValue());
                 if (visited.size() >= 256 || !visited.add(Map.copyOf(next))) continue;
@@ -53,6 +54,27 @@ public final class ExperienceRepairPlanner {
         }
         return new Suggestion(false, List.of(), List.of(), expanded,
                 "No verified bounded repair found. Observe missing facts or learn a relevant operator; do not infer unavailable capabilities.");
+    }
+
+    /** Backward relevance precedes the operator cap, so unrelated old tasks cannot hide the needed operator. */
+    public static List<MechanismKnowledgeBase.Rule> relevantOperators(Collection<MechanismKnowledgeBase.Rule> available,
+                                                                      PlanGraph.GoalCondition goal) {
+        var needed=new LinkedHashSet<PlanGraph.GoalCondition>();needed.add(goal);
+        var selected=new LinkedHashMap<String,MechanismKnowledgeBase.Rule>();
+        for(int depth=0;depth<8&&selected.size()<64;depth++) {
+            int before=selected.size();
+            for(var rule:available) {
+                if(selected.containsKey(rule.id())||rule.expectedValue().equals("*"))continue;
+                String effect=key(rule.expectedSubject(),rule.expectedPredicate());
+                if(needed.stream().noneMatch(c->key(c.subject(),c.predicate()).equals(effect)
+                        &&matches(c,Map.of(effect,rule.expectedValue()))))continue;
+                selected.put(rule.id(),rule);
+                for(var prerequisite:rule.prerequisites())if(needed.size()<128)needed.add(prerequisite);
+                if(selected.size()==64)break;
+            }
+            if(selected.size()==before)break;
+        }
+        return List.copyOf(selected.values());
     }
 
     private static Suggestion drafts(PlanGraph plan, PlanGraph.PrerequisiteGap gap,

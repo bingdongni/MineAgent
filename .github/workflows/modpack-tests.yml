@@ -1,0 +1,45 @@
+name: Pinned real-mod environments
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-mods:
+    name: Real mods / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [storage, industry, combined]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Provision checksum-locked public test dependencies
+        run: python scripts/provision-modpack-tests.py --profile '${{ matrix.profile }}'
+      - name: Verify production learning and actions on a real Minecraft server
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon '-Pmodpack_profile=${{ matrix.profile }}' :fabric:verifyModpackGameTests
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-mod-${{ matrix.profile }}-evidence
+          path: |
+            fabric/build/modpack-${{ matrix.profile }}-results.xml
+            fabric/build/modpack-${{ matrix.profile }}/logs/latest.log
+            fabric/src/modtest/resources/modpack-lock.json
+            fabric/build/real-mods/${{ matrix.profile }}/nested-manifest.json
+          if-no-files-found: warn

@@ -27,6 +27,7 @@ public class InspectBlockTool implements Tool {
                 .integer("y", "Block Y coordinate", Integer.MIN_VALUE, Integer.MAX_VALUE)
                 .integer("z", "Block Z coordinate", -30_000_000, 30_000_000)
                 .optionalBoolean("capabilities", "Read the visible face's public automation-port fields within interaction reach")
+                .optionalString("face", "Optional visible port face: north, south, east, west, up or down")
                 .build();
     }
 
@@ -89,7 +90,12 @@ public class InspectBlockTool implements Tool {
                     .getKey(blockEntity.getType()).toString());
         }
         if (ToolArgs.getBool(args, "capabilities", false)) {
-            var port = com.mineagent.engine.act.BlockTargeting.findVisibleHit(sp, pos,
+            String face = ToolArgs.getString(args, "face", null);
+            var direction = face == null ? null : net.minecraft.core.Direction.byName(face);
+            if (face != null && direction == null) { reply.accept(ToolArgs.errorJson("Invalid public-port face")); return; }
+            var port = direction == null ? com.mineagent.engine.act.BlockTargeting.findVisibleHit(sp, pos,
+                    com.mineagent.engine.act.BlockTargeting.interactionReach(sp))
+                    : com.mineagent.engine.act.BlockTargeting.findVisibleFace(sp, pos, direction,
                     com.mineagent.engine.act.BlockTargeting.interactionReach(sp));
             if (port.isEmpty()) {
                 result.addProperty("capability_status", "requires_interaction_reach_and_visible_face");

@@ -125,6 +125,7 @@ public class CompanionLifecycleHandler implements CompanionLifecycle {
         // commitments immediately; otherwise siblings would avoid the task
         // until the blackboard's normal 1,200-tick expiry window.
         TeamBlackboard.clearCommitment(companion.ownerUuid(), companion.companionId());
+        com.mineagent.engine.cognition.TeamWorkBoard.remove(companion.ownerUuid(), companion.companionId());
 
         boolean hardcore = companion instanceof CompanionEntity entity
                 && (entity.gameMode().isHardcore() || entity.hardcoreDeathLocked());

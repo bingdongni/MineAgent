@@ -1,36 +1,42 @@
-MineAgent @VERSION@ is a feature release for Minecraft 1.21.1 and Java 21.
+MineAgent @VERSION@ targets Minecraft 1.21.1 and Java 21.
 
 ## 更新摘要
 
-- 陌生模组的角色、物品和设备公开观察；多条件实验、结构化反思、记忆和类型约束迁移。
-- 反例驱动旧经验失效、有界重学、数据重载保护，以及保留已完成历史的经验计划修复。
-- 稳定经验上下文复用、缓存读写与上报覆盖率统计，兼容官方 API、中转和本地模型。
-- 验收覆盖 **216 项组件测试、5 项真实 Minecraft 服务器场景，以及 Fabric/NeoForge 双加载器构建**。NeoForge 仍为实验性支持；未以这些结果宣称任意模组兼容或实际账单收益。
+- 在固定的真实模组环境中验证条件学习、精确补偿、跨任务迁移、JSON/运行时恢复及双伙伴物品交接。
+- 保留有界规则历史和任务时间线，召回不增加证据；反例、数据重载与环境变化仍撤销执行资格。
+- 新增公开物品端口操作，绑定面、维度、目标和携带输入；陌生菜单支持公开布局与只读槽位接收检查。
+- 计划修复先筛选相关算子再应用预算，保留已完成历史、原始约束与最终目标条件。
+- 团队任务使用前驱、资源租约和新鲜事实验收；队友经验只作为零本地支持的候选。
+- 已知官方模型的显式缓存边界落在耐久前缀上，未知中转、本地端点与其他协议保持兼容；不发起额外预热调用。
 
-参见 [使用与设计](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/mod-learning-0.6.0.md)、[本地验证记录](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/validation-0.6.0.md) 与 [Changelog](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/CHANGELOG.md)。
+[设计与使用](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/lifelong-learning-1.0.0.md) · [验证记录](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/validation-1.0.0.md) · [Changelog](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/CHANGELOG.md)
 
 ## Changes
 
-This release adds an observable learning loop for unfamiliar mod content: inspect public block capabilities, visible actor types/UUIDs, carried item tags/tooltips and opened merchant offers; propose a conditioned experiment; execute through normal admission; inspect the result; reflect; and transfer only after independent verification. Unsupported channels remain unknown, units remain explicit and private NBT is excluded.
+The learning runtime is exercised against author-published, checksum-locked Extended Drawers 3.0.4+mc.1.21.1, Tech Reborn / RebornCore 5.11.19 and Farmer's Delight Refabricated 1.21.1-3.2.8 on a native Fabric server. Scenarios cover two independent physical learning contexts, exact compensation, a held-out target after an unrelated task and JSON/runtime restart, public energy units, real smelting and heated cooking, cross-mod conservation and a two-agent dependency handoff with exclusive port leases.
 
-Learned contracts include observed prerequisites, prior state, typed identity, parameters and environment. Contradictory observations revoke conflicting adapters and plan authority immediately, even when supporting a different hypothesis. One persisted recovery allowance permits two additional physical probes; two fresh independent supports are required before reuse. Successful server data reload stops pending learning and invalidates old rules and predictions. Raw audit experiences remain available for reflection.
+A bounded rule archive and task timelines preserve past evidence without restoring stale executor ownership. Rule recall never invents additional support. Plan repair recalls relevant archived operators and selects a backward-relevant subset before applying search limits, while retaining achieved milestones and the owner's acceptance conditions. Unknown consumed inputs cannot be reused symbolically.
 
-Bounded verified-experience search can repair a blocked plan suffix while preserving achievements, unrelated branches, constraints and final goal conditions. Block and entity transfer bindings keep action and verification targets aligned, and runtime conditions are rechecked before execution. Attack variants cannot masquerade as compensated experiments.
+The new transfer_port tool moves actual items through public loader interfaces, verifies carried inventory deltas, checks visible faces and interaction permission, and respects owner-scoped resource leases. Learned transfers bind the action to the same observed effect target, dimension, face and actual input, and require an exact reverse compensation. inspect_gui can read a carried item's public acceptance, free capacity and visible menu layout without moving it. Acceptance alone does not identify a recipe role or prove production.
 
-Stable experience references are appended only when changed, retaining transient observations at the request tail. Cache accounting distinguishes missing reports from explicit zero, exposes coverage and parses malformed optional usage without discarding valid answers. Actual caching and prices depend on the official, relay or local endpoint; no universal cache control is forced on unknown services.
+Team jobs have immutable dependency/acceptance contracts and expiring leases. Completion requires the current worker's fresh world observations. Shared rules start as untrusted candidates with zero local supports and no executor; they cannot overwrite contrary local evidence. Reload, memory reset and lifecycle cleanup withdraw obsolete shared state.
 
-Memory envelopes advance to version 14 and conditioned contexts to version 2. Older rules retain audit history but require fresh verification before predictive or automatic execution reuse. This is external experience learning, not autonomous model-weight training.
+Known official OpenAI Chat and Responses models receive explicit breakpoints on declared durable prefixes; volatile world suffixes are excluded. Unknown endpoints retain their existing contract, and stateful incremental Responses chains are preserved. Cache-write tokens, missing usage reports and actual hits remain separate; no paid prewarm calls are added.
 
-Release verification now runs component regressions plus an isolated headless Minecraft test mod covering physical learning, transfer, changed-outcome relearning, actor/item observations and actual data reload. Both loader JARs must pass metadata, required-class and checksum checks; the fixture must be absent from production packages. The linked design and validation records describe the evidence and usage.
+Memory envelopes advance to version 15. Old records remain readable, but missing context and changed mod/environment fingerprints require revalidation. The toolchain pins Gradle 8.14.3, Fabric Loom 1.13.6, Fabric Loader 0.20.1 and Fabric API 0.116.17+1.21.1.
+
+## Validation and scope
+
+Release gates run component regressions, five isolated native baseline scenarios, and storage, industry and combined real-mod environments. Both loader artifacts require correct metadata, required production classes, exclusion of test/third-party classes and SHA-256 checksums. Real-mod dependencies remain test-only downloads; they are not redistributed inside MineAgent.
+
+These are production-component and native-server engineering tests with paused model deliberation. They do not establish autonomous model discovery success rates, arbitrary modpack compatibility, AGI, zero defects or monetary savings. No paid model evaluation was performed. Fabric is supported; NeoForge remains experimental and has not undergone the same real-mod runtime matrix.
 
 ## Downloads
 
-- `mineagent-fabric-@VERSION@.jar`: supported loader build; requires Fabric Loader and Fabric API for Minecraft 1.21.1.
-- `mineagent-neoforge-@VERSION@.jar`: experimental loader build; requires NeoForge 21.1.x.
-- `mineagent-source-@VERSION@.zip` and `mineagent-source-@VERSION@.tar.gz`: complete tracked source from the tagged commit, including the Gradle Wrapper, tests and documentation.
-- `release-notes.md`: these release notes, including the source commit and CI run.
-- `release-artifacts.sha256`: checksums for both loader JARs, both source archives and the release notes. Check this published manifest when verifying downloads; CI builds can differ from the earlier local build recorded in the repository.
+- mineagent-fabric-@VERSION@.jar: Minecraft 1.21.1, Java 21, Fabric Loader 0.20.1 or later and matching Fabric API.
+- mineagent-neoforge-@VERSION@.jar: experimental build for Minecraft 1.21.1 and NeoForge 21.1.x.
+- mineagent-source-@VERSION@.zip and mineagent-source-@VERSION@.tar.gz: complete tracked source, including wrapper, tests, dependency lock and documentation.
+- release-notes.md: these notes plus source commit and CI provenance.
+- release-artifacts.sha256: checksums for both JARs, source archives and release notes. CI builds may differ from local artifacts; verify against the manifest accompanying the actual download.
 
-Install the JAR matching your loader. Automated component tests and successful packaging do not establish AGI, zero defects, cross-project superiority, long-run gameplay success or measured monetary savings. See the repository's research and validation notes for the current evidence boundary.
-
-API requests may cost money. MineAgent stores API keys in configuration and companion data; review `SECURITY.md` before sharing those files.
+API requests may cost money. Configuration can contain credentials; see SECURITY.md before sharing runtime data.

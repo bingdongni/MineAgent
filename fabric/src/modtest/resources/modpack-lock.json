@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "minecraft": "1.21.1",
+  "fabric_loader": "0.20.1",
+  "fabric_api": "0.116.17+1.21.1",
+  "profiles": {
+    "storage": [
+      "extended_drawers"
+    ],
+    "industry": [
+      "techreborn",
+      "reborncore"
+    ],
+    "combined": [
+      "techreborn",
+      "reborncore",
+      "farmersdelight",
+      "extended_drawers"
+    ]
+  },
+  "mods": [
+    {
+      "id": "techreborn",
+      "project": "techreborn",
+      "version": "5.11.19",
+      "version_id": "CNwZZ4FD",
+      "filename": "TechReborn-5.11.19.jar",
+      "url": "https://cdn.modrinth.com/data/3eMENr4V/versions/CNwZZ4FD/TechReborn-5.11.19.jar",
+      "sha512": "7afde34c9769c7ccb053e8666833ead92cee615655fa187f5301eceac8b56f4d8602340afd2983c2f403ff6b1105f5bc639163b134e11eb64e25c331a224c7cd",
+      "source": "https://github.com/TechReborn/TechReborn",
+      "license": "MIT"
+    },
+    {
+      "id": "reborncore",
+      "project": "reborncore",
+      "version": "5.11.19",
+      "version_id": "QtkC5plA",
+      "filename": "RebornCore-5.11.19.jar",
+      "url": "https://cdn.modrinth.com/data/3NCrJdj3/versions/QtkC5plA/RebornCore-5.11.19.jar",
+      "sha512": "c2495cff8f8f0cb3d9e1841d116f1b3171db5b92223947c7b30c43ba4fa95617b935ea7fe6c97c9a9e1df9ef122d7c3c89d524d445ce086d92fe70680a0dcacb",
+      "source": "https://github.com/TechReborn/RebornCore",
+      "license": "MIT"
+    },
+    {
+      "id": "farmersdelight",
+      "project": "farmers-delight-refabricated",
+      "version": "1.21.1-3.2.8",
+      "version_id": "YEHRH8LC",
+      "filename": "FarmersDelight-1.21.1-3.2.8+refabricated.jar",
+      "url": "https://cdn.modrinth.com/data/7vxePowz/versions/YEHRH8LC/FarmersDelight-1.21.1-3.2.8%2Brefabricated.jar",
+      "sha512": "b81080b77cb3500589cadf4e6325ac827f22c14652ef5428a0ea2531639da261dcd553de46379fa2f92cb131b49d32114948755f7114839c9690a23fa9d5d958",
+      "source": "https://github.com/MehVahdJukaar/FarmersDelightRefabricated",
+      "license": "MIT License"
+    },
+    {
+      "id": "extended_drawers",
+      "project": "extended-drawers",
+      "version": "3.0.4+mc.1.21.1",
+      "version_id": "7ayZB1fH",
+      "filename": "ExtendedDrawers-3.0.4+mc.1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/AhtxbnpG/versions/7ayZB1fH/ExtendedDrawers-3.0.4%2Bmc.1.21.1.jar",
+      "sha512": "98dd24e7890fa59ac0f387aa556e982d18a49a674aa410f6f6f57ce28dcc5138cef19c3f07ea1e2bd7e7ef889b968f0afd3a1ae1d2da4e42d6b19429fddf1382",
+      "source": "https://github.com/MattiDragon/ExtendedDrawers",
+      "license": "Apache-2.0"
+    }
+  ],
+  "provided_mods": [
+    "fabric-api",
+    "fabric-api-base"
+  ]
+}

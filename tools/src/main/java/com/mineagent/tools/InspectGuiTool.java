@@ -18,14 +18,22 @@ public class InspectGuiTool implements Tool {
     private static final int MAX_OBSERVED_SLOTS = 96;
     @Override public String name() { return "inspect_gui"; }
     @Override public String description() {
-        return "Read item slots in the currently open chest, furnace, crafting, or other container menu.";
+        return "Read public slots in the open menu. Optionally test whether each slot accepts one actual carried item, without moving it; useful for unfamiliar machine inputs, fuel and containers.";
     }
-    @Override public Map<String, Object> parameterSchema() { return Schema.none(); }
+    @Override public Map<String, Object> parameterSchema() {
+        return Schema.object().optionalInteger("inventory_slot","Optional carried item whose public slot acceptance is inspected",0,35).build();
+    }
 
     @Override
     public void onServerCall(String toolCallId, JsonObject args, AgentPlayer player,
                              Consumer<String> reply) {
         var sp = ((CompanionEntity) player).serverPlayer();
+        Integer probeIndex=ToolArgs.getIntOrNull(args,"inventory_slot");
+        if(ToolArgs.has(args,"inventory_slot")&&(probeIndex==null||probeIndex<0||probeIndex>35)) {
+            reply.accept(ToolArgs.errorJson("inventory_slot must be an integer from 0 to 35"));return;
+        }
+        var probe=probeIndex==null?net.minecraft.world.item.ItemStack.EMPTY:sp.getInventory().getItem(probeIndex);
+        if(probeIndex!=null&&probe.isEmpty()) { reply.accept(ToolArgs.errorJson("The inspected carried item is empty"));return; }
         var menu = sp.containerMenu;
         if (menu == null || menu == sp.inventoryMenu) {
             // containerMenu normally points at inventoryMenu when no screen is
@@ -36,6 +44,7 @@ public class InspectGuiTool implements Tool {
         }
 
         JsonObject result = new JsonObject();
+        if(!probe.isEmpty())result.addProperty("probe_item",net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(probe.getItem()).toString());
         result.addProperty("container_type", menu.getClass().getSimpleName());
         try {
             var menuTypeId = net.minecraft.core.registries.BuiltInRegistries.MENU
@@ -67,6 +76,15 @@ public class InspectGuiTool implements Tool {
             slot.addProperty("endpoint", playerInventory ? "player" : "container");
             slot.addProperty("slot_type", menuSlot.getClass().getSimpleName());
             slot.addProperty("occupied", !stack.isEmpty());
+            slot.addProperty("x",menuSlot.x);slot.addProperty("y",menuSlot.y);
+            if(!probe.isEmpty()) {
+                try {
+                    boolean accepts=menuSlot.isActive()&&menuSlot.mayPlace(probe);
+                    int capacity=Math.min(probe.getMaxStackSize(),menuSlot.getMaxStackSize(probe));
+                    int free=stack.isEmpty()?capacity:net.minecraft.world.item.ItemStack.isSameItemSameComponents(stack,probe)?Math.max(0,capacity-stack.getCount()):0;
+                    slot.addProperty("accepts_probe",accepts);slot.addProperty("probe_space",accepts?free:0);
+                } catch(RuntimeException unsupported) { slot.addProperty("probe_status","unavailable"); }
+            }
             if (playerInventory) {
                 // transfer_items uses native player inventory indices for the
                 // player endpoint, not menu indices. Reporting both prevents

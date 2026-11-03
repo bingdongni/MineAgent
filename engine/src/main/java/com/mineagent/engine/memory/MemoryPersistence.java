@@ -81,8 +81,8 @@ public class MemoryPersistence {
     // with v1-v10 files whose absent fields have safe record defaults.
     // Version 12 adds bounded verified intervention history to mechanism state;
     // absent learning fields in earlier checkpoints start with an empty model.
-    // Version 14 stores conditioned learning and recovery budgets; live readiness is always recomputed.
-    private static final int FORMAT_VERSION = 14;
+    // Version 15 retains bounded rule archives and task timelines; live readiness is always recomputed.
+    private static final int FORMAT_VERSION = 15;
     private static final int MAX_DIALOGUE_PAIRS = 12;
     private static final int MAX_DIALOGUE_CHARS = 4_000;
 

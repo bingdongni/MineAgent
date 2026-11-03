@@ -70,6 +70,22 @@ public class FabricPlatform implements Services.IPlatform {
         channels.put("energy", "no_standard_adapter");
         boolean truncated = false;
         try {
+            Class<?> api = Class.forName("team.reborn.energy.api.EnergyStorage");
+            @SuppressWarnings("unchecked")
+            var lookup = (net.fabricmc.fabric.api.lookup.v1.block.BlockApiLookup<Object, net.minecraft.core.Direction>) api.getField("SIDED").get(null);
+            Object energy = lookup.find(level, pos, side);
+            channels.put("energy", energy == null ? "unavailable_on_face" : "available");
+            if (energy != null) {
+                fields.put("energy.amount", String.valueOf(api.getMethod("getAmount").invoke(energy)));
+                fields.put("energy.capacity", String.valueOf(api.getMethod("getCapacity").invoke(energy)));
+                fields.put("energy.unit", "team_reborn_energy");
+            }
+        } catch (ClassNotFoundException absent) {
+            // This API is optional; ordinary Fabric installations remain supported.
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failed) {
+            channels.put("energy", "adapter_error");
+        }
+        try {
             var items = net.fabricmc.fabric.api.transfer.v1.item.ItemStorage.SIDED.find(level, pos, side);
             channels.put("items", items == null ? "unavailable_on_face" : "available");
             if (items != null) {
@@ -100,5 +116,40 @@ public class FabricPlatform implements Services.IPlatform {
             }
         } catch (RuntimeException failure) { channels.put("fluids", "adapter_error"); }
         return new com.mineagent.api.platform.CapabilityObservation(fields, channels, truncated);
+    }
+
+    @Override
+    public com.mineagent.api.platform.PortTransferResult transferBlockItems(
+            com.mineagent.api.entity.AgentPlayer player, int x, int y, int z, String face,
+            int inventorySlot, String itemId, int amount, boolean intoBlock) {
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var pos = new net.minecraft.core.BlockPos(x, y, z);
+        var side = net.minecraft.core.Direction.byName(face);
+        var itemKey = net.minecraft.resources.ResourceLocation.tryParse(itemId);
+        if (side == null || itemKey == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(itemKey)
+                || !sp.level().isLoaded(pos) || inventorySlot < 0 || inventorySlot > 35 || amount < 1 || amount > 64)
+            return com.mineagent.api.platform.PortTransferResult.unavailable("Invalid public-port request");
+        var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemKey);
+        int before = sp.getInventory().getItem(inventorySlot).is(item) ? sp.getInventory().getItem(inventorySlot).getCount() : 0;
+        try {
+            var port = net.fabricmc.fabric.api.transfer.v1.item.ItemStorage.SIDED.find(sp.level(), pos, side);
+            if (port == null) return com.mineagent.api.platform.PortTransferResult.unavailable("Public item port unavailable on the visible face");
+            var slot = net.fabricmc.fabric.api.transfer.v1.item.InventoryStorage.of(sp.getInventory(), null).getSlot(inventorySlot);
+            long moved;
+            try (var transaction = net.fabricmc.fabric.api.transfer.v1.transaction.Transaction.openOuter()) {
+                moved = net.fabricmc.fabric.api.transfer.v1.storage.StorageUtil.move(intoBlock ? slot : port,
+                        intoBlock ? port : slot, variant -> variant.getItem() == item, amount, transaction);
+                if (moved > 0) transaction.commit();
+            }
+            int after = sp.getInventory().getItem(inventorySlot).is(item) ? sp.getInventory().getItem(inventorySlot).getCount() : 0;
+            boolean verified = moved >= 0 && moved <= amount && (intoBlock ? before - after : after - before) == moved;
+            sp.containerMenu.broadcastChanges();
+            return new com.mineagent.api.platform.PortTransferResult(true, verified, (int)moved,
+                    moved > 0 ? "Public-port transaction completed" : "No matching items or free capacity on this face");
+        } catch (RuntimeException | LinkageError failure) {
+            int after = sp.getInventory().getItem(inventorySlot).is(item) ? sp.getInventory().getItem(inventorySlot).getCount() : 0;
+            return new com.mineagent.api.platform.PortTransferResult(true, false,
+                    Math.max(0, intoBlock ? before - after : after - before), "Port adapter failed; inspect both inventories before retrying");
+        }
     }
 }

@@ -115,6 +115,7 @@ public final class RealtimeCognition {
 
     public void close() {
         TeamBlackboard.remove(companion.ownerUuid(), companion.companionId());
+        TeamWorkBoard.remove(companion.ownerUuid(), companion.companionId());
     }
 
     private void recordChanges(SituationSnapshot frame) {

@@ -55,5 +55,11 @@ public final class Services {
                 int x, int y, int z, String face) {
             return CapabilityObservation.unsupported();
         }
+
+        /** Server-thread transfer through a public port. The caller must verify reach, visibility and permissions. */
+        default PortTransferResult transferBlockItems(com.mineagent.api.entity.AgentPlayer player,
+                int x, int y, int z, String face, int inventorySlot, String itemId, int amount, boolean intoBlock) {
+            return PortTransferResult.unavailable("No public item-port adapter");
+        }
     }
 }

@@ -20,7 +20,7 @@ import java.util.Set;
  */
 public final class AdaptationRuntime {
     private static final Set<String> ACTION_TOOLS = Set.of(
-            "interact_at", "interact_entity", "transfer_items", "craft", "equip_item");
+            "interact_at", "interact_entity", "transfer_items", "transfer_port", "craft", "equip_item");
 
     private final MechanismKnowledgeBase knowledgeBase;
     private final SkillLibrary skillLibrary;

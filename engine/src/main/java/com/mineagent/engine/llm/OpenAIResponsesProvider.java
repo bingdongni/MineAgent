@@ -219,8 +219,13 @@ public final class OpenAIResponsesProvider implements LLMProvider {
                 } catch (RuntimeException ignored) { /* invalid opaque state is skipped */ }
             }
         }
-        for (ChatMessage message : request.messages()) appendMessage(input, message);
+        int durableInputEnd = input.size();
+        for (int index=0; index<request.messages().size(); index++) {
+            appendMessage(input, request.messages().get(index));
+            if (index < request.cacheableMessageCount()) durableInputEnd = input.size();
+        }
         body.add("input", input);
+        CachePrefixPolicy.applyResponses(request, body, durableInputEnd);
         JsonArray functions = new JsonArray();
         for (Map<String, Object> definition : request.tools()) {
             if (definition == null) continue;

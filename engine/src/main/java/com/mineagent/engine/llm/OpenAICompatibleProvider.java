@@ -164,6 +164,7 @@ public class OpenAICompatibleProvider implements LLMProvider {
             JsonObject body = buildRequestBody(request.model(), request.messages(), request.tools(),
                     request.temperature(), request.maxTokens(), false, request.promptCacheKey());
             injectThinkingEffort(body, request.model(), request.reasoningEffort());
+            CachePrefixPolicy.applyChat(request, body, resolvedBaseUrl);
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(chatEndpoint(resolvedBaseUrl, request.model())))
                     .header("Content-Type", "application/json")

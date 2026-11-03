@@ -132,7 +132,7 @@ public final class LayeredMemory {
         for (Map.Entry<Entry, Double> candidate : ranked) {
             Entry value = candidate.getKey();
             int cost = value.key().length() + value.value().length() + 48;
-            if (!result.isEmpty() && used + cost > charBudget) continue;
+            if (used + cost > charBudget) continue;
             result.add(value.accessed(tick));
             entries.put(value.id(), result.get(result.size() - 1));
             used += cost;

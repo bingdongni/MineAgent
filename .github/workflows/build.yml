@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 jobs:
+  real-mods:
+    uses: ./.github/workflows/modpack-tests.yml
+
   build:
     name: Java 21 / Fabric and NeoForge
     runs-on: ubuntu-latest

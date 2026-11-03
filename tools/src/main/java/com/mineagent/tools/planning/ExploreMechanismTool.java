@@ -28,7 +28,7 @@ public final class ExploreMechanismTool implements Tool {
 
     @Override public Map<String, Object> parameterSchema() {
         return Schema.object()
-                .string("mode", "propose, run, reflect, transfer, repair, recommend, predict, plan, curriculum, metrics, status, or abort")
+                .string("mode", "propose, run, reflect, transfer, recall, activate, repair, recommend, predict, plan, curriculum, metrics, status, or abort")
                 .optionalString("rule_id", "Verified rule ID for transfer")
                 .optionalString("target_subject", "Observed block:<dimension>:x,y,z or entity:<UUID> subject for transfer")
                 .optionalBoolean("apply", "For repair: apply a bounded verified-experience suffix repair; default false")
@@ -74,10 +74,26 @@ public final class ExploreMechanismTool implements Tool {
             return;
         }
         switch (mode) {
+            case "recall" -> {
+                JsonObject result=new JsonObject();result.addProperty("success",true);
+                var explorer=loop.mechanismExplorer();String query=ToolArgs.getString(args,"query","");
+                result.add("archived_rules",new com.google.gson.Gson().toJsonTree(explorer.knowledgeBase().recallArchived(query,8)));
+                result.addProperty("task_history",explorer.taskMemory().render(query,explorer.knowledgeBase().currentFingerprint().toString(),2400));
+                result.addProperty("authority","History requires current target observations; it does not prove current goal completion");
+                reply.accept(result.toString());
+            }
+            case "activate" -> {
+                var rule=loop.mechanismExplorer().activateArchived(ToolArgs.getString(args,"rule_id",null),gameTick);
+                JsonObject result=new JsonObject();result.addProperty("success",rule!=null);
+                result.add("rule",new com.google.gson.Gson().toJsonTree(rule));
+                if(rule==null)result.addProperty("error","Rule is missing, stale or unverified; local revalidation is required");
+                reply.accept(result.toString());
+            }
             case "transfer" -> reply.accept(new com.google.gson.Gson().toJson(
                     loop.mechanismExplorer().transfer(ToolArgs.getString(args, "rule_id", null),
                             ToolArgs.getString(args, "target_subject", null), player.dimensionKey(), gameTick)));
             case "repair" -> {
+                loop.mechanismExplorer().restorePlanEvidence(loop.planner(),gameTick);
                 var suggestion = com.mineagent.engine.planning.ExperienceRepairPlanner.suggest(
                         loop.planner(), loop.semanticWorldModel(), loop.mechanismExplorer().knowledgeBase(), gameTick);
                 JsonObject result = new com.google.gson.Gson().toJsonTree(suggestion).getAsJsonObject();
@@ -338,8 +354,12 @@ public final class ExploreMechanismTool implements Tool {
     }
 
     private static java.util.List<com.mineagent.engine.planning.PlanGraph.GoalCondition> prerequisites(JsonObject args) {
-        if (!args.has("prerequisites") || args.get("prerequisites").isJsonNull()) return java.util.List.of();
-        JsonArray values = ToolArgs.getArray(args, "prerequisites");
+        return readConditions(args, "prerequisites");
+    }
+
+    public static java.util.List<com.mineagent.engine.planning.PlanGraph.GoalCondition> readConditions(JsonObject args, String field) {
+        if (!args.has(field) || args.get(field).isJsonNull()) return java.util.List.of();
+        JsonArray values = ToolArgs.getArray(args, field);
         if (values == null || values.size() > 12) throw new IllegalArgumentException("prerequisites must be an array of at most 12 conditions");
         var result = new java.util.ArrayList<com.mineagent.engine.planning.PlanGraph.GoalCondition>();
         for (JsonElement element : values) {

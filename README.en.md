@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v0.6.0**: public observations of unfamiliar content, conditioned experiments, grounded reflection, typed transfer, bounded relearning, experience-driven plan repair and observable cache accounting. [Download v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0), or see the [usage and design](docs/research/mod-learning-0.6.0.md), [validation record](docs/research/validation-0.6.0.md), and [research sources](docs/research/continual-learning.md) (Chinese). The release includes both loader JARs, source archives, release notes and a complete SHA-256 manifest.
+> **v1.0.0 development**: real-mod learning and execution, bounded retention across tasks, public ports and unfamiliar menus, dependency jobs and guarded team learning. See the [design and usage](docs/research/lifelong-learning-1.0.0.md) and [validation record](docs/research/validation-1.0.0.md) (Chinese). The published release remains [v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0); v1.0.0 has not been published.
 
 English | [简体中文](README.md)
 
@@ -8,6 +8,17 @@ English | [简体中文](README.md)
 [![License: LGPL-3.0-only](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 
 MineAgent is an LLM-driven AI companion mod for Minecraft 1.21.1. It creates a server-side fake player with no real client connection and lets an AI interact with the world through movement, gathering, mining, building, combat, crafting, inventory management, and survival instincts.
+
+## v1.0.0: Real mods, retention and team learning
+
+- Exercise production learning and actions against pinned Extended Drawers, Tech Reborn / RebornCore and Farmer's Delight Refabricated: compensation, transfer, real smelting, heated cooking and a two-agent item handoff.
+- Keep bounded historical rules and task timelines separate from active execution. Recover after unrelated tasks and a JSON/runtime restart; require current target observations before replay.
+- Use public item ports with face, dimension, input and exact reverse-compensation guards. Inspect a carried item's public menu-slot acceptance and layout without moving it.
+- Select backward-relevant operators before applying planning budgets, recall archived evidence, and preserve completed history and final acceptance conditions.
+- Coordinate dependency jobs with expiring resource leases and observation-backed completion. Teammate experience starts with zero local supports and no execution authority.
+- Place documented explicit cache breakpoints on durable prefixes for known official models. Preserve relay/local compatibility and separate cache-write accounting. Actual model autonomy, cache hit rates and monetary savings require separate evaluation.
+
+Native validation targets Minecraft 1.21.1, Java 21 and Fabric Loader 0.20.1. NeoForge remains experimental. A pinned combination is not evidence of universal modpack compatibility or AGI.
 
 ## v0.6.0: Observe, learn and adapt to unfamiliar content
 

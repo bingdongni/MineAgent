@@ -121,4 +121,56 @@ public class NeoForgePlatform implements Services.IPlatform {
         } catch (RuntimeException failure) { channels.put("fluids", "adapter_error"); }
         return new com.mineagent.api.platform.CapabilityObservation(fields, channels, truncated);
     }
+
+    @Override
+    public com.mineagent.api.platform.PortTransferResult transferBlockItems(
+            com.mineagent.api.entity.AgentPlayer player, int x, int y, int z, String face,
+            int inventorySlot, String itemId, int amount, boolean intoBlock) {
+        var sp = ((com.mineagent.engine.entity.CompanionEntity) player).serverPlayer();
+        var pos = new net.minecraft.core.BlockPos(x, y, z);
+        var side = net.minecraft.core.Direction.byName(face);
+        var key = net.minecraft.resources.ResourceLocation.tryParse(itemId);
+        if (side == null || key == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(key)
+                || !sp.level().isLoaded(pos) || inventorySlot < 0 || inventorySlot > 35 || amount < 1 || amount > 64)
+            return com.mineagent.api.platform.PortTransferResult.unavailable("Invalid public-port request");
+        var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(key);
+        int before = sp.getInventory().getItem(inventorySlot).is(item) ? sp.getInventory().getItem(inventorySlot).getCount() : 0;
+        int moved = 0;
+        try {
+            var port = sp.serverLevel().getCapability(net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, pos, side);
+            if (port == null) return com.mineagent.api.platform.PortTransferResult.unavailable("Public item port unavailable on the visible face");
+            for (int i = 0; i < Math.min(64, port.getSlots()) && moved < amount; i++) {
+                var carried = sp.getInventory().getItem(inventorySlot);
+                if (intoBlock) {
+                    if (!carried.is(item)) break;
+                    int offered = Math.min(amount - moved, carried.getCount());
+                    var remainder = port.insertItem(i, carried.copyWithCount(offered), false);
+                    int accepted = offered - remainder.getCount();
+                    if (accepted < 0 || accepted > offered) throw new IllegalStateException("Invalid public insertion result");
+                    carried.shrink(accepted); moved += accepted;
+                } else {
+                    var offered = port.getStackInSlot(i);
+                    if (!offered.is(item) || (!carried.isEmpty()
+                            && !net.minecraft.world.item.ItemStack.isSameItemSameComponents(offered, carried))) continue;
+                    int room = offered.getMaxStackSize() - carried.getCount();
+                    int requested = Math.min(amount - moved, Math.max(0, room));
+                    if (requested == 0) break;
+                    var extracted = port.extractItem(i, requested, false);
+                    if (extracted.isEmpty()) continue;
+                    if (!extracted.is(item) || extracted.getCount() > requested) throw new IllegalStateException("Invalid public extraction result");
+                    if (carried.isEmpty()) sp.getInventory().setItem(inventorySlot, extracted);
+                    else carried.grow(extracted.getCount());
+                    moved += extracted.getCount();
+                }
+            }
+            sp.getInventory().setChanged(); sp.containerMenu.broadcastChanges();
+            int after = sp.getInventory().getItem(inventorySlot).is(item) ? sp.getInventory().getItem(inventorySlot).getCount() : 0;
+            return new com.mineagent.api.platform.PortTransferResult(true,
+                    (intoBlock ? before - after : after - before) == moved, moved,
+                    moved > 0 ? "Public-port transfer completed" : "No matching items or free capacity on this face");
+        } catch (RuntimeException | LinkageError failure) {
+            return new com.mineagent.api.platform.PortTransferResult(true, false, moved,
+                    "Port adapter failed; inspect both inventories before retrying");
+        }
+    }
 }

@@ -129,10 +129,14 @@ public final class MechanismExplorer {
     public record State(List<Experiment> experiments,
                         MechanismKnowledgeBase.State knowledge,
                         List<Budget> budgets, long revision,
-                        PredictiveLearning.State learning) {
+                        PredictiveLearning.State learning, com.mineagent.engine.memory.TaskEpisodeMemory.State tasks) {
         public State(List<Experiment> experiments, MechanismKnowledgeBase.State knowledge,
                      List<Budget> budgets, long revision) {
-            this(experiments, knowledge, budgets, revision, null);
+            this(experiments, knowledge, budgets, revision, null, null);
+        }
+        public State(List<Experiment> experiments, MechanismKnowledgeBase.State knowledge,
+                     List<Budget> budgets, long revision, PredictiveLearning.State learning) {
+            this(experiments, knowledge, budgets, revision, learning, null);
         }
     }
 
@@ -166,11 +170,11 @@ public final class MechanismExplorer {
             "get_self_status", "get_owner_status", "get_world_info",
             "inspect_block", "inspect_entity", "inspect_item", "inspect_block_storage", "inspect_gui",
             "lookup_recipe", "resolve_need", "interact_at", "interact_entity",
-            "close_gui", "transfer_items", "craft", "equip_item");
+            "close_gui", "transfer_items", "transfer_port", "craft", "equip_item");
     private static final Set<String> MEDIUM_RISK_TOOLS = Set.of(
-            "interact_at", "interact_entity", "transfer_items", "craft", "equip_item");
+            "interact_at", "interact_entity", "transfer_items", "transfer_port", "craft", "equip_item");
     private static final Set<String> SAFE_COMPENSATION_TOOLS = Set.of(
-            "close_gui", "transfer_items", "equip_item");
+            "close_gui", "transfer_items", "transfer_port", "equip_item");
 
     private final SemanticWorldModel worldModel;
     private final EvidenceSink evidenceSink;
@@ -178,9 +182,15 @@ public final class MechanismExplorer {
     private final MechanismKnowledgeBase knowledgeBase;
     private final AdaptationRuntime adaptationRuntime;
     private final PredictiveLearning learning = new PredictiveLearning();
+    private final com.mineagent.engine.memory.TaskEpisodeMemory taskMemory = new com.mineagent.engine.memory.TaskEpisodeMemory();
     private final LinkedHashMap<String, Experiment> experiments = new LinkedHashMap<>();
     private final LinkedHashMap<String, Budget> budgets = new LinkedHashMap<>();
     private long revision;
+    private java.util.function.Consumer<String> invalidationSink = id -> {};
+
+    public synchronized void onInvalidation(java.util.function.Consumer<String> sink) {
+        invalidationSink = java.util.Objects.requireNonNull(sink);
+    }
 
     public MechanismExplorer(SemanticWorldModel worldModel, EvidenceSink evidenceSink) {
         this(worldModel, evidenceSink, null, EnvironmentFingerprint.unknown(), null);
@@ -283,6 +293,57 @@ public final class MechanismExplorer {
         if (!tool.matches("[a-z][a-z0-9_]{0,63}") || !SAFE_PROBE_TOOLS.contains(tool)) {
             return new Proposal(false, null,
                     "Probe tool is not permitted for controlled exploration: " + probeTool);
+        }
+        if ("transfer_port".equals(tool)) {
+            try {
+                var bound = JsonParser.parseString(probeArguments).getAsJsonObject();
+                if (expectedSubject == null || !expectedSubject.matches("block:[a-z0-9_.-]+:[a-z0-9_./-]+:-?[0-9]+,-?[0-9]+,-?[0-9]+"))
+                    return new Proposal(false,null,"A port experiment requires an observed block effect target");
+                {
+                    String[] coordinates=expectedSubject.substring(expectedSubject.lastIndexOf(':')+1).split(",");
+                    int axis=0;for(String field:List.of("x","y","z"))
+                        if(bound.get(field).getAsBigDecimal().intValueExact()!=Integer.parseInt(coordinates[axis++]))
+                            return new Proposal(false,null,"Port action and effect must address the same observed block");
+                    String dimension = expectedSubject.substring(6, expectedSubject.lastIndexOf(':'));
+                    if (bound.has("dimension") && !bound.get("dimension").getAsString().equals(dimension))
+                        return new Proposal(false, null, "Port action and observed target dimension differ");
+                    bound.addProperty("dimension", dimension);
+                    var face = worldModel.find(expectedSubject, "capability_face", gameTick)
+                            .filter(fact -> fact.confidenceAt(gameTick) >= 0.7).orElse(null);
+                    if (face == null) return new Proposal(false, null, "Observe the public port face before learning a transfer");
+                    if (bound.has("face") && !bound.get("face").getAsString().equals(face.value()))
+                        return new Proposal(false, null, "Port action must use the observed face");
+                    bound.addProperty("face", face.value());
+                }
+                int amount = bound.get("amount").getAsBigDecimal().intValueExact();
+                if (amount < 1 || amount > 64) throw new IllegalArgumentException();
+                int slot=bound.get("inventory_slot").getAsBigDecimal().intValueExact();
+                if(slot<0||slot>35||!bound.get("item_id").getAsString().matches("[a-z0-9_.-]+:[a-z0-9_./-]+")
+                        ||!Set.of("into_block","from_block").contains(bound.get("direction").getAsString()))
+                    throw new IllegalArgumentException();
+                if ("into_block".equals(bound.get("direction").getAsString())) {
+                    var guarded = new ArrayList<>(conditions);
+                    guarded.add(new PlanGraph.GoalCondition("inventory:" + bound.get("item_id").getAsString(), "count",
+                            Integer.toString(amount), PlanGraph.Comparison.AT_LEAST, 0.7));
+                    conditions = LearningConditions.checked(guarded);
+                    String inputBlocker = LearningConditions.blocker(conditions, worldModel, gameTick);
+                    if (inputBlocker != null) return new Proposal(false, null, inputBlocker);
+                }
+                probeArguments = bound.toString();
+                if (!"transfer_port".equals(compensation))
+                    return new Proposal(false,null,"A learned port transfer requires its exact reverse port compensation");
+                {
+                    var undo = JsonParser.parseString(compensationArguments).getAsJsonObject();
+                    for (String field : List.of("x","y","z","inventory_slot","item_id","amount"))
+                        if (!bound.has(field) || !bound.get(field).equals(undo.get(field)))
+                            return new Proposal(false,null,"Port compensation must restore the same target, item, amount and carried slot");
+                    String reverse="into_block".equals(bound.get("direction").getAsString())?"from_block":"into_block";
+                    if (!undo.has("direction") || !reverse.equals(undo.get("direction").getAsString()))
+                        return new Proposal(false,null,"Port compensation must reverse the observed transfer direction");
+                    for (String field : List.of("face", "dimension")) if (bound.has(field)) undo.add(field, bound.get(field).deepCopy());
+                    compensationArguments = undo.toString();
+                }
+            } catch (RuntimeException invalid) { return new Proposal(false, null, "Invalid observed port-transfer contract"); }
         }
         if (expectedSubject != null && (expectedSubject.startsWith("block:") || expectedSubject.startsWith("entity:"))) {
             String identityPredicate = expectedSubject.startsWith("block:") ? "block_id" : "entity_type";
@@ -458,6 +519,12 @@ public final class MechanismExplorer {
                                           boolean success, boolean asynchronous,
                                           String evidence, long gameTick) {
         if (success && !asynchronous && toolName != null) {
+            if ("transfer_port".equals(toolName)) {
+                try {
+                    var root = JsonParser.parseString(evidence).getAsJsonObject();
+                    if (root.has("observation")) projectBlockObservation("inspect_block", root.get("observation").toString(), actionId, gameTick);
+                } catch (RuntimeException unavailable) { /* a transfer without an observation cannot prove a block effect */ }
+            }
             ActorObservation.project(toolName, evidence, actionId, gameTick, worldModel);
             projectBlockObservation(toolName, evidence, actionId, gameTick);
             List<MechanismKnowledgeBase.Profile> observed =
@@ -528,6 +595,8 @@ public final class MechanismExplorer {
                     null, 0.95, tool, actionId, tick, 400L, false);
             if (root.has("dimension")) worldModel.observe(subject,"dimension",root.get("dimension").getAsString(),
                     null,0.95,tool,actionId,tick,400L,false);
+            if (root.has("capability_face")) worldModel.observe(subject,"capability_face",root.get("capability_face").getAsString(),
+                    null,0.95,tool,actionId,tick,100L,false);
             if (root.has("properties") && root.get("properties").isJsonObject()) {
                 root.getAsJsonObject("properties").entrySet().stream().limit(24)
                         .filter(entry -> entry.getValue().isJsonPrimitive()).forEach(entry ->
@@ -635,7 +704,7 @@ public final class MechanismExplorer {
     /** Read-only transfer admission. Matching a name never establishes equivalent behavior. */
     public synchronized Transfer transfer(String ruleId, String target, String dimension, long tick) {
         var rule = knowledgeBase.rules().stream().filter(value -> value.id().equals(ruleId))
-                .findFirst().orElse(null);
+                .findFirst().orElseGet(() -> activateArchived(ruleId, tick));
         if (rule == null || !rule.reusable(knowledgeBase.currentFingerprint()) || rule.adapterSkill() == null)
             return new Transfer(false, ruleId, null, null, "Rule is not currently verified; obtain independent evidence first");
         boolean actor = target != null && target.startsWith("entity:");
@@ -703,7 +772,7 @@ public final class MechanismExplorer {
 
     private List<PlanGraph.GoalCondition> identityConditions(List<PlanGraph.GoalCondition> original, String target, long tick) {
         var conditions = new ArrayList<>(LearningConditions.checked(original));
-        if (target != null) for (String predicate : List.of("block_id", "entity_type", "dimension")) {
+        if (target != null) for (String predicate : List.of("block_id", "entity_type", "dimension", "capability_face")) {
             worldModel.find(target, predicate, tick).filter(fact -> fact.confidenceAt(tick) >= 0.7).ifPresent(fact -> {
                 var guard = new PlanGraph.GoalCondition(target, predicate, fact.value(), PlanGraph.Comparison.EQUALS, 0.7);
                 if (!conditions.contains(guard)) conditions.add(guard);
@@ -715,6 +784,8 @@ public final class MechanismExplorer {
     public synchronized MechanismKnowledgeBase knowledgeBase() {
         return knowledgeBase;
     }
+
+    public com.mineagent.engine.memory.TaskEpisodeMemory taskMemory() { return taskMemory; }
 
     /** Called before body/tool admission, not after the side effect. */
     public synchronized String actionBlocker(String tool, String arguments, long tick) {
@@ -734,18 +805,59 @@ public final class MechanismExplorer {
         return summarizeForPrompt("");
     }
 
+    /** Reactivate stored evidence only; execution still requires fresh bound target guards. */
+    public synchronized MechanismKnowledgeBase.Rule activateArchived(String id, long tick) {
+        var before = knowledgeBase.rules();
+        var restored = knowledgeBase.restoreArchived(id).orElse(null);
+        if (restored == null) return null;
+        var ids = knowledgeBase.rules().stream().map(MechanismKnowledgeBase.Rule::id)
+                .collect(java.util.stream.Collectors.toSet());
+        for (var old : before) if (!ids.contains(old.id())) {
+            adaptationRuntime.invalidate(old);
+            worldModel.observe("mechanism_rule:" + old.id(), "reusable", "false", null, 1,
+                    "mechanism_activation", old.id(), tick, 0L, false);
+        }
+        adaptationRuntime.synchronize(restored); publishRuleValidity(restored, tick);
+        return knowledgeBase.rules().stream().filter(rule -> rule.id().equals(id)).findFirst().orElse(restored);
+    }
+
+    public synchronized MechanismKnowledgeBase.Rule seedTeamCandidate(MechanismKnowledgeBase.Rule source, long tick) {
+        var before = knowledgeBase.rules();
+        var candidate = knowledgeBase.seedCandidate(source, tick);
+        if (candidate == null) return null;
+        var ids = knowledgeBase.rules().stream().map(MechanismKnowledgeBase.Rule::id).collect(java.util.stream.Collectors.toSet());
+        for (var old : before) if (!ids.contains(old.id())) {
+            adaptationRuntime.invalidate(old);
+            worldModel.observe("mechanism_rule:" + old.id(), "reusable", "false", null, 1,
+                    "team_candidate", old.id(), tick, 0, false);
+        }
+        publishRuleValidity(candidate, tick); revision++;
+        return candidate;
+    }
+
+    public synchronized void restorePlanEvidence(PlanGraph plan,long tick) {
+        plan.refreshReadiness(worldModel,tick);var gap=plan.prerequisiteGap();if(gap==null)return;
+        var relevant=com.mineagent.engine.planning.ExperienceRepairPlanner.relevantOperators(
+                knowledgeBase.archivedRules().stream().filter(r->r.reusable(knowledgeBase.currentFingerprint())).toList(),gap.condition());
+        int activated=0;
+        var active=knowledgeBase.rules().stream().map(MechanismKnowledgeBase.Rule::id).collect(java.util.stream.Collectors.toSet());
+        for(var rule:relevant)if(!active.contains(rule.id())&&activated++<8)activateArchived(rule.id(),tick);
+    }
+
     public synchronized String experienceReference(String query) {
-        StringBuilder out = new StringBuilder("contract_version=2\n");
+        for (var archived : knowledgeBase.recallArchived(query, 2)) activateArchived(archived.id(), 0L);
+        StringBuilder out = new StringBuilder("contract_version=3\n");
         int count = 0;
         for (var rule : knowledgeBase.relevantRules(query, 4)) {
             if (!rule.reusable(knowledgeBase.currentFingerprint()) || rule.adapterSkill() == null) continue;
             String line = "rule=" + rule.id() + " subject=" + rule.subject() + " skill=" + rule.adapterSkill()
                     + " guards=" + rule.prerequisites().stream().map(PlanGraph.GoalCondition::describe).toList()
                     + " effect=" + rule.expectedPredicate() + "=" + rule.expectedValue() + "\n";
-            if (out.length() + line.length() > 5_600) break;
+            if (out.length() + line.length() > 3_600) break;
             out.append(line); count++;
         }
         if (count == 0) out.append("No currently verified relevant rules. Observe or test before automatic reuse.\n");
+        out.append(taskMemory.render(query, knowledgeBase.currentFingerprint().toString(), Math.min(1_800, 5_600 - out.length())));
         return out.toString();
     }
 
@@ -800,10 +912,11 @@ public final class MechanismExplorer {
     public synchronized State exportState() {
         return new State(List.copyOf(experiments.values()),
                 knowledgeBase.exportState(), List.copyOf(budgets.values()), revision,
-                learning.exportState());
+                learning.exportState(), taskMemory.exportState());
     }
 
     public synchronized void importState(State state) {
+        knowledgeBase.archivedRules().forEach(rule->invalidationSink.accept(rule.id()));
         for (var old : knowledgeBase.rules()) {
             adaptationRuntime.invalidate(old);
             long tick = worldModel.find("mechanism_rule:" + old.id(), "reusable", 0L)
@@ -813,6 +926,7 @@ public final class MechanismExplorer {
         }
         experiments.clear();
         budgets.clear();
+        taskMemory.importState(state == null ? null : state.tasks());
         learning.importState(state != null && state.knowledge() != null && state.knowledge().contextVersion() == 2
                 ? state.learning() : null);
         if (state != null) {
@@ -1017,6 +1131,7 @@ public final class MechanismExplorer {
 
     private void publishRuleValidity(MechanismKnowledgeBase.Rule rule, long tick) {
         if (rule != null) {
+            if (!rule.reusable(knowledgeBase.currentFingerprint())) invalidationSink.accept(rule.id());
             tick = Math.max(tick, worldModel.find("mechanism_rule:" + rule.id(), "reusable", 0L)
                     .map(SemanticWorldModel.SemanticFact::observedTick).orElse(0L));
             worldModel.observe("mechanism_rule:" + rule.id(), "reusable",

@@ -7,6 +7,7 @@ import com.mineagent.api.agent.tool.ToolArgs;
 import com.mineagent.api.entity.AgentPlayer;
 import com.mineagent.engine.MineAgentEngine;
 import com.mineagent.engine.cognition.TeamBlackboard;
+import com.mineagent.engine.cognition.TeamWorkBoard;
 import com.mineagent.engine.task.TaskContext;
 
 import java.util.List;
@@ -23,8 +24,9 @@ public final class CoordinateTeamTool implements Tool {
 
     @Override
     public String description() {
-        return "Inspect team state, claim a role/objective, request teammate support, "
-                + "or clear your commitment. Use this instead of ordinary chat for coordination.";
+        return "Coordinate owner-scoped jobs with dependencies and exclusive resource leases; verify completion from fresh world facts. "
+                + "Share a verified experience as a teammate hypothesis, which still requires two local supporting contexts. "
+                + "Also inspect team state, commit a role, request support, or clear your commitment.";
     }
 
     @Override
@@ -36,12 +38,19 @@ public final class CoordinateTeamTool implements Tool {
                 .optionalString("request", "Concrete help required when action=request_support")
                 .optionalString("priority", "low, medium, high or critical")
                 .optionalString("target", "Optional coordinate, entity or asset target")
+                .optionalString("job_id", "Immutable job ID for post_job, claim_job or complete_job")
+                .optionalString("resource", "Exact shared resource, e.g. block:minecraft:overworld:10,64,20; transfer_port respects this lease")
+                .optionalString("dependencies", "JSON array of existing predecessor job IDs")
+                .optionalString("acceptance", "JSON array of observed goal conditions: subject, predicate, value, comparison, minimum_confidence")
+                .optionalString("rule_id", "Own verified rule for share_experience, or shared candidate ID for adopt_experience")
+                .optionalString("query", "Optional objective when listing team_experiences")
                 .build());
         @SuppressWarnings("unchecked")
         Map<String, Map<String, Object>> properties = new java.util.LinkedHashMap<>(
                 (Map<String, Map<String, Object>>) schema.get("properties"));
         properties.put("action", Map.of("type", "string",
-                "enum", List.of("status", "commit", "request_support", "clear"),
+                "enum", List.of("status", "commit", "request_support", "clear", "post_job", "claim_job", "complete_job",
+                        "share_experience", "team_experiences", "adopt_experience"),
                 "description", "Coordination operation"));
         schema.put("properties", java.util.Collections.unmodifiableMap(properties));
         return java.util.Collections.unmodifiableMap(schema);
@@ -69,6 +78,7 @@ public final class CoordinateTeamTool implements Tool {
                 result.addProperty("success", true);
                 result.addProperty("team", TeamBlackboard.summarize(
                         player.ownerUuid(), player.companionId(), gameTick));
+                result.add("jobs", new com.google.gson.Gson().toJsonTree(TeamWorkBoard.jobs(player.ownerUuid(), gameTick)));
             }
             case "commit" -> {
                 String objective = bounded(args, "objective");
@@ -115,12 +125,69 @@ public final class CoordinateTeamTool implements Tool {
                 result.addProperty("success", true);
                 result.addProperty("cleared", true);
             }
+            case "post_job", "claim_job", "complete_job", "share_experience", "team_experiences", "adopt_experience" -> {
+                try { result = executeJob(action,args,player,gameTick); }
+                catch (IllegalArgumentException invalid) { reply.accept(ToolArgs.errorJson(invalid.getMessage())); return; }
+            }
             default -> {
                 reply.accept(ToolArgs.errorJson("Unknown action: " + action));
                 return;
             }
         }
         reply.accept(result.toString());
+    }
+
+    private static JsonObject executeJob(String action,JsonObject args,AgentPlayer player,long tick) {
+        var result=new JsonObject();var gson=new com.google.gson.Gson();
+        var owner=player.ownerUuid();var self=player.companionId();
+        if (action.equals("post_job")||action.equals("claim_job")||action.equals("complete_job")) {
+            TeamWorkBoard.Result response;
+            String id=bounded(args,"job_id");
+            if (action.equals("post_job")) {
+                var dependencies=new java.util.ArrayList<String>();
+                if(args.has("dependencies")) {
+                    var values=ToolArgs.getArray(args,"dependencies");
+                    if(values==null||values.size()>12)throw new IllegalArgumentException("At most 12 predecessor IDs are allowed");
+                    for(var value:values) {
+                        if(!value.isJsonPrimitive()||!value.getAsString().matches("[a-zA-Z0-9_-]{1,64}"))
+                            throw new IllegalArgumentException("Invalid predecessor ID");
+                        dependencies.add(value.getAsString());
+                    }
+                }
+                response=TeamWorkBoard.post(owner,self,id,bounded(args,"objective"),bounded(args,"resource"),dependencies,
+                        com.mineagent.tools.planning.ExploreMechanismTool.readConditions(args,"acceptance"),tick);
+            } else if(action.equals("claim_job")) response=TeamWorkBoard.claim(owner,self,id,tick);
+            else {
+                var loop=TaskContext.agentLoop(player);
+                if(loop==null)throw new IllegalArgumentException("Active loop is required for observed completion");
+                loop.refreshServerObservation();
+                response=TeamWorkBoard.complete(owner,self,id,loop.semanticWorldModel(),tick);
+            }
+            result.addProperty("success",response.accepted());result.addProperty("message",response.message());
+            result.add("job",gson.toJsonTree(response.job()));return result;
+        }
+        var loop=TaskContext.agentLoop(player);
+        if(loop==null)throw new IllegalArgumentException("Active loop is required for team experience");
+        var explorer=loop.mechanismExplorer();var kb=explorer.knowledgeBase();
+        if(action.equals("share_experience")) {
+            String id=bounded(args,"rule_id");
+            var rule=kb.archivedRules().stream().filter(r->r.id().equals(id)).findFirst().orElse(null);
+            boolean shared=TeamWorkBoard.share(owner,self,rule,kb.currentFingerprint(),tick);
+            result.addProperty("success",shared);result.addProperty("message",shared?"Shared as an untrusted teammate hypothesis":"Only a current locally verified rule can be shared");
+        } else {
+            var hints=TeamWorkBoard.hints(owner,self,kb.currentFingerprint(),bounded(args,"query"),tick);
+            if(action.equals("team_experiences")) {
+                result.addProperty("success",true);result.add("hypotheses",gson.toJsonTree(hints));
+                result.addProperty("authority","Historical teammate evidence only; adopt then rebind and verify in two independent local contexts");
+            } else {
+                String id=bounded(args,"rule_id");
+                var source=TeamWorkBoard.hint(owner,self,kb.currentFingerprint(),id,tick).map(TeamWorkBoard.Hint::rule).orElse(null);
+                var candidate=explorer.seedTeamCandidate(source,tick);
+                result.addProperty("success",candidate!=null);result.add("candidate",gson.toJsonTree(candidate));
+                result.addProperty("message",candidate!=null?"Candidate has zero local supports and no executor; observe, rebind and test it locally":"No matching hint, or local evidence already exists; existing evidence is preserved");
+            }
+        }
+        return result;
     }
 
     private static String bounded(JsonObject args, String name) {

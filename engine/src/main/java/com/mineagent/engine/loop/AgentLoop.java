@@ -148,18 +148,18 @@ public class AgentLoop {
     private static final Set<String> SKILL_ACTION_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
-            "transfer_items", "craft", "interact_at", "interact_entity",
+            "transfer_items", "transfer_port", "craft", "interact_at", "interact_entity",
             "use_item", "wait_for", "close_gui");
     private static final Set<String> SKILL_TRACE_TOOLS = Set.of(
             "goto", "auto_mine", "build", "melee_attack", "ranged_attack",
             "equip_item", "eat_item", "drop_items", "collect_items",
-            "transfer_items", "craft", "interact_at", "interact_entity",
+            "transfer_items", "transfer_port", "craft", "interact_at", "interact_entity",
             "use_item", "wait_for", "close_gui", "look_around", "scan_blocks", "scan_nearby_entities",
             "get_self_status", "get_owner_status", "get_world_info",
             "resolve_need", "plan_acquisition", "lookup_recipe", "inspect_block",
             "inspect_block_storage", "inspect_gui", "inspect_entity", "inspect_item", "recall_memory");
     private static final Set<String> INVENTORY_EXTRA_TOOLS = Set.of(
-            "drop_items", "inspect_item", "inspect_gui", "close_gui", "inspect_block_storage");
+            "drop_items", "transfer_port", "inspect_item", "inspect_gui", "close_gui", "inspect_block_storage");
     private static final Set<String> PERCEPTION_EXTRA_TOOLS = Set.of(
             "recall_memory", "inspect_block", "inspect_entity", "inspect_item", "scan_nearby_entities",
             "get_owner_status", "get_world_info");
@@ -168,7 +168,7 @@ public class AgentLoop {
     private static final Set<String> LOCATION_EXTRA_TOOLS = Set.of(
             "recall_memory", "locate_structure", "locate_biome");
     private static final Set<String> GUI_EXTRA_TOOLS = Set.of(
-            "inspect_gui", "close_gui", "inspect_block", "inspect_block_storage", "inspect_entity", "inspect_item");
+            "inspect_gui", "transfer_port", "close_gui", "inspect_block", "inspect_block_storage", "inspect_entity", "inspect_item");
 
     /** 距上次玩家消息的时间（毫秒）。
      *  如果玩家刚刚说话（<30秒），不使用缓存 — 对话场景需要
@@ -381,6 +381,8 @@ public class AgentLoop {
                                 supported, evidence, gameTick),
                 skillLib, EnvironmentFingerprint.capture(),
                 this::dispatchExplorationCompensation);
+        this.mechanismExplorer.onInvalidation(id -> com.mineagent.engine.cognition.TeamWorkBoard.withdraw(
+                companion.ownerUuid(), companion.companionId(), id));
         this.skillRuntime = new SkillRuntime(skillLib, semanticWorldModel,
                 new SkillRuntime.ActionDispatcher() {
                     @Override
@@ -792,6 +794,7 @@ public class AgentLoop {
                         : CognitionMetrics.ActionOutcome.FAILED,
                 experience.failureKind().name().toLowerCase(Locale.ROOT));
         mechanismExplorer.onTaskFinished(taskId, state, message, gameTick);
+        mechanismExplorer.taskMemory().outcome(taskId, outcomeAction, state == TaskState.SUCCESS, message, gameTick);
         if (skillAction) {
             skillRuntime.onTaskFinished(taskId, state, message, gameTick);
         }
@@ -829,6 +832,8 @@ public class AgentLoop {
      */
     public void onServerStateTick(long gameTick) {
         publishWorldSnapshot(gameTick, false);
+        com.mineagent.engine.cognition.TeamWorkBoard.heartbeat(companion.ownerUuid(), companion.companionId(),
+                gameTick, hasActiveExecutor());
         try {
             actionLedger.expire(gameTick, 1_200L, semanticWorldModel);
             reservationLedger.expire(gameTick);
@@ -844,6 +849,11 @@ public class AgentLoop {
             // facts. This prevents a completed tactical suffix from being
             // mistaken for completion of the owner's actual objective.
             boolean goalVerified = planner.verifyGoal(semanticWorldModel, gameTick);
+            var taskPlan = planner.exportState();
+            if (planner.hasActivePlan() && !taskPlan.goal().isBlank()
+                    && !taskPlan.goal().equals(mechanismExplorer.taskMemory().currentGoal()))
+                mechanismExplorer.taskMemory().begin(taskPlan.goal(), mechanismExplorer.knowledgeBase().currentFingerprint().toString(), gameTick);
+            mechanismExplorer.taskMemory().verify(taskPlan, semanticWorldModel, gameTick);
             if (result.ownerIntent() != null) {
                 var signal = result.ownerIntent();
                 theoryOfMind.observeIntent(signal.intent(), signal.confidence(),
@@ -1124,6 +1134,8 @@ public class AgentLoop {
     public CognitionMetrics.ContextReuse experienceContextReuse() { return metrics.contextReuse(); }
     public RealtimeCognition realtimeCognition() { return realtimeCognition; }
     public SemanticWorldModel semanticWorldModel() { return semanticWorldModel; }
+    /** Server-thread read for native integrations and offline harnesses; dispatches no model work. */
+    public void refreshServerObservation() { publishWorldSnapshotNow(true); }
     public ActionTransactionLedger actionLedger() { return actionLedger; }
     public LayeredMemory layeredMemory() { return layeredMemory; }
     public ResourceReservationLedger reservationLedger() { return reservationLedger; }
@@ -1255,6 +1267,7 @@ public class AgentLoop {
                     tool.dispatchesAsyncTask(), false, detail);
         }
         FailureAnalysis analysis = analyzeFailure(raw);
+        publishWorldSnapshotNow(true);
         boolean asynchronous = "async_pending".equals(analysis.errorType());
         boolean success = asynchronous || analysis.isSuccess();
         if (!asynchronous) {
@@ -1280,6 +1293,8 @@ public class AgentLoop {
         }
         mechanismExplorer.onToolResult(actionId, toolName, success, asynchronous,
                 raw, currentGameTickSafe());
+        if (!asynchronous && SKILL_ACTION_TOOLS.contains(toolName))
+            mechanismExplorer.taskMemory().outcome(actionId, toolName, success, raw, currentGameTickSafe());
         return new SkillRuntime.DispatchResult(success, asynchronous,
                 success, raw);
     }
@@ -1346,6 +1361,8 @@ public class AgentLoop {
                 snapshot.runId(), gameTick, true);
         mechanismExplorer.onAdapterOutcome(snapshot.skillName(), success,
                 snapshot.lastEvidence(), gameTick);
+        mechanismExplorer.taskMemory().outcome(snapshot.runId(), "execute_skill " + snapshot.skillName(),
+                success, snapshot.lastEvidence(), gameTick);
         onBodyLog("[SKILL_FINISHED] run_id=" + snapshot.runId()
                 + " skill=" + snapshot.skillName() + " state=" + snapshot.status()
                 + " evidence=" + snapshot.lastEvidence());
@@ -1368,6 +1385,7 @@ public class AgentLoop {
      */
     private void prepareToolsForOwnerIntent(String message) {
         exposedExtraTools.clear();
+        mechanismExplorer.taskMemory().begin(message, mechanismExplorer.knowledgeBase().currentFingerprint().toString(), currentGameTickSafe());
         String intent = message == null ? "" : message.toLowerCase(Locale.ROOT);
         if (containsAny(intent, "give", "drop", "hand", "transfer", "store",
                 "retrieve", "给", "交给", "丢", "转移", "放入", "取出", "箱子")) {
@@ -2983,6 +3001,8 @@ public class AgentLoop {
                         }
                         mechanismExplorer.onToolResult(tc.id(), tc.name(), success, async,
                                 safeResult, callbackTick);
+                        if (!async && SKILL_ACTION_TOOLS.contains(tc.name()))
+                            mechanismExplorer.taskMemory().outcome(tc.id(), tc.name(), success, safeResult, callbackTick);
                         if (state.compareAndSet(
                                 ToolExecutionState.RUNNING, ToolExecutionState.COMPLETED)) {
                             // Store before releasing the latch so the loop thread
@@ -3347,7 +3367,7 @@ public class AgentLoop {
         String owner = companion.ownerUuid() == null ? "owner" : companion.ownerUuid().toString();
         String name = companion.companionName() == null ? "companion"
                 : companion.companionName().trim().replaceAll("[^a-zA-Z0-9_-]", "_");
-        return provider.providerId() + ":" + model + ":mineagent-prompt-v7:" + owner + ":" + name;
+        return provider.providerId() + ":" + model + ":mineagent-prompt-v8:" + owner + ":" + name;
     }
 
     /** HTTP deadline is bounded per reasoning round so stale requests can be cancelled. */
@@ -3814,6 +3834,10 @@ public class AgentLoop {
         sb.append(realtimeCognition.summarizeForPrompt());
         sb.append(TeamBlackboard.summarize(companion.ownerUuid(),
                 companion.companionId(), liveAssetGameTick.get()));
+        var teamJobs = com.mineagent.engine.cognition.TeamWorkBoard.jobs(companion.ownerUuid(), liveAssetGameTick.get());
+        if (!teamJobs.isEmpty()) sb.append("Team jobs (use coordinate_team; fresh observations verify completion): ")
+                .append(teamJobs.stream().filter(j->j.status()!=com.mineagent.engine.cognition.TeamWorkBoard.Status.VERIFIED)
+                        .limit(6).map(j->j.id()+" "+j.status()+" objective="+j.objective()+" predecessors="+j.dependencies()).toList()).append('\n');
         // Persona: 1-line summary instead of full OCEAN breakdown
         sb.append("性格: ").append(compactPersona()).append("\n");
         // Emotion: 1-line label instead of full PAD breakdown

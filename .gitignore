@@ -2,6 +2,8 @@
 **/.gradle/
 **/build/
 /out/
+__pycache__/
+*.py[cod]
 
 # IDE-local state. The generated VS Code launch file contains machine-specific
 # absolute paths and is intentionally not part of the repository.

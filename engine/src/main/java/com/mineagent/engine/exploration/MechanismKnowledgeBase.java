@@ -94,17 +94,22 @@ public final class MechanismKnowledgeBase {
         }
     }
 
-    public record State(List<Profile> profiles, List<Rule> rules, long revision, int contextVersion) {
+    public record State(List<Profile> profiles, List<Rule> rules, long revision, int contextVersion, List<Rule> archive) {
         public State(List<Profile> profiles, List<Rule> rules, long revision) {
-            this(profiles, rules, revision, 2);
+            this(profiles, rules, revision, 2, List.of());
+        }
+        public State(List<Profile> profiles, List<Rule> rules, long revision, int contextVersion) {
+            this(profiles, rules, revision, contextVersion, List.of());
         }
     }
 
     private static final int MAX_PROFILES = 256;
     private static final int MAX_RULES = 256;
+    private static final int MAX_ARCHIVED_RULES = 1_024;
     private static final int MAX_ATTRIBUTES = 48;
     private final LinkedHashMap<String, Profile> profiles = new LinkedHashMap<>();
     private final LinkedHashMap<String, Rule> rules = new LinkedHashMap<>();
+    private final LinkedHashMap<String, Rule> archive = new LinkedHashMap<>();
     private EnvironmentFingerprint currentFingerprint;
     private long revision;
 
@@ -244,7 +249,7 @@ public final class MechanismKnowledgeBase {
                                     String evidence, long gameTick) {
         if (experiment == null) return null;
         String id = keyFor(experiment);
-        Rule old = rules.get(id);
+        Rule old = rules.getOrDefault(id, archive.get(id));
         int supports = old == null ? 0 : old.supports();
         int refutations = old == null ? 0 : old.refutations();
         int inconclusive = old == null ? 0 : old.inconclusive();
@@ -287,6 +292,7 @@ public final class MechanismKnowledgeBase {
                 refutations, inconclusive, confidence, status, learnedIn,
                 old == null ? null : old.adapterSkill(), gameTick, experiment.prerequisites());
         rules.put(id, rule);
+        archive.put(id, rule);
         revision++;
         trim();
         return rule;
@@ -297,6 +303,7 @@ public final class MechanismKnowledgeBase {
         if (old == null) return null;
         Rule updated = copy(old, old.status(), skillName, old.updatedTick());
         rules.put(ruleId, updated);
+        archive.put(ruleId, updated);
         revision++;
         return updated;
     }
@@ -320,6 +327,7 @@ public final class MechanismKnowledgeBase {
                 refutations, old.inconclusive(), confidence, RuleStatus.STALE,
                 old.fingerprint(), old.adapterSkill(), gameTick, old.prerequisites());
         rules.put(updated.id(), updated);
+        archive.put(updated.id(), updated);
         revision++;
         return updated;
     }
@@ -328,7 +336,7 @@ public final class MechanismKnowledgeBase {
     public synchronized List<Rule> recordObservedContradictions(MechanismExplorer.Experiment experiment,
                                                                String observed, long tick) {
         List<Rule> invalidated = new ArrayList<>();
-        for (var old : List.copyOf(rules.values())) {
+        for (var old : List.copyOf(archive.values())) {
             if ((old.status() != RuleStatus.CONFIRMED && old.status() != RuleStatus.CANDIDATE)
                     || !sameContract(old, experiment) || old.expectedValue().equals("*")
                     || old.expectedValue().equalsIgnoreCase(observed)) continue;
@@ -339,7 +347,8 @@ public final class MechanismKnowledgeBase {
                     old.compensationArguments(), old.supportingContexts(), counters, old.supports(), refutations,
                     old.inconclusive(), (1.0 + old.supports()) / (2.0 + old.supports() + refutations),
                     RuleStatus.REFUTED, old.fingerprint(), old.adapterSkill(), tick, old.prerequisites());
-            rules.put(old.id(), updated); invalidated.add(updated);
+            if (rules.containsKey(old.id())) rules.put(old.id(), updated);
+            archive.put(old.id(), updated); invalidated.add(updated);
         }
         if (!invalidated.isEmpty()) revision++;
         return List.copyOf(invalidated);
@@ -397,23 +406,62 @@ public final class MechanismKnowledgeBase {
                         profile.subject() + " " + profile.attributes()) >= 0.20);
     }
 
+    /** Shared experience reduces search, never supplies the recipient's supporting evidence. */
+    public synchronized Rule seedCandidate(Rule source, long tick) {
+        if (source == null || !source.reusable(currentFingerprint)
+                || rules.containsKey(source.id()) || archive.containsKey(source.id())) return null;
+        Rule candidate = new Rule(source.id(), source.subject(), source.hypothesis(), source.probeTool(),
+                source.probeArguments(), source.expectedSubject(), source.expectedPredicate(), source.expectedValue(),
+                source.compensationTool(), source.compensationArguments(), Set.of(), Set.of(), 0, 0, 0, 0.5,
+                RuleStatus.CANDIDATE, currentFingerprint, null, tick, source.prerequisites());
+        rules.put(candidate.id(), candidate); archive.put(candidate.id(), candidate); revision++; trim();
+        return candidate;
+    }
+
     public synchronized Collection<Rule> rules() {
         return List.copyOf(rules.values());
     }
 
+    /** Cold storage retains reusable old tasks without leaving their executors active. */
+    public synchronized List<Rule> archivedRules() { return List.copyOf(archive.values()); }
+
+    public synchronized List<Rule> recallArchived(String query, int limit) {
+        if (query == null || query.isBlank()) return List.of();
+        return archive.values().stream().filter(rule -> !rules.containsKey(rule.id()))
+                .filter(rule -> rule.reusable(currentFingerprint))
+                .map(rule -> Map.entry(rule, TextSimilarity.score(query, rule.subject() + " " + rule.hypothesis()
+                        + " " + rule.expectedPredicate() + " " + rule.expectedValue())))
+                .filter(entry -> entry.getValue() >= 0.2)
+                .sorted(Map.Entry.<Rule, Double>comparingByValue().reversed().thenComparing(e -> e.getKey().id()))
+                .limit(Math.max(0, Math.min(8, limit))).map(Map.Entry::getKey).toList();
+    }
+
+    public synchronized java.util.Optional<Rule> restoreArchived(String id) {
+        Rule rule = archive.get(id);
+        if (rule == null || !rule.reusable(currentFingerprint)) return java.util.Optional.empty();
+        rules.remove(id); rules.put(id, rule); trim(); revision++;
+        return java.util.Optional.of(rule);
+    }
+
     public synchronized State exportState() {
         return new State(List.copyOf(profiles.values()),
-                List.copyOf(rules.values()), revision);
+                List.copyOf(rules.values()), revision, 2, List.copyOf(archive.values()));
     }
 
     public synchronized void importState(State state) {
         profiles.clear();
         rules.clear();
+        archive.clear();
         if (state != null) {
             if (state.profiles() != null) for (Profile profile : state.profiles()) {
                 if (profile != null) profiles.put(canonical(profile.subject()), profile);
             }
-            if (state.rules() != null) for (Rule rule : state.rules()) {
+            List<Rule> saved = new ArrayList<>();
+            if (state.archive() != null) saved.addAll(state.archive());
+            if (state.rules() != null) saved.addAll(state.rules());
+            Set<String> activeIds = state.rules() == null ? Set.of() : state.rules().stream()
+                    .filter(java.util.Objects::nonNull).map(Rule::id).collect(java.util.stream.Collectors.toSet());
+            for (Rule rule : saved) {
                 if (rule == null) continue;
                 // Gson supplies 0 for old files. Their caller-written context labels
                 // do not establish independent physical support under the new contract.
@@ -427,7 +475,8 @@ public final class MechanismKnowledgeBase {
                                 rule.fingerprint(), rule.adapterSkill(), rule.updatedTick(), rule.prerequisites());
                 Rule restored = supported.fingerprint().compatible(currentFingerprint)
                         ? supported : copy(supported, RuleStatus.STALE, supported.adapterSkill(), supported.updatedTick());
-                rules.put(restored.id(), restored);
+                archive.put(restored.id(), restored);
+                if (activeIds.contains(restored.id())) rules.put(restored.id(), restored);
             }
             revision = Math.max(0L, state.revision()) + 1L;
         } else {
@@ -488,7 +537,7 @@ public final class MechanismKnowledgeBase {
             if (index == null) continue;
             String prefix = "slot." + index + ".";
             for (String key : List.of("endpoint", "inventory_slot", "slot_type",
-                    "occupied", "item", "count")) {
+                    "occupied", "item", "count", "x", "y", "accepts_probe", "probe_space")) {
                 String value = primitive(slot, key);
                 if (value != null) out.put(prefix + key, value);
             }
@@ -563,6 +612,15 @@ public final class MechanismKnowledgeBase {
                     .orElse(rules.values().iterator().next());
             rules.remove(oldest.id());
         }
+        while (archive.size() > MAX_ARCHIVED_RULES) {
+            var counts = archive.values().stream().collect(java.util.stream.Collectors.groupingBy(
+                    Rule::subject, java.util.stream.Collectors.counting()));
+            Rule victim = archive.values().stream().filter(rule -> !rules.containsKey(rule.id()))
+                    .min(Comparator.comparingInt((Rule rule) -> counts.get(rule.subject()) > 1 ? 0 : 1)
+                            .thenComparingInt(rule -> rule.reusable(currentFingerprint) ? 1 : 0)
+                            .thenComparingLong(Rule::updatedTick).thenComparing(Rule::id)).orElseThrow();
+            archive.remove(victim.id());
+        }
     }
 
     private boolean hasRule(String subject) {
@@ -626,9 +684,10 @@ public final class MechanismKnowledgeBase {
     }
     public synchronized List<Rule> invalidateAll() {
         List<Rule> invalid = new ArrayList<>();
-        for (var old : List.copyOf(rules.values())) {
+        for (var old : List.copyOf(archive.values())) {
             Rule value = copy(old, RuleStatus.STALE, old.adapterSkill(), old.updatedTick());
-            rules.put(value.id(), value); invalid.add(value);
+            if (rules.containsKey(value.id())) rules.put(value.id(), value);
+            archive.put(value.id(), value); invalid.add(value);
         }
         revision++; return List.copyOf(invalid);
     }

@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v0.6.0**：陌生模组的公开观察、多条件实验、结构化反思、类型约束迁移、有界重学、经验驱动计划修复与缓存可观测性。[下载 v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0)，或参见 [使用与设计](docs/research/mod-learning-0.6.0.md)、[验证记录](docs/research/validation-0.6.0.md) 和 [研究依据](docs/research/continual-learning.md)。Release 包含双加载器 JAR、源码压缩包、更新说明和完整 SHA-256 清单。
+> **v1.0.0 开发版**：真实模组环境中的条件学习、跨任务记忆保持、公开端口和陌生菜单操作、依赖任务协作及耐久前缀缓存。[设计与使用](docs/research/lifelong-learning-1.0.0.md) · [验证记录](docs/research/validation-1.0.0.md)。目前已发布版本为 [v0.6.0](https://github.com/bingdongni/MineAgent/releases/tag/v0.6.0)；此开发版本尚未发布 Release。
 
 [English](README.en.md) | 简体中文
 
@@ -8,6 +8,17 @@
 [![License: LGPL-3.0-only](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 
 MineAgent 是面向 Minecraft 1.21.1 的 LLM 驱动的 AI 伴游模组。它在服务端创建无真实网络连接的假玩家，并让 AI 通过移动、采集、挖掘、建造、战斗、合成、物品管理和生存本能与世界交互。
+
+## v1.0.0：真实模组、旧任务保持与团队学习
+
+- 在锁定版本的 Extended Drawers、Tech Reborn / RebornCore、Farmer's Delight Refabricated 中运行生产学习与执行模块；包含真实补偿、迁移、冶炼、烹饪与双伙伴物品交接。
+- 分离活跃规则和有界历史档案，保留任务锚点与精确证据。经历无关任务及 JSON/运行时重启后，仍需重新观察目标再迁移；旧环境和反例不会因召回恢复权限。
+- `transfer_port` 使用公开物品接口，绑定观察面、维度、携带输入及精确反向补偿；`inspect_gui` 可只读探查实际携带物品的槽位接收性和公开布局。
+- 计划修复先向后筛选相关算子，再执行有预算的搜索；回温旧经验时保留完成历史及原始目标条件，不假设未知输入或未验证效果。
+- 团队任务有前驱、资源租约和观察验收；队友经验只建立零本地支持的候选，必须在接收方再次验证。
+- 已知官方模型使用耐久消息前缀缓存边界，动态观察保留在尾部；中转、本地和其他协议沿用兼容行为。实际模型表现、缓存命中率和账单收益仍需独立评测。
+
+验证环境为 Minecraft 1.21.1 / Java 21 / Fabric Loader 0.20.1。NeoForge 保持实验性支持。固定组合测试不等于任意整合包兼容或 AGI 能力证明。
 
 ## v0.6.0：陌生内容的观察、学习与适应
 

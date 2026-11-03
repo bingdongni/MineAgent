@@ -1,10 +1,15 @@
 plugins {
     id 'java'
-    id 'fabric-loom' version '1.7-SNAPSHOT'
+    id 'fabric-loom' version '1.13.6'
 }
 
 group = rootProject.group
 version = rootProject.version
+
+def modpackProfile = providers.gradleProperty('modpack_profile').orNull
+def modpackLock = new groovy.json.JsonSlurper().parse(file('src/modtest/resources/modpack-lock.json'))
+if (modpackProfile != null && !modpackLock.profiles.containsKey(modpackProfile))
+    throw new GradleException("Unknown modpack_profile: ${modpackProfile}")
 
 base {
     // Loader-specific names make the two release assets unambiguous when both
@@ -40,6 +45,7 @@ sourceSets {
         }
     }
     gametest {
+        if (modpackProfile != null) java.srcDir 'src/modtest/java'
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath
     }
@@ -50,8 +56,26 @@ dependencies {
     minecraft "com.mojang:minecraft:${project.property('minecraft_version')}"
     // Use Mojang official mappings (matches our codebase naming)
     mappings loom.officialMojangMappings()
-    modImplementation "net.fabricmc:fabric-loader:${project.property('fabric_loader_version')}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.property('fabric_version')}"
+    modImplementation "net.fabricmc:fabric-loader:${modpackProfile == null ? project.property('fabric_loader_version') : modpackLock.fabric_loader}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${modpackProfile == null ? project.property('fabric_version') : modpackLock.fabric_api}"
+    if (modpackProfile != null) {
+        modpackLock.mods.findAll { it.id in modpackLock.profiles[modpackProfile] }.each { mod ->
+            def artifact = layout.buildDirectory.file("real-mods/${modpackProfile}/${mod.filename}").get().asFile
+            if (!artifact.isFile()) throw new GradleException("Run python scripts/provision-modpack-tests.py --profile ${modpackProfile} first")
+            def actual = java.security.MessageDigest.getInstance('SHA-512').digest(artifact.bytes).encodeHex().toString()
+            if (actual != mod.sha512) throw new GradleException("Test dependency checksum mismatch: ${mod.filename}")
+            modRuntimeOnly files(artifact)
+        }
+        def nestedManifest = layout.buildDirectory.file("real-mods/${modpackProfile}/nested-manifest.json").get().asFile
+        if (!nestedManifest.isFile()) throw new GradleException('Provision embedded test dependencies first')
+        new groovy.json.JsonSlurper().parse(nestedManifest).each { nested ->
+            def artifact = layout.buildDirectory.file("real-mods/${modpackProfile}/${nested.path}").get().asFile
+            def actual = java.security.MessageDigest.getInstance('SHA-512').digest(artifact.bytes).encodeHex().toString()
+            if (actual != nested.sha512) throw new GradleException("Embedded dependency checksum mismatch: ${nested.path}")
+            if (nested.id != null) modRuntimeOnly files(artifact)
+            else runtimeOnly files(artifact)
+        }
+    }
 
     // API module
     implementation project(':api')
@@ -84,6 +108,17 @@ loom {
             vmArg "-Dfabric-api.gametest.report-file=${project.layout.buildDirectory.file('gametest-results.xml').get().asFile.absolutePath}"
             runDir "build/gametest"
         }
+        if (modpackProfile != null) {
+            modpackGametest {
+                server()
+                source sourceSets.gametest
+                setConfigName("MineAgent real modpack ${modpackProfile}")
+                vmArg "-Dfabric-api.gametest"
+                vmArg "-Dmineagent.modpack_profile=${modpackProfile}"
+                vmArg "-Dfabric-api.gametest.report-file=${layout.buildDirectory.file("modpack-${modpackProfile}-results.xml").get().asFile.absolutePath}"
+                runDir "build/modpack-${modpackProfile}"
+            }
+        }
     }
 }
 
@@ -97,4 +132,38 @@ processResources {
 tasks.named('runGametest') {
     timeout = java.time.Duration.ofMinutes(5)
     doFirst { delete layout.buildDirectory.file('gametest-results.xml').get().asFile }
+}
+
+tasks.named('processGametestResources') {
+    inputs.property('modpackProfile', modpackProfile ?: 'none')
+    if (modpackProfile != null) doLast {
+        def metadata = new File(destinationDir, 'fabric.mod.json')
+        def data = new groovy.json.JsonSlurper().parse(metadata)
+        def selected = modpackProfile == 'combined' ? ['StorageModGameTests', 'IndustryModGameTests', 'CookingModGameTests', 'CrossModGameTests']
+                : [modpackProfile == 'storage' ? 'StorageModGameTests' : 'IndustryModGameTests']
+        data.entrypoints['fabric-gametest'].addAll(selected.collect { "com.mineagent.modtest.${it}" })
+        metadata.setText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(data)), 'UTF-8')
+    }
+}
+if (modpackProfile != null) {
+    tasks.named('runModpackGametest') {
+        timeout = java.time.Duration.ofMinutes(8)
+        doFirst { delete layout.buildDirectory.file("modpack-${modpackProfile}-results.xml").get().asFile }
+    }
+    tasks.register('verifyModpackGameTests') {
+        dependsOn 'runModpackGametest'
+        doLast {
+            def xml = layout.buildDirectory.file("modpack-${modpackProfile}-results.xml").get().asFile
+            def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+            def report = factory.newDocumentBuilder().parse(xml)
+            ['failure', 'error', 'skipped'].each { if (report.getElementsByTagName(it).length) throw new GradleException("Real-mod tests contain ${it}") }
+            def tests = report.getElementsByTagName('testcase')
+            def names = (0..<tests.length).collect { tests.item(it).getAttribute('name') }
+            def families = modpackProfile == 'combined' ? ['storagemodgametests.', 'industrymodgametests.', 'cookingmodgametests.', 'crossmodgametests.']
+                    : [modpackProfile == 'storage' ? 'storagemodgametests.' : 'industrymodgametests.']
+            families.each { family -> if (!names.any { it.startsWith(family) }) throw new GradleException("Missing real-mod scenarios: ${family}") }
+            logger.lifecycle("Verified ${tests.length} native scenarios in ${modpackProfile} real-mod environment")
+        }
+    }
 }

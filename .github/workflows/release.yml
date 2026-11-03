@@ -9,7 +9,11 @@ permissions:
   contents: write
 
 jobs:
+  real-mods:
+    uses: ./.github/workflows/modpack-tests.yml
+
   release:
+    needs: real-mods
     name: Build and publish both loaders
     runs-on: ubuntu-latest
     timeout-minutes: 30

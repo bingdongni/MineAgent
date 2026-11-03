@@ -43,6 +43,7 @@ public final class ToolRegistration {
 
     /** Register all built-in tools. */
     public static void registerAll() {
+        ToolRegistry.register(new com.mineagent.tools.inventory.TransferPortTool());
         // Movement
         ToolRegistry.register(new MoveToTool());
 

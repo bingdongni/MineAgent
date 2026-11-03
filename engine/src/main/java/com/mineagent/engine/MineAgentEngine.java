@@ -450,6 +450,7 @@ public final class MineAgentEngine {
         OWNER_TO_COMPANION.clear();
         OWNER_TO_ALL_COMPANIONS.clear();
         COMPANION_MODES.clear();
+        com.mineagent.engine.cognition.TeamWorkBoard.clearAll();
         COMPANION_PLAYER_UUIDS.clear();
         // The dispatcher is process-static, while an integrated server can be
         // stopped and another world opened in the same client JVM. Tasks that

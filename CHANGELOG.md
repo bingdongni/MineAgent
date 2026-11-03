@@ -4,6 +4,18 @@ All notable changes to MineAgent will be documented in this file. The project fo
 
 ## [Unreleased]
 
+### v1.0.0 development
+
+- Retain up to 1,024 historical mechanism rules behind a 256-rule active budget. Rebuild guarded adapters on relevant recall; retain counterexamples, environment invalidation and old-format downgrades across persistence.
+- Keep bounded task timelines with start anchors, verified action evidence and distinct goal acceptance. Restore active tasks as interrupted; old observations cannot verify a newly started task.
+- Add `transfer_port` using Fabric item transactions and NeoForge public handlers. Validate visible faces, dimension, permissions, exact item counts and team resource leases; require exact reverse compensation for learned transfers.
+- Extend public menu inspection with a carried item's acceptance, free capacity and visible slot layout. Observe optional Team Reborn Energy through its public API without assuming Forge energy units.
+- Restore relevant archived operators before plan repair, select operators backward from the missing condition before applying search caps, and preserve typed target guards and completed history.
+- Add owner-scoped dependency jobs, expiring exclusive public-resource leases, fresh observed completion, lifecycle cleanup and bounded retirement of completed jobs. Shared experience supplies hypotheses with zero local evidence, never inherited execution authority.
+- Wire explicit durable-prefix cache boundaries into known official OpenAI Chat/Responses requests, leaving unknown endpoints and incremental Responses chains compatible. Do not issue paid prewarm requests.
+- Add author-published, SHA-512-locked real-mod test profiles and native storage, industry, cooking and cross-mod teamwork scenarios. Gate CI releases on all three environments and exclude test or third-party classes from production packages.
+- Advance memory envelopes to 15; pin Gradle 8.14.3, Fabric Loom 1.13.6, Fabric Loader 0.20.1 and Fabric API 0.116.17 for Minecraft 1.21.1. NeoForge remains experimental.
+
 ## [0.6.0] - 2026-11-03
 
 ### Added

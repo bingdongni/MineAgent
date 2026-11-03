@@ -164,20 +164,29 @@ tasks.register('verifyReleaseArtifacts') {
             new java.util.zip.ZipFile(artifact).withCloseable { archive ->
                 ['com/mineagent/api/llm/provider/LLMProvider.class',
                  'com/mineagent/api/platform/CapabilityObservation.class',
+                 'com/mineagent/api/platform/PortTransferResult.class',
                  'com/mineagent/engine/exploration/PredictiveLearning.class',
                  'com/mineagent/engine/exploration/LearningConditions.class',
                  'com/mineagent/engine/exploration/ActorObservation.class',
                  'com/mineagent/engine/cache/ExperienceContext.class',
+                 'com/mineagent/engine/llm/CachePrefixPolicy.class',
+                 'com/mineagent/engine/cognition/TeamWorkBoard.class',
+                 'com/mineagent/engine/memory/TaskEpisodeMemory.class',
                  'com/mineagent/engine/planning/ExperienceRepairPlanner.class',
                  'com/mineagent/engine/planning/PlanGraph.class',
                  'com/mineagent/engine/skill/SkillBindings.class',
                  'com/mineagent/tools/perception/InspectEntityTool.class',
                  'com/mineagent/tools/perception/InspectItemTool.class',
+                 'com/mineagent/tools/inventory/TransferPortTool.class',
                  'META-INF/LICENSE_MineAgent'].each { path ->
                     if (archive.getEntry(path) == null) throw new GradleException("${artifact.name} is missing ${path}")
                 }
                 if (archive.getEntry('com/mineagent/gametest/LearningGameTests.class') != null)
                     throw new GradleException("Test-only mod leaked into ${artifact.name}")
+                if (archive.entries().toList().any { entry ->
+                    ['com/mineagent/modtest/', 'techreborn/', 'reborncore/', 'vectorwing/farmersdelight/',
+                     'com/mattidragon/extendeddrawers/'].any { prefix -> entry.name.startsWith(prefix) }
+                }) throw new GradleException("Real-mod test classes or third-party code leaked into ${artifact.name}")
                 def metadata = loaders[index] == 'fabric' ? 'fabric.mod.json' : 'META-INF/neoforge.mods.toml'
                 def entry = archive.getEntry(metadata)
                 if (entry == null) throw new GradleException("Missing loader metadata in ${artifact.name}")
