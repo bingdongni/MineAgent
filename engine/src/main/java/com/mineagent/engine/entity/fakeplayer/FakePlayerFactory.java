@@ -9,6 +9,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.level.GameType;
 
+import java.util.List;
 import java.util.UUID;
 import java.util.Map;
 import java.lang.reflect.Field;
@@ -42,6 +43,7 @@ import java.nio.charset.StandardCharsets;
 public final class FakePlayerFactory {
 
     private static volatile Field playersByUuidField;
+    private static volatile Field playersListField;
 
     private FakePlayerFactory() {}
 
@@ -155,7 +157,7 @@ public final class FakePlayerFactory {
             System.err.println("[MineAgent] Failed to roll back fake entity: "
                     + cleanupError.getMessage());
         }
-        server.getPlayerList().getPlayers().remove(player);
+        mutablePlayerList(server.getPlayerList()).remove(player);
         removeFromUuidIndex(server.getPlayerList(), player);
         connection.close();
     }
@@ -299,7 +301,7 @@ public final class FakePlayerFactory {
                 throw new IllegalStateException("duplicate fake-player UUID: "
                         + player.getUUID());
             }
-            playerList.getPlayers().add(player);
+            mutablePlayerList(playerList).add(player);
         }
 
         // ClientPacketListener cannot create an entity.minecraft.player from
@@ -355,7 +357,7 @@ public final class FakePlayerFactory {
         }
 
         // Remove from the player list
-        playerList.getPlayers().remove(player);
+        mutablePlayerList(playerList).remove(player);
         removeFromUuidIndex(playerList, player);
 
         // Close the fake connection
@@ -391,6 +393,36 @@ public final class FakePlayerFactory {
                 viewer.connection.send(packet);
             }
         }
+    }
+
+    /**
+     * Resolve the list that PlayerList actually mutates. NeoForge patches
+     * getPlayers() to return an unmodifiable view, so adding or removing the
+     * fake player through it throws UnsupportedOperationException and every
+     * companion spawn fails. The backing list is the private "players" field
+     * under Mojang names; Fabric's getPlayers() already returns that list, so
+     * a failed lookup falls back to it.
+     */
+    @SuppressWarnings("unchecked")
+    private static List<ServerPlayer> mutablePlayerList(PlayerList list) {
+        Field cached = playersListField;
+        if (cached == null) {
+            try {
+                Field field = PlayerList.class.getDeclaredField("players");
+                field.setAccessible(true);
+                playersListField = cached = field;
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                return list.getPlayers();
+            }
+        }
+        try {
+            if (cached.get(list) instanceof List<?> players) {
+                return (List<ServerPlayer>) players;
+            }
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            playersListField = null;
+        }
+        return list.getPlayers();
     }
 
     /**
