@@ -185,6 +185,14 @@ Fabric 和 NeoForge 用户都可以按 `M` 打开主菜单完成配置和创建�
 /mineagent reload
 ```
 
+伙伴默认使用简体中文聊天。可在游戏内运行 `/mineagent setconfig language <值>`，或在 `config/mineagent.json` 中设置 `companion.language` 后运行 `/mineagent reload`（或重启游戏）：
+
+- `zh_cn`（默认）：简体中文。
+- `auto`：跟随主人的 Minecraft 客户端语言，例如 `pt_br`。
+- 其他值，例如 `en_us` 或 `Brazilian Portuguese`：使用该语言。
+
+主人要求换一种语言，或改用其他语言说话时，伙伴仍会随之切换。修改只对之后创建或恢复的伙伴生效；已有的伙伴需要重新进入世界后才会生效。使用 `openai-responses` 协议的伙伴会延续已保存的响应链，在该链重置前仍沿用旧的语言设置。
+
 默认按键（Fabric 与 NeoForge）：
 
 | 按键 | 功能 |

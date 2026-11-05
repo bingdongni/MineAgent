@@ -327,9 +327,14 @@ public class AgentLoop {
     private final AtomicLong liveAssetGameTick = new AtomicLong();
     private volatile long lastAssetSnapshotTick = Long.MIN_VALUE;
 
+    /**
+     * @param replyLanguage default chat language from
+     *                      {@link CompanionLanguage#resolve}; null keeps the
+     *                      original Simplified Chinese instruction
+     */
     public AgentLoop(AgentPlayer companion, String providerId, String apiKey,
                       String model, String baseUrl, double temperature, int maxTokens,
-                      String reasoningEffort) {
+                      String reasoningEffort, String replyLanguage) {
         this.companion = companion;
         this.executor = Executors.newSingleThreadExecutor(r -> {
             var t = new Thread(r, "MineAgent-Loop-" + companion.companionId().toString().substring(0, 8));
@@ -401,7 +406,7 @@ public class AgentLoop {
         this.cognitiveMap = new com.mineagent.engine.memory.CognitiveMap();
         // The persistent loader appends validated dialogue after this system
         // entry. Keeping index zero reserved preserves provider message order.
-        history.add(ChatMessage.system(buildSystemPrompt()));
+        history.add(ChatMessage.system(buildSystemPrompt(replyLanguage)));
 
         // Memory persistence: per-companion directory, restore previous memories.
         // Solves the "restart = amnesia" problem — the companion remembers
@@ -3553,7 +3558,7 @@ public class AgentLoop {
     }
 
     /** Build the immutable instruction prefix shared by every request. */
-    private String buildSystemPrompt() {
+    private String buildSystemPrompt(String replyLanguage) {
         StringBuilder sb = new StringBuilder();
 
         // ── Core identity ──
@@ -3799,11 +3804,7 @@ public class AgentLoop {
         sb.append("You are a PLAYER, not a script. Act like one.\n\n");
 
         // ── Language preference ──
-        sb.append("## Language\n");
-        sb.append("By default, speak Chinese (Simplified) in chat with the owner and ");
-        sb.append("other companions. Reply in Chinese unless the owner explicitly ");
-        sb.append("asks for another language, or they address you in a different ");
-        sb.append("language (in which case match their language).\n\n");
+        sb.append(CompanionLanguage.promptSection(replyLanguage));
 
         return sb.toString();
     }

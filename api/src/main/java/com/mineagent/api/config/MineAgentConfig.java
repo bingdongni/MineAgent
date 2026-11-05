@@ -30,10 +30,13 @@ public record MineAgentConfig(
         String gameMode,
         String skinName,
         boolean instantBreak,
-        boolean creativeReach
+        boolean creativeReach,
+        // Default chat language: "zh_cn" (Simplified Chinese), "auto" (the
+        // owner's Minecraft client language), or a language name/locale code.
+        String language
     ) {
         public static final CompanionConfig DEFAULTS = new CompanionConfig(
-            "MineAgent", "survival", "", false, false
+            "MineAgent", "survival", "", false, false, "zh_cn"
         );
     }
 
@@ -130,7 +133,8 @@ public record MineAgentConfig(
                 com.mineagent.api.entity.CompanionGameMode.orDefault(
                         rawCompanion.gameMode).wireName(),
                 nonNull(rawCompanion.skinName), rawCompanion.instantBreak,
-                rawCompanion.creativeReach);
+                rawCompanion.creativeReach,
+                nonBlank(rawCompanion.language, CompanionConfig.DEFAULTS.language));
 
         SurvivalConfig rawSurvival = loaded.survival != null
                 ? loaded.survival : SurvivalConfig.DEFAULTS;
