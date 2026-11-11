@@ -89,6 +89,9 @@ public record MineAgentConfig(
             } catch (Exception e) {
                 System.err.println("[MineAgent] Failed to load config: " + e.getMessage());
                 System.err.println("[MineAgent] Using defaults");
+                // Keep the user's damaged file for repair. Overwriting it here
+                // destroys connection settings and credentials after a typo.
+                return DEFAULTS;
             }
         }
         // Save defaults
