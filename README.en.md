@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v1.0.0**: real-mod learning and execution, bounded retention across tasks, public ports and unfamiliar menus, dependency jobs and guarded team learning. [Download v1.0.0](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.0) · [design and usage](docs/research/lifelong-learning-1.0.0.md) · [validation record](docs/research/validation-1.0.0.md) (Chinese). The release includes complete source archives, Fabric and experimental NeoForge artifacts, release notes and SHA-256 checksums.
+> **v1.0.1**: fix NeoForge companion creation and duplicate-create rollback, and clarify installation, configuration and restoration. [Download v1.0.1](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.1) · [Getting started and user testing](docs/getting-started.en.md) · [Validation](docs/research/validation-1.0.1.md). The Release includes complete source, Fabric and experimental NeoForge artifacts, release notes, and SHA-256 checksums.
 
 English | [简体中文](README.md)
 
@@ -123,7 +123,7 @@ This is black-box adaptation to observable game contracts, not a claim of univer
 - Verified actions across multiple turns are consolidated into a reusable skill only after the complete plan succeeds. Failed episodes cannot pollute or overwrite a verified trace.
 
 > [!WARNING]
-> MineAgent is currently alpha software. Back up important worlds and expect issues in AI behavior, model output, and experimental platform support.
+> Start with a separate test world and back up saves. AI behavior, model output and experimental platform support may still have issues.
 
 ## Platform support
 
@@ -152,21 +152,25 @@ Both loader-specific JARs are attached to each GitHub release. Install only the 
 
 ### Fabric (recommended)
 
-1. Install Java 21, Minecraft 1.21.1, and Fabric Loader 0.15 or later.
-2. Install Fabric API for Minecraft 1.21.1.
-3. Download `mineagent-fabric-<version>.jar` from [Releases](https://github.com/bingdongni/MineAgent/releases).
-4. Place it in the Minecraft `mods` directory and launch the game.
+1. Install Java 21, Minecraft **1.21.1**, and Fabric Loader **0.20.1 or later**. Check the Java version actually selected by your launcher.
+2. Install Fabric API for Minecraft 1.21.1; the validated baseline is **0.116.17+1.21.1**.
+3. Download `mineagent-fabric-1.0.1.jar` from the [v1.0.1 Release](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.1). Source archives and the NeoForge JAR are different downloads.
+4. Put MineAgent and Fabric API in the **active instance's** `mods` directory, remove older MineAgent JARs, and launch the game.
 
 ### NeoForge (experimental)
 
-1. Install Java 21, Minecraft 1.21.1, and NeoForge 21.1.x.
-2. Download `mineagent-neoforge-<version>.jar` and place it in `mods`.
+1. Install Java 21, Minecraft **1.21.1**, and NeoForge **21.1.x**. The build and native creation-regression baseline is **21.1.72**.
+2. Download `mineagent-neoforge-1.0.1.jar`, place it in the active instance's `mods` directory, and remove older MineAgent JARs.
 3. Do not install Fabric API or the Fabric MineAgent JAR.
-4. Use a test world and include the loader version and sanitized logs in feedback.
+4. Use a test world and include the exact NeoForge version and sanitized logs in feedback. Other 21.1.x versions need their own runtime validation.
+
+For multiplayer, install matching MineAgent versions and loaders on the client and server; Fabric API is also required on both Fabric sides. See the [getting started guide](docs/getting-started.en.md) for checksums and troubleshooting.
 
 ## Quick start
 
-The first launch creates `config/mineagent.json`. Press `M`, open Configure & Create, and enter protocol, model, endpoint, key, and game mode once. Press `C` to select any online companion and change its independent game mode at any time. You can also edit the file first and then run:
+Enter a separate test world, press `M`, and open Configure & Create. Enter the protocol your service supports, exact model ID, endpoint, key and game mode. The default key is empty; configure your own service. Intentionally unauthenticated local endpoints may leave it empty. **Creation can immediately start model calls and incur API charges.** Press `C`, select the companion, ask it to report its position and inventory, then try a small task such as collecting three dirt blocks. Check the actual world and inventory. Remove the companion from its chat screen when finished.
+
+The first launch also creates `config/mineagent.json`. After manually editing it, run `/mineagent reload`, then create a new companion:
 
 ```text
 /mineagent quick
@@ -184,6 +188,8 @@ Fabric and NeoForge users can press `M` to configure and create companions. Usef
 /mineagent config
 /mineagent reload
 ```
+
+`reload` does not reconfigure existing companions. Leaving the world or disconnecting saves them; the same owner rejoining the same world restores them automatically. `remove` deliberately removes a companion and will not restore it on rejoin. With several companions, select the intended one using `C` before removing it; the command removes only the primary companion. See the [guide](docs/getting-started.en.md) for the complete flow and cost boundaries.
 
 Default key bindings on Fabric and NeoForge:
 
@@ -221,10 +227,10 @@ $env:JAVA_HOME = 'C:\Path\To\jdk-21'
 
 Outputs:
 
-- `fabric/build/libs/mineagent-fabric-0.6.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.6.0.jar`
+- `fabric/build/libs/mineagent-fabric-1.0.1.jar`
+- `neoforge/build/libs/mineagent-neoforge-1.0.1.jar`
 
-The command starts an isolated headless test server and produces `fabric/build/gametest-results.xml` and `build/release-artifacts.sha256`. The test-only mod is excluded from release JARs. NeoForge remains experimental; native runtime scenarios currently run on Fabric.
+The command runs component tests, native Fabric learning/lifecycle scenarios, native NeoForge lifecycle regressions and both loader builds. It produces each loader's `build/gametest-results.xml` and the root `build/release-artifacts.sha256`. Test mods are excluded from production JARs. The real-mod matrix runs on Fabric; NeoForge remains experimental.
 
 ## Modules
 

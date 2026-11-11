@@ -4,6 +4,22 @@ All notable changes to MineAgent will be documented in this file. The project fo
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-11
+
+### Fixed
+
+- Include the NeoForge companion creation fix contributed by @timesonchange in [#1](https://github.com/bingdongni/MineAgent/pull/1): mutate PlayerList's backing list rather than NeoForge's unmodifiable public view during registration, rollback and removal.
+- Do not withdraw an existing player's client profile when a duplicate creation is rejected before the new body is registered. Preserve the original UUID entry and world entity while rolling back failed creation.
+- Preserve malformed/non-object configuration files for repair instead of overwriting them with defaults and losing the user's connection settings. In-memory fallback remains available.
+- Correct both installation guides to require Fabric Loader 0.20.1 or later, identify the validated Fabric API/NeoForge baselines, and show the current 1.0.1 artifact names.
+
+### Tests and documentation
+
+- Run the same native creation/removal/recreation, duplicate-profile and partial-registration rollback scenarios on Fabric and NeoForge. NeoForge scenarios exercise its actual read-only PlayerList view. Require both XML reports before release and exclude all test fixtures from production JARs.
+- Add configuration regressions for first launch, partial and legacy settings, invalid limits, and preservation of damaged files. Keep the existing component suite and checksum-locked Fabric real-mod matrix as release gates.
+- Provide Chinese/English first-run guides for client/server installation, official/relay/local protocols, immediate API costs, small-task verification, rejoin restoration, deliberate removal, checksum checks and sanitized feedback.
+- Retain memory format 15 and existing provider protocols. No paid model or autonomous-model evaluation is included; NeoForge remains experimental.
+
 ## [1.0.0] - 2026-11-03
 
 ### Added and changed

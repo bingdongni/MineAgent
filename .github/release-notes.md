@@ -2,41 +2,41 @@ MineAgent @VERSION@ targets Minecraft 1.21.1 and Java 21.
 
 ## 更新摘要
 
-- 在固定的真实模组环境中验证条件学习、精确补偿、跨任务迁移、JSON/运行时恢复及双伙伴物品交接。
-- 保留有界规则历史和任务时间线，召回不增加证据；反例、数据重载与环境变化仍撤销执行资格。
-- 新增公开物品端口操作，绑定面、维度、目标和携带输入；陌生菜单支持公开布局与只读槽位接收检查。
-- 计划修复先筛选相关算子再应用预算，保留已完成历史、原始约束与最终目标条件。
-- 团队任务使用前驱、资源租约和新鲜事实验收；队友经验只作为零本地支持的候选。
-- 已知官方模型的显式缓存边界落在耐久前缀上，未知中转、本地端点与其他协议保持兼容；不发起额外预热调用。
+- 发布 @timesonchange 在 [#1](https://github.com/bingdongni/MineAgent/pull/1) 贡献的 NeoForge 创建修复：注册、移除和回滚使用实际可变玩家列表，避免对只读公开视图操作导致异常。
+- 修复重复创建被拒绝时错误撤下原有伙伴客户端资料的问题；失败回滚保留原有实体及 UUID 索引。
+- 损坏或非对象 JSON 配置保留在磁盘上供修正，内存回退到默认值，不再用默认配置覆盖用户文件。
+- 修正 Fabric Loader 最低要求为 0.20.1，写明 Fabric API / NeoForge 验证基线，并补齐双语安装、配置、创建、小任务核验、退出恢复、主动移除与故障排查流程。
+- 将双加载器原生创建/回滚测试纳入发布门禁，保留现有组件回归和 Fabric 真实模组组合矩阵。
 
-[设计与使用](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/lifelong-learning-1.0.0.md) · [验证记录](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/validation-1.0.0.md) · [Changelog](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/CHANGELOG.md)
+[中文上手指南](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/getting-started.md) · [English guide](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/getting-started.en.md) · [验证记录 / Validation](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/docs/research/validation-1.0.1.md) · [Changelog](https://github.com/bingdongni/MineAgent/blob/v@VERSION@/CHANGELOG.md)
 
 ## Changes
 
-The learning runtime is exercised against author-published, checksum-locked Extended Drawers 3.0.4+mc.1.21.1, Tech Reborn / RebornCore 5.11.19 and Farmer's Delight Refabricated 1.21.1-3.2.8 on a native Fabric server. Scenarios cover two independent physical learning contexts, exact compensation, a held-out target after an unrelated task and JSON/runtime restart, public energy units, real smelting and heated cooking, cross-mod conservation and a two-agent dependency handoff with exclusive port leases.
+This patch includes the NeoForge PlayerList fix from @timesonchange (#1). Native regression scenarios now create, remove and recreate the same player profile on both loaders, verify that a rejected duplicate cannot remove the existing player's client profile, and force world-registration failure to check list/UUID/client rollback without deleting the unrelated entity occupying that UUID.
 
-A bounded rule archive and task timelines preserve past evidence without restoring stale executor ownership. Rule recall never invents additional support. Plan repair recalls relevant archived operators and selects a backward-relevant subset before applying search limits, while retaining achieved milestones and the owner's acceptance conditions. Unknown consumed inputs cannot be reused symbolically.
+Malformed configuration is preserved for repair instead of being overwritten with defaults. Regressions cover clean first launch, partial/legacy configuration, invalid limits and damaged JSON. Existing connection tuples and memory format 15 remain compatible with v1.0.0.
 
-The new transfer_port tool moves actual items through public loader interfaces, verifies carried inventory deltas, checks visible faces and interaction permission, and respects owner-scoped resource leases. Learned transfers bind the action to the same observed effect target, dimension, face and actual input, and require an exact reverse compensation. inspect_gui can read a carried item's public acceptance, free capacity and visible menu layout without moving it. Acceptance alone does not identify a recipe role or prove production.
-
-Team jobs have immutable dependency/acceptance contracts and expiring leases. Completion requires the current worker's fresh world observations. Shared rules start as untrusted candidates with zero local supports and no executor; they cannot overwrite contrary local evidence. Reload, memory reset and lifecycle cleanup withdraw obsolete shared state.
-
-Known official OpenAI Chat and Responses models receive explicit breakpoints on declared durable prefixes; volatile world suffixes are excluded. Unknown endpoints retain their existing contract, and stateful incremental Responses chains are preserved. Cache-write tokens, missing usage reports and actual hits remain separate; no paid prewarm calls are added.
-
-Memory envelopes advance to version 15. Old records remain readable, but missing context and changed mod/environment fingerprints require revalidation. The toolchain pins Gradle 8.14.3, Fabric Loom 1.13.6, Fabric Loader 0.20.1 and Fabric API 0.116.17+1.21.1.
+The Chinese and English guides identify the correct loader requirements, active instance directories and matching client/server installations. They distinguish provider protocols, local server addresses, new-companion settings from existing sessions, normal rejoin restoration from deliberate removal, and per-call output limits from total API budgets. Creating or restoring a companion can immediately start model requests.
 
 ## Validation and scope
 
-Release gates run component regressions, five isolated native baseline scenarios, and storage, industry and combined real-mod environments. Both loader artifacts require correct metadata, required production classes, exclusion of test/third-party classes and SHA-256 checksums. Real-mod dependencies remain test-only downloads; they are not redistributed inside MineAgent.
+Release gates run the component suite, native Fabric learning/lifecycle scenarios, native NeoForge lifecycle scenarios, and checksum-locked Fabric storage, industry and combined real-mod environments. Both JARs are checked for version metadata, required production classes, license text and exclusion of test/third-party classes.
 
-These are production-component and native-server engineering tests with paused model deliberation. They do not establish autonomous model discovery success rates, arbitrary modpack compatibility, AGI, zero defects or monetary savings. No paid model evaluation was performed. Fabric is supported; NeoForge remains experimental and has not undergone the same real-mod runtime matrix.
+These are engineering regressions without paid model evaluation. They do not establish autonomous task success rates, arbitrary modpack compatibility, zero defects or billing savings. Fabric is supported; NeoForge remains experimental and does not have the same real-mod matrix. Real users should begin with a backed-up test world and verify actual game results.
+
+## Install / Upgrade
+
+Stop the game/server, back up the world and configuration, remove the previous MineAgent JAR, and install the matching loader artifact on both multiplayer sides. Do not install both loader JARs together.
+
+- Fabric: Minecraft 1.21.1, Java 21, Fabric Loader **0.20.1 or later**, Fabric API for 1.21.1 (validated baseline **0.116.17+1.21.1**).
+- NeoForge: Minecraft 1.21.1, Java 21, NeoForge **21.1.x** (native regression baseline **21.1.72**); no Fabric API. Other 21.1.x versions need their own runtime testing.
 
 ## Downloads
 
-- mineagent-fabric-@VERSION@.jar: Minecraft 1.21.1, Java 21, Fabric Loader 0.20.1 or later and matching Fabric API.
-- mineagent-neoforge-@VERSION@.jar: experimental build for Minecraft 1.21.1 and NeoForge 21.1.x.
-- mineagent-source-@VERSION@.zip and mineagent-source-@VERSION@.tar.gz: complete tracked source, including wrapper, tests, dependency lock and documentation.
-- release-notes.md: these notes plus source commit and CI provenance.
-- release-artifacts.sha256: checksums for both JARs, source archives and release notes. CI builds may differ from local artifacts; verify against the manifest accompanying the actual download.
+- `mineagent-fabric-@VERSION@.jar`: Fabric mod.
+- `mineagent-neoforge-@VERSION@.jar`: experimental NeoForge mod.
+- `mineagent-source-@VERSION@.zip` and `.tar.gz`: complete tracked source including wrapper, tests and documentation; do not put these archives in `mods`.
+- `release-notes.md`: these notes plus the source commit and CI provenance.
+- `release-artifacts.sha256`: checksums for both JARs, both source archives and release notes. Compare the exact matching filename from this Release; local builds may differ.
 
-API requests may cost money. Configuration can contain credentials; see SECURITY.md before sharing runtime data.
+API requests may cost money. Do not share `config/mineagent.json`, companion save files, private memory or unsanitized logs. See SECURITY.md and the first-run guides before reporting issues.

@@ -1,6 +1,6 @@
 # MineAgent
 
-> **v1.0.0**：真实模组环境中的条件学习、跨任务记忆保持、公开端口和陌生菜单操作、依赖任务协作及耐久前缀缓存。[下载 v1.0.0](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.0) · [设计与使用](docs/research/lifelong-learning-1.0.0.md) · [验证记录](docs/research/validation-1.0.0.md)。Release 包含完整源码、Fabric 和实验性 NeoForge 构建产物、更新说明及 SHA-256 校验清单。
+> **v1.0.1**：修复 NeoForge 伙伴创建和重复创建回滚，完善安装、配置及恢复说明。[下载 v1.0.1](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.1) · [新用户上手与测试](docs/getting-started.md) · [验证记录](docs/research/validation-1.0.1.md)。Release 包含完整源码、Fabric 和实验性 NeoForge 构建产物、更新说明及 SHA-256 校验清单。
 
 [English](README.en.md) | 简体中文
 
@@ -123,7 +123,7 @@ MineAgent 不按型号维护允许列表，因此兼容端点发布的新模型�
 - 同一计划中的多轮已验证动作会在整个计划成功后合成为可复用技能，失败轨迹不会污染或覆盖已验证技能。
 
 > [!WARNING]
-> 项目目前处于 Alpha 阶段。请先备份重要世界，并预期 AI 行为、模型输出和实验性平台支持仍可能出现问题。
+> 首次体验请使用独立测试世界并备份存档；AI 行为、模型输出和实验性平台支持仍可能出现问题。
 
 ## 平台支持
 
@@ -152,21 +152,25 @@ MineAgent 不按型号维护允许列表，因此兼容端点发布的新模型�
 
 ### Fabric（推荐）
 
-1. 安装 Java 21、Minecraft 1.21.1、Fabric Loader 0.15 或更高版本。
-2. 安装适用于 Minecraft 1.21.1 的 Fabric API。
-3. 从 [Releases](https://github.com/bingdongni/MineAgent/releases) 下载 `mineagent-fabric-<版本>.jar`。
-4. 将 JAR 放入 Minecraft 的 `mods` 目录并启动游戏。
+1. 安装 Java 21、Minecraft **1.21.1**、Fabric Loader **0.20.1 或更高版本**，并确认启动器实际使用 Java 21。
+2. 安装适用于 Minecraft 1.21.1 的 Fabric API；验证基线为 **0.116.17+1.21.1**。
+3. 从 [v1.0.1 Release](https://github.com/bingdongni/MineAgent/releases/tag/v1.0.1) 下载 `mineagent-fabric-1.0.1.jar`，不要把源码压缩包或 NeoForge JAR 当作模组安装。
+4. 将 MineAgent 和 Fabric API 的 JAR 放入**当前游戏实例**的 `mods` 目录，删除旧版 MineAgent JAR 后启动游戏。
 
 ### NeoForge（实验性）
 
-1. 安装 Java 21、Minecraft 1.21.1 和 NeoForge 21.1.x。
-2. 下载 `mineagent-neoforge-<版本>.jar` 并放入 `mods` 目录。
+1. 安装 Java 21、Minecraft **1.21.1** 和 NeoForge **21.1.x**；本版本构建及原生创建回归基线为 **21.1.72**。
+2. 下载 `mineagent-neoforge-1.0.1.jar` 并放入当前实例的 `mods` 目录，删除旧版 MineAgent JAR。
 3. 不要安装 Fabric API 或 Fabric 版本的 MineAgent。
-4. 建议使用测试世界，并在反馈中注明 NeoForge、加载器版本和日志。
+4. 使用测试世界，并在反馈中注明 NeoForge 精确版本和脱敏日志。其他 21.1.x 版本需要实际复测。
+
+多人游戏请在客户端和服务器安装相同版本、相同加载器的 MineAgent；Fabric 两端也需要对应的 Fabric API。详细步骤、校验方法和故障排查见[上手指南](docs/getting-started.md)。
 
 ## 快速开始
 
-首次启动会生成 `config/mineagent.json`。按 `M` 打开主菜单，进入“配置并创建 AI 伙伴”，一次填写协议、模型、接口、密钥和游戏模式即可创建。按 `C` 打开伙伴聊天后，可选择任一在线伙伴并随时调整其独立游戏模式。也可以先手动配置文件，再在游戏内运行：
+进入独立测试世界，按 `M` 打开“配置并创建 AI 伙伴”，填写实际服务支持的协议、准确模型 ID、接口地址、密钥和游戏模式。默认配置的密钥为空，需要你配置自己的服务；本地免认证服务可以留空。**创建后即可开始模型调用，API 可能产生费用。** 按 `C` 选择伙伴，先让它报告位置和背包，再测试采集 3 个泥土等小任务，并在游戏中核对结果。测试结束可从聊天界面移除该伙伴。
+
+首次启动也会生成 `config/mineagent.json`；手动编辑后，运行 `/mineagent reload`，再创建新伙伴：
 
 ```text
 /mineagent quick
@@ -184,6 +188,8 @@ Fabric 和 NeoForge 用户都可以按 `M` 打开主菜单完成配置和创建�
 /mineagent config
 /mineagent reload
 ```
+
+`reload` 不会更新已有伙伴的连接设置。正常退出世界或断开连接会保存伙伴，下次同一主人进入同一世界时自动恢复；`remove` 是主动移除，不是暂停，也不会在重登时自动恢复。多伙伴时用 `C` 选中目标再移除，命令 `remove` 只操作主伙伴。完整的恢复、配置与费用边界见[上手指南](docs/getting-started.md)。
 
 默认按键（Fabric 与 NeoForge）：
 
@@ -229,10 +235,10 @@ Linux/macOS：
 
 构建产物：
 
-- `fabric/build/libs/mineagent-fabric-0.6.0.jar`
-- `neoforge/build/libs/mineagent-neoforge-0.6.0.jar`
+- `fabric/build/libs/mineagent-fabric-1.0.1.jar`
+- `neoforge/build/libs/mineagent-neoforge-1.0.1.jar`
 
-该命令会启动测试专用的无界面服务器，并生成 `fabric/build/gametest-results.xml` 与 `build/release-artifacts.sha256`；测试模组不会打入发布 JAR。NeoForge 构建仍标记为实验性，原生运行场景当前在 Fabric 上验证。
+该命令运行组件测试、Fabric 原生学习与创建回归、NeoForge 原生创建回归及双加载器构建，生成两端的 `build/gametest-results.xml` 与根目录 `build/release-artifacts.sha256`；测试模组不会打入发布 JAR。真实模组组合矩阵仍在 Fabric 上验证，NeoForge 保持实验性。
 
 ## 项目结构
 

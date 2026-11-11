@@ -22,7 +22,7 @@ body:
     id: mineagent-version
     attributes:
       label: MineAgent version
-      placeholder: 0.2.5
+      placeholder: 1.0.1
     validations:
       required: true
 
@@ -30,7 +30,7 @@ body:
     id: environment
     attributes:
       label: Minecraft, loader, and Java versions
-      placeholder: Minecraft 1.21.1, Fabric Loader 0.15.11, Java 21.0.x
+      placeholder: Minecraft 1.21.1, Fabric Loader 0.20.1 + Fabric API 0.116.17, or NeoForge 21.1.72; Java 21.0.x
     validations:
       required: true
 
@@ -52,6 +52,13 @@ body:
         3. Observe...
     validations:
       required: true
+
+  - type: textarea
+    id: first-run
+    attributes:
+      label: First-run checks and model setup
+      description: Report install/create/small task/rejoin/remove outcomes separately; include single or multiplayer, game mode, protocol and model ID. Never include keys or private endpoint credentials.
+      placeholder: "Single player, survival; openai-compatible, model ID; install OK / create OK / small task failed / rejoin OK / removal OK"
 
   - type: textarea
     id: expected
