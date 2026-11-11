@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 root = Path(__file__).resolve().parents[1]
 version = next(line.split("=", 1)[1].strip() for line in (root / "gradle.properties").read_text().splitlines()
                if line.startswith("mod_version"))
-source_roots = ("api/src", "engine/src", "tools/src", "fabric/src", "neoforge/src")
+source_roots = ("api/src", "engine/src", "tools/src", "fabric/src", "neoforge/src", "tests/gametest")
 sources = sorted(path for directory in source_roots for path in (root / directory).rglob("*") if path.is_file())
 sources += [root / name for name in ("build.gradle", "fabric/build.gradle", "neoforge/build.gradle", "gradle.properties",
                                     "gradle/wrapper/gradle-wrapper.properties")]
@@ -29,7 +29,12 @@ unit_paths = sorted((root / "fabric/build/test-results/test").glob("TEST-*.xml")
 if not unit_paths:
     raise ValueError("Run :fabric:test first")
 units = sum(len(read_cases(path)) for path in unit_paths)
-base = {
+lifecycle = {
+    "playerlifecyclegametests.createsremovesandrecreatesthesameprofile",
+    "playerlifecyclegametests.duplicatecreationpreservestheexistingplayer",
+    "playerlifecyclegametests.failedentityregistrationrollsbackonlythenewplayer",
+}
+base = lifecycle | {
     "learninggametests.nativedatareloadinvalidateslearnedrules",
     "learninggametests.learnstransfersandstopsafterrulechange",
     "learninggametests.observesnewitemwithoutdumpingprivatecomponents",
@@ -45,16 +50,18 @@ cross = {"crossmodgametests.movesarealmodingredientthroughanothermodsport",
          "crossmodgametests.twoagentscoordinatedependentjobsononerealport"}
 reports = {}
 expected = {"base": base, "storage": base | storage, "industry": base | industry,
-            "combined": base | storage | industry | cooking | cross}
+            "combined": base | storage | industry | cooking | cross, "neoforge": lifecycle}
 latest_source = max(path.stat().st_mtime for path in sources)
 for profile, required in expected.items():
-    path = root / ("fabric/build/gametest-results.xml" if profile == "base" else f"fabric/build/modpack-{profile}-results.xml")
+    path = root / ("neoforge/build/gametest-results.xml" if profile == "neoforge" else
+                   "fabric/build/gametest-results.xml" if profile == "base" else f"fabric/build/modpack-{profile}-results.xml")
     names = set(read_cases(path))
     if not required <= names:
         raise ValueError(f"Missing {profile} cases: {sorted(required - names)}")
     if path.stat().st_mtime < latest_source:
         raise ValueError(f"Evidence predates the current source: {path}; rerun the native scenario")
-    log = root / ("fabric/build/gametest/logs/latest.log" if profile == "base" else f"fabric/build/modpack-{profile}/logs/latest.log")
+    log = root / ("neoforge/build/gametest/logs/latest.log" if profile == "neoforge" else
+                  "fabric/build/gametest/logs/latest.log" if profile == "base" else f"fabric/build/modpack-{profile}/logs/latest.log")
     if "LLM call attempt" in log.read_text(encoding="utf-8", errors="replace"):
         raise ValueError(f"Unexpected model transport attempt in native evidence: {log}")
     reports[profile] = {"executions": len(names), "cases": sorted(names), "xml_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -79,7 +86,7 @@ result = {"version": version, "source_sha256_normalized": digest.hexdigest(), "s
           "native_executions": sum(r["executions"] for r in reports.values()),
           "artifacts": artifacts, "modpack_lock_sha256": hashlib.sha256((root / "fabric/src/modtest/resources/modpack-lock.json").read_bytes()).hexdigest(),
           "model_evaluation": "No paid or real model capability evaluation; paused native harness and local protocol fixtures only",
-          "scope": "Fabric native server; NeoForge build verification remains experimental"}
+          "scope": "Fabric native learning and real-mod matrix; native lifecycle on both loaders; NeoForge remains experimental"}
 output = root / f"build/validation-{version}.json"
 output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(json.dumps({"output": str(output), "tests": units, "suites": len(unit_paths),

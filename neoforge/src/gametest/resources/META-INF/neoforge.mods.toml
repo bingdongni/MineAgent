@@ -1,0 +1,15 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "LGPL-3.0-only"
+
+[[mods]]
+modId = "mineagent_lifecycle_tests"
+version = "1"
+displayName = "MineAgent development lifecycle tests"
+
+[[dependencies.mineagent_lifecycle_tests]]
+modId = "mineagent"
+type = "required"
+versionRange = "[1,)"
+ordering = "AFTER"
+side = "SERVER"

@@ -122,35 +122,50 @@ tasks.register('prepareReleaseNotes') {
     }
 }
 
+def verifyNativeReport = { File report, List<String> required ->
+    if (!report.isFile()) throw new GradleException("Missing native Minecraft GameTest report: ${report}")
+    def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+    factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+    factory.setFeature('http://xml.org/sax/features/external-general-entities', false)
+    factory.setFeature('http://xml.org/sax/features/external-parameter-entities', false)
+    def document = factory.newDocumentBuilder().parse(report)
+    ['failure', 'error', 'skipped'].each { name ->
+        if (document.getElementsByTagName(name).length > 0)
+            throw new GradleException("Native Minecraft GameTests contain ${name} results")
+    }
+    def cases = document.getElementsByTagName('testcase')
+    def names = (0..<cases.length).collect { cases.item(it).getAttribute('name') }.toSet()
+    required.each { name ->
+        if (!names.contains(name)) throw new GradleException("Missing required native scenario in ${report}: ${name}")
+    }
+    logger.lifecycle("Verified ${cases.length} native Minecraft GameTests in ${report.parentFile.parentFile.name}")
+}
+
+def lifecycleCases = ['playerlifecyclegametests.createsremovesandrecreatesthesameprofile',
+                      'playerlifecyclegametests.duplicatecreationpreservestheexistingplayer',
+                      'playerlifecyclegametests.failedentityregistrationrollsbackonlythenewplayer']
+
 tasks.register('verifyGameTests') {
     dependsOn ':fabric:runGametest'
     doLast {
-        def report = rootProject.file('fabric/build/gametest-results.xml')
-        if (!report.isFile()) throw new GradleException('Missing native Minecraft GameTest report')
-        def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
-        factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
-        factory.setFeature('http://xml.org/sax/features/external-general-entities', false)
-        factory.setFeature('http://xml.org/sax/features/external-parameter-entities', false)
-        def document = factory.newDocumentBuilder().parse(report)
-        ['failure', 'error', 'skipped'].each { name ->
-            if (document.getElementsByTagName(name).length > 0)
-                throw new GradleException("Native Minecraft GameTests contain ${name} results")
-        }
-        def cases = document.getElementsByTagName('testcase')
-        def names = (0..<cases.length).collect { cases.item(it).getAttribute('name') }.toSet()
-        ['learninggametests.learnstransfersandstopsafterrulechange',
-         'learninggametests.observespublicactorandrejectswronguuid',
-         'learninggametests.observesnewitemwithoutdumpingprivatecomponents',
-         'learninggametests.runsobservationsviatheagentloopandreadspublicstorage',
-         'learninggametests.nativedatareloadinvalidateslearnedrules'].each { name ->
-            if (!names.contains(name)) throw new GradleException("Missing required native scenario: ${name}")
-        }
-        logger.lifecycle("Verified ${cases.length} native Minecraft GameTests")
+        verifyNativeReport(rootProject.file('fabric/build/gametest-results.xml'),
+                ['learninggametests.learnstransfersandstopsafterrulechange',
+                 'learninggametests.observespublicactorandrejectswronguuid',
+                 'learninggametests.observesnewitemwithoutdumpingprivatecomponents',
+                 'learninggametests.runsobservationsviatheagentloopandreadspublicstorage',
+                 'learninggametests.nativedatareloadinvalidateslearnedrules'] + lifecycleCases)
+    }
+}
+
+tasks.register('verifyNeoForgeGameTests') {
+    dependsOn ':neoforge:runGameTestServer'
+    doLast {
+        verifyNativeReport(rootProject.file('neoforge/build/gametest-results.xml'), lifecycleCases)
     }
 }
 
 tasks.register('verifyReleaseArtifacts') {
-    dependsOn ':fabric:build', ':neoforge:build', 'verifyGameTests'
+    dependsOn ':fabric:build', ':neoforge:build', 'verifyGameTests', 'verifyNeoForgeGameTests'
     def loaders = ['fabric', 'neoforge']
     def artifacts = loaders.collect { rootProject.file("${it}/build/libs/mineagent-${it}-${project.version}.jar") }
     def manifest = layout.buildDirectory.file('release-artifacts.sha256')
@@ -181,10 +196,9 @@ tasks.register('verifyReleaseArtifacts') {
                  'META-INF/LICENSE_MineAgent'].each { path ->
                     if (archive.getEntry(path) == null) throw new GradleException("${artifact.name} is missing ${path}")
                 }
-                if (archive.getEntry('com/mineagent/gametest/LearningGameTests.class') != null)
-                    throw new GradleException("Test-only mod leaked into ${artifact.name}")
                 if (archive.entries().toList().any { entry ->
-                    ['com/mineagent/modtest/', 'techreborn/', 'reborncore/', 'vectorwing/farmersdelight/',
+                    ['com/mineagent/gametest/', 'com/mineagent/neoforge/gametest/',
+                     'data/mineagent_lifecycle_tests/', 'com/mineagent/modtest/', 'techreborn/', 'reborncore/', 'vectorwing/farmersdelight/',
                      'com/mattidragon/extendeddrawers/'].any { prefix -> entry.name.startsWith(prefix) }
                 }) throw new GradleException("Real-mod test classes or third-party code leaked into ${artifact.name}")
                 def metadata = loaders[index] == 'fabric' ? 'fabric.mod.json' : 'META-INF/neoforge.mods.toml'

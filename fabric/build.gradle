@@ -45,6 +45,7 @@ sourceSets {
         }
     }
     gametest {
+        java.srcDir rootProject.file('tests/gametest/java')
         if (modpackProfile != null) java.srcDir 'src/modtest/java'
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath

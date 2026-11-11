@@ -39,6 +39,11 @@ sourceSets {
             srcDir project(':tools').file('src/main/resources')
         }
     }
+    gametest {
+        java.srcDir rootProject.file('tests/gametest/java')
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath
+    }
 }
 
 dependencies {
@@ -56,16 +61,33 @@ neoForge {
         mineagent {
             sourceSet sourceSets.main
         }
+        mineagent_lifecycle_tests {
+            sourceSet sourceSets.gametest
+        }
     }
 
     runs {
         client {
             client()
+            mods = [project.neoForge.mods.getByName('mineagent')]
         }
         server {
             server()
+            mods = [project.neoForge.mods.getByName('mineagent')]
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            sourceSet = sourceSets.gametest
+            gameDirectory = layout.buildDirectory.dir('gametest').get().asFile
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'mineagent_lifecycle_tests'
+            systemProperty 'mineagent.lifecycleReport', layout.buildDirectory.file('gametest-results.xml').get().asFile.absolutePath
         }
     }
+}
+
+tasks.named('runGameTestServer') {
+    timeout = java.time.Duration.ofMinutes(5)
+    doFirst { delete layout.buildDirectory.file('gametest-results.xml').get().asFile }
 }
 
 processResources {

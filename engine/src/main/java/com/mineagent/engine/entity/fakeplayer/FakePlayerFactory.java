@@ -147,7 +147,11 @@ public final class FakePlayerFactory {
         // Registration publishes Player Info before the entity spawn packet so
         // clients can construct a player entity. If any later step fails, undo
         // that client-side profile as part of the same ownership rollback.
-        broadcastPlayerInfoRemoval(server.getPlayerList(), player);
+        PlayerList playerList = server.getPlayerList();
+        boolean wasRegistered = playerList.getPlayers().contains(player);
+        // A rejected duplicate has the same UUID as an existing body but never
+        // owned its published profile. Withdrawing it would hide that body.
+        if (wasRegistered) broadcastPlayerInfoRemoval(playerList, player);
         try {
             if (level.getEntity(player.getUUID()) == player) {
                 level.removePlayerImmediately(player,
@@ -157,8 +161,8 @@ public final class FakePlayerFactory {
             System.err.println("[MineAgent] Failed to roll back fake entity: "
                     + cleanupError.getMessage());
         }
-        mutablePlayerList(server.getPlayerList()).remove(player);
-        removeFromUuidIndex(server.getPlayerList(), player);
+        if (wasRegistered) mutablePlayerList(playerList).remove(player);
+        removeFromUuidIndex(playerList, player);
         connection.close();
     }
 

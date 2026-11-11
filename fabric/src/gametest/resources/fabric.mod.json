@@ -6,7 +6,7 @@
   "environment": "server",
   "entrypoints": {
     "main": ["com.mineagent.gametest.LearningGameTests"],
-    "fabric-gametest": ["com.mineagent.gametest.LearningGameTests"]
+    "fabric-gametest": ["com.mineagent.gametest.LearningGameTests", "com.mineagent.gametest.PlayerLifecycleGameTests"]
   },
   "depends": {"mineagent": "*", "fabric-api": "*"}
 }
